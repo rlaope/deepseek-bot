@@ -54,6 +54,12 @@ async function until(predicate, ms = 3000) {
   check('usage: the command is dsh', USAGE.includes('\n  dsh [--name <gateway>]') && !USAGE.includes('deepbot-tui'), USAGE.split('\n')[2])
   check('exit: the resume hint names dsh', resumeHint('c-1') === 'to continue this conversation: dsh --resume c-1\n', JSON.stringify(resumeHint('c-1')))
 
+  // /exit is /quit by another name: both leave with status 0.
+  const stops = []
+  const fakeApp = { stop: (code) => stops.push(code), notice: () => {}, clear: () => {} }
+  const quit = createCommands(fakeApp, { conversation: null, tenant: undefined, switchTo: () => {}, send: () => true })
+  check('/exit: leaves like /quit', quit.intercept('/exit') === true && quit.intercept('/quit') === true && JSON.stringify(stops) === '[0,0]', JSON.stringify(stops))
+
   // End to end: the arguments reach the harness CLI unchanged, and its exit status comes back.
   const bin = mkdtempSync(join(tmpdir(), 'deepbot-dshbin-'))
   const fake = join(bin, 'dsh'), seen = join(bin, 'seen')

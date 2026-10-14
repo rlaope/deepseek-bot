@@ -7,6 +7,7 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **`/exit` in the terminal**, the same as `/quit`.
 - **English, Korean and Chinese.** A `language` setting in the deepbot row (`en` by default, `ko`,
   `zh`) sets what the bot itself says on every platform (approvals and their buttons, stops,
   failures, the working message, Slack's status, the usage report) and everything `dsh` draws; `dsh`

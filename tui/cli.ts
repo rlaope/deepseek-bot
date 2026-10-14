@@ -102,7 +102,7 @@ export function bind(app: App, frame: ServerFrame, commands?: Commands): void {
 }
 
 /** The /commands the terminal handles itself. Anything else — "/Users/me/x" included — is sent as text. */
-export const COMMANDS = ['new', 'sessions', 'resume', 'tenant', 'interview', 'usage', 'clear', 'help', 'quit'] as const
+export const COMMANDS = ['new', 'sessions', 'resume', 'tenant', 'interview', 'usage', 'clear', 'help', 'quit', 'exit'] as const
 export type CommandName = (typeof COMMANDS)[number]
 
 export function parseCommand(text: string): { name: CommandName; args: string } | null {
@@ -112,7 +112,7 @@ export function parseCommand(text: string): { name: CommandName; args: string } 
 }
 
 /** Which commands take an argument. */
-const TAKES_ARGS: Record<CommandName, boolean> = { new: false, sessions: false, resume: true, tenant: true, interview: true, usage: false, clear: false, help: false, quit: false }
+const TAKES_ARGS: Record<CommandName, boolean> = { new: false, sessions: false, resume: true, tenant: true, interview: true, usage: false, clear: false, help: false, quit: false, exit: false }
 
 /** What each command takes and does, in the terminal's language: the source of /help and of the completion list. */
 export function commandInfo(): Array<CommandInfo & { name: CommandName }> {
@@ -224,6 +224,7 @@ export function createCommands(app: App, link: ConversationLink, options: { now?
           app.notice(help(), 'info')
           break
         case 'quit':
+        case 'exit':
           app.stop(0)
           break
       }

@@ -44,6 +44,7 @@ const en = {
     clear: { hint: 'clear the screen (the conversation stays)' },
     help: { hint: 'this help' },
     quit: { hint: 'quit (ctrl+c twice, or ctrl+d)' },
+    exit: { hint: 'the same as /quit' },
   },
   helpKeys: [
     '↵ send · alt+↵ newline · esc interrupt · wheel/PgUp/PgDn scroll · drag to copy',
@@ -174,6 +175,7 @@ const ko: Strings = {
     clear: { hint: '화면 비우기 (대화는 그대로)' },
     help: { hint: '이 도움말' },
     quit: { hint: '종료 (ctrl+c 두 번, ctrl+d도 같음)' },
+    exit: { hint: '/quit과 같음' },
   },
   helpKeys: [
     '↵ 전송 · alt+↵ 줄바꿈 · esc 중단 · 휠/PgUp/PgDn 스크롤 · 드래그 복사',
@@ -299,6 +301,7 @@ const zh: Strings = {
     clear: { hint: '清空屏幕（对话保留）' },
     help: { hint: '本帮助' },
     quit: { hint: '退出（按两次 ctrl+c，或 ctrl+d）' },
+    exit: { hint: '与 /quit 相同' },
   },
   helpKeys: [
     '↵ 发送 · alt+↵ 换行 · esc 中断 · 滚轮/PgUp/PgDn 滚动 · 拖动复制',
