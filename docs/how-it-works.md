@@ -18,7 +18,9 @@ its services are named `deepbot`.
 | "make the report a docx" | writes the document and uploads it to the conversation |
 
 While it works, the platform's own indicator shows — Slack's working status under the thread,
-Discord's and Telegram's "typing…" — so the answer is the only notification. On Slack the message
+Discord's and Telegram's "typing…" — and the answer is a new message, so it notifies. On Slack a turn that runs
+past a second or two also streams its text into the thread as it is written, which notifies once more; the
+answer then comes as a new message and the streamed one is deleted. On Slack the message
 that asked also carries a reaction: 👀 when taken, a digit while it runs (a guess from the time a turn
 usually takes, held while an approval waits), then ✅, ❌ or ⏹️ (it needs `reactions:write`, and
 `reactions:read` to tidy them after a restart).
@@ -111,7 +113,7 @@ suites on Node 22 with `pnpm run typecheck` in front of them.
 | Approvals over chat | answerer and buttons verified unit; the destructive-command gate is **open end to end** (below) |
 | Read confinement | implemented; a **policy** boundary, not a kernel one |
 | Watches, reminders, health probe | verified unit; health restart verified against an injected failure |
-| Streaming tokens into Slack | **not implemented** — the answer arrives whole, after the working status |
+| Streaming tokens into Slack | implemented: the turn's text streams into the thread (chat.startStream / appendStream), and the answer is posted new while the streamed message is deleted; unit-checked against a stubbed Web API, its calls shaped by a live probe; a refusal falls back to the answer arriving whole |
 | Semantic/vector recall | **not implemented** — ranking is lexical, so a paraphrase can miss |
 | Browser automation | **not implemented** — link reading is an HTTP fetch |
 | Per-tenant *permission* preset | **not supported** — `permission` is read and never applied (`TODO` in `test/core.test.ts`) |
@@ -442,7 +444,8 @@ platform's own indicator: Discord's and Telegram's "is typing…" (re-sent every
 each lapses), and on Slack the thread status — "<app> 앱이 작업 중" with a spinner under the thread —
 through `agents.sessions.setStatus`, or `assistant.threads.setStatus` where the workspace refuses
 the first. Both need only `chat:write`; which one a workspace accepts depends on its features. The
-indicator ends before the answer is posted, so the answer is the only notification.
+indicator ends before the answer is posted, so the answer is the only notification — except where the turn
+streams (Slack, below), whose first text notifies as well.
 
 When the platform refuses its indicator, the transport says so and the core posts its progress
 message — `⏳ 아리 작업 중…`, the name from the persona's first heading — immediately instead. A
@@ -455,7 +458,13 @@ ends it gives way to the answer, so a turn leaves one message rather than a stal
 plus an answer. On Slack the answer is posted as a **new message and the progress message is
 deleted** (`chat.delete`, which `chat:write` covers): an edit raises no notification, so with the
 progress message on every turn, every answer would have reached a phone as "작업 중". Where a
-platform cannot delete, the answer edits the progress message instead. Edits are throttled
+platform cannot delete, the answer edits the progress message instead. Slack streams the turn instead of
+editing a progress message: text in batches (`streamFlushMs`, 1.5 s), a tool by its name only; another message
+in the thread comes after all that was streamed; the answer is posted new at once, and the streamed message is
+then stopped and deleted (the stop tried again when refused, over a minute; one never stopped is left, and said
+in the log; kept if the answer did not go out); a thread's posts go in order; a stream nothing moved for
+`streamIdleMs` (2 min) is stopped, and every open one when the gateway stops, after it stops taking messages. Refused for good
+(`chat.startStream`), the progress message comes back. Edits are throttled
 (`progressUpdateMs`, 2.5 s) because every edit is a rate-limited API call: the message says roughly
 what is happening, not every step. Renders are serial per conversation and the answer waits for
 them, so a second message in the same thread cannot post a second progress message that nothing

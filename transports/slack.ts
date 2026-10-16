@@ -21,7 +21,7 @@ import type {
   SlackHistoryResponse, SlackMember, SlackMembersResponse, SlackMessage,
   SlackPostResponse, SlackResponse, SlackUserInfoResponse,
 } from '../types/slack.js'
-import type { AttachmentManifest, InboundMessage, PostedMessage, ProgressMark, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
+import type { AttachmentManifest, InboundMessage, PostedMessage, ProgressMark, StreamFrame, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 
@@ -316,6 +316,7 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     if (!me.ok) throw new Error(`deepbot: auth.test failed (${me.error}) — check the bot token`)
     botUserId = me.user_id ?? null
     workspaceUrl = typeof (me as { url?: string }).url === 'string' ? String((me as { url?: string }).url) : null
+    teamId = me.team_id ?? null
     return { name: me.user ?? 'unknown', id: me.user_id ?? '', team: me.team }
   }
 
@@ -411,6 +412,8 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
   let onAction: ((action: ActionEvent) => void) | null = null
   // From auth.test, so a thread reference can be a real link rather than plain text.
   let workspaceUrl: string | null = null
+  // From auth.test too: a stream into a channel names the team of the person it is for.
+  let teamId: string | null = null
 
   async function connectInternal(): Promise<void> {
     if (stopped) return
@@ -827,6 +830,126 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
   }
 
   /**
+   * A turn's text, streamed into its thread as it is written (chat.startStream, appendStream, stopStream), so it shows
+   * at once. The answer then comes as a new message, which notifies (an edit does not), and the streamed message is
+   * taken away. Learned against Slack itself: in a channel a stream names the person it is for and their team (the
+   * core hands over the turn's origin, which names who asked); a message that is streaming can be neither edited nor
+   * deleted, so it is stopped first, and the stop is tried again when refused. Text goes in batches (`streamFlushMs`),
+   * a tool step by its name only (a command line or a path is not the thread's to see); anything else said in the
+   * thread (an approval request, a stop's report) comes after all that was streamed; a stream nothing has moved for
+   * `streamIdleMs` is stopped, and so is every open one when the transport closes. Refused for good, it says so once,
+   * and answers arrive whole as before until the gateway restarts.
+   */
+  const flushMs = Number(cfg.streamFlushMs) > 0 ? Number(cfg.streamFlushMs) : 1500
+  const idleMs = Number(cfg.streamIdleMs) > 0 ? Number(cfg.streamIdleMs) : 120_000
+  const stopRetryMs = Number(cfg.streamRetryMs) > 0 ? Number(cfg.streamRetryMs) : 2000
+  const APPEND_LIMIT = 12_000
+  const STOP_PAUSES = [1, 5, 15]
+  let streamRefused = false
+  type Streaming = {
+    target: Target; user: string; ts: string | null; pending: string; chain: Promise<void>
+    timer: ReturnType<typeof setTimeout> | null; idle: ReturnType<typeof setTimeout> | null; stopped: boolean; dead: boolean
+  }
+  const streams = new Map<string, Streaming>()
+  // Streams being ended now (by a post, idle, a reset), for close() to wait for; and each thread's posts in order, so
+  // one that comes while another is ending the thread's stream comes after it.
+  const ending = new Set<Promise<void>>()
+  const posting = new Map<string, Promise<unknown>>()
+  /** Where to cut `text` at most `limit` long: never between the two halves of a character outside the BMP. */
+  const cutAt = (text: string, limit: number) => {
+    const end = Math.min(text.length, limit)
+    const last = text.charCodeAt(end - 1)
+    return end < text.length && last >= 0xd800 && last <= 0xdbff ? end - 1 : end
+  }
+  function stream(target: Target, frame: StreamFrame): void {
+    if (stopped || streamRefused || teamId === null || typeof target.threadTs !== 'string' || target.threadTs === '') return
+    const key = `${target.channel}:${target.threadTs}`
+    const held = streams.get(key)
+    if (frame.kind === 'reset') {
+      if (held !== undefined) { streams.delete(key); void end(held, { flush: false, remove: true }) }
+      return
+    }
+    const text = frame.kind === 'text' ? frame.text : frame.kind === 'tool' ? `\n\n\`▸ ${frame.name.replace(/`/g, '')}\`\n\n` : ''
+    // Reasoning, a tool's result: no text for the thread, but the turn is moving, so the stream is not idle.
+    if (text === '') { if (held !== undefined) keepOpen(key, held); return }
+    const user = (target as { user?: unknown }).user
+    if (held === undefined && (typeof user !== 'string' || user === '')) return
+    const s = held ?? { target: { channel: target.channel, threadTs: target.threadTs }, user: user as string, ts: null, pending: '', chain: Promise.resolve(), timer: null, idle: null, stopped: false, dead: false }
+    streams.set(key, s)
+    s.pending += text
+    if (s.timer === null) s.timer = setTimeout(() => { s.timer = null; flush(s) }, flushMs)
+    keepOpen(key, s)
+  }
+  function keepOpen(key: string, s: Streaming): void {
+    if (s.idle !== null) clearTimeout(s.idle)
+    s.idle = setTimeout(() => { if (streams.get(key) === s) { streams.delete(key); void end(s, { flush: true, remove: false }) } }, idleMs)
+    s.idle.unref?.()
+  }
+  function flush(s: Streaming): void {
+    const { channel, threadTs } = s.target
+    s.chain = s.chain.then(async () => {
+      while (!s.stopped && !s.dead && s.pending !== '') {
+        const text = s.pending.slice(0, cutAt(s.pending, APPEND_LIMIT))
+        s.pending = s.pending.slice(text.length)
+        if (s.ts === null) {
+          const r = await settled(api.slackPost<SlackPostResponse>(requireToken(), 'chat.startStream', { channel, thread_ts: threadTs, recipient_user_id: s.user, recipient_team_id: teamId, markdown_text: text }))
+          if (!r.ok) {
+            s.dead = true
+            if (LASTING_REFUSALS.has(String(r.error))) {
+              if (!streamRefused) log(`stream: chat.startStream refused (${r.error}) — answers arrive whole until the gateway restarts`)
+              streamRefused = true
+            } else log(`stream: chat.startStream failed (${r.error})`)
+            return
+          }
+          s.ts = r.ts ?? null
+        } else {
+          const r = await settled(api.slackPost<SlackPostResponse>(requireToken(), 'chat.appendStream', { channel, ts: s.ts, markdown_text: text }))
+          if (!r.ok) {
+            log(`stream: chat.appendStream failed (${r.error})`)
+            if (r.error === 'message_not_in_streaming_state' || r.error === 'stopped_by_user') { s.dead = true; return }
+            // Not lost: it goes with the next batch.
+            s.pending = text + s.pending
+            return
+          }
+        }
+      }
+    }).catch((e) => log(`stream: ${String((e as Error)?.message ?? e)}`))
+  }
+  /** End a stream, remembered until it is done so close() can wait for it. */
+  function end(s: Streaming, how: { flush: boolean; remove: boolean }): Promise<void> {
+    const done = endStream(s, how)
+    ending.add(done)
+    void done.finally(() => ending.delete(done))
+    return done
+  }
+  /** Stop a stream (after sending what is still pending, when asked), and delete its message when asked. */
+  async function endStream(s: Streaming, how: { flush: boolean; remove: boolean }): Promise<void> {
+    for (const timer of [s.timer, s.idle]) if (timer !== null) clearTimeout(timer)
+    s.timer = null; s.idle = null
+    if (how.flush) flush(s)
+    const { channel } = s.target
+    s.chain = s.chain.then(async () => {
+      if (s.ts === null) return
+      // Stopped by the person in Slack, it is no longer streaming; otherwise it is stopped, tried again when refused —
+      // spread over a minute, since three tries in one rate window would all be refused together.
+      if (!s.stopped && !s.dead) {
+        for (let tries = 0; ; tries++) {
+          const r = await settled(api.slackPost<SlackPostResponse>(requireToken(), 'chat.stopStream', { channel, ts: s.ts }))
+          if (r.ok || r.error === 'message_not_in_streaming_state') break
+          if (tries >= STOP_PAUSES.length) { log(`stream: chat.stopStream failed (${r.error}) — its message is left`); return }
+          await new Promise((resolve) => setTimeout(resolve, stopRetryMs * STOP_PAUSES[tries]).unref?.())
+        }
+        s.stopped = true
+      }
+      if (how.remove) {
+        const d = await settled(api.slackPost<SlackPostResponse>(requireToken(), 'chat.delete', { channel, ts: s.ts }))
+        if (!d.ok) log(`stream: the streamed message could not be deleted (${d.error})`)
+      }
+    }).catch((e) => log(`stream: ${String((e as Error)?.message ?? e)}`))
+    await s.chain
+  }
+
+  /**
    * A permalink for a conversation.
    *
    * Slack renders its own `<#C…>` mention, but someone who writes "#random" gets plain text, and a
@@ -851,6 +974,9 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     mark,
     /** Diagnostic only: messages whose marks are still held. */
     get markedMessages() { return marked.size },
+    stream,
+    // Without the team (auth.test gave none) nothing can be streamed: the core shows progress another way.
+    get streamUnavailable() { return streamRefused || teamId === null },
     get typingUnavailable() { return sessionsStatus === false && assistantStatus === false },
     get statusThreads() { return new Set([...working.keys(), ...threadShows.keys(), ...threadCalls.keys()]).size },
     // Block actions over Socket Mode; the app needs Interactivity turned on. Without it a press does
@@ -866,9 +992,36 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     },
 
     /** Slack-side rendering: the core hands over Markdown, the transport makes it Slack. */
-    post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
+    async post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[]; answer?: boolean }): Promise<PostedMessage | null> {
       requireToken()
-      return postChunked(target, text, options?.replace ?? null, options?.buttons ?? [])
+      // A stream in this thread is taken at once: the turn's answer is posted as a new message, which notifies, and the
+      // stream is then stopped and its message taken away (kept if the answer did not go out); anything else (an
+      // approval request, a stop's report) comes after all that was streamed. A thread's posts go in order.
+      const key = `${target.channel}:${target.threadTs}`
+      const before = posting.get(key)
+      const held = streams.get(key)
+      if (held !== undefined) streams.delete(key)
+      const send = () => postChunked(target, text, options?.replace ?? null, options?.buttons ?? [])
+      const mine = (async () => {
+        if (before !== undefined) await before
+        if (held === undefined) return send()
+        if (options?.answer === true) {
+          // Ended whatever the post does, a throw included: a stream nothing tracks would stream on.
+          let sent: PostedMessage | null = null
+          try { sent = await send() } finally { void end(held, { flush: false, remove: sent !== null }) }
+          return sent
+        }
+        // What is pending goes out first, so the post comes after it; the stop, tried again over a minute when refused,
+        // does not hold the post (an approval request waits for nobody).
+        flush(held)
+        await held.chain
+        void end(held, { flush: false, remove: false })
+        return send()
+      })()
+      const done = mine.then(() => undefined, () => undefined)
+      posting.set(key, done)
+      void done.then(() => { if (posting.get(key) === done) posting.delete(key) })
+      return mine
     },
 
     async fetchHistory(target: Target, options: { currentTs: string; sinceTs: string | null; limit: number; maxChars: number }) {
@@ -904,6 +1057,12 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
       try { ws?.close() } catch { /* ignore */ }
       ws = null
       connected = false
+      // Then, with nothing more taken in, no stream is left streaming in a thread: each open one is stopped (one not
+      // yet started is not started now), and those being ended are waited for — briefly, and at best.
+      const open = [...streams.entries()]
+      streams.clear()
+      const all = [...open.map(([, s]) => end(s, { flush: s.ts !== null, remove: false })), ...ending]
+      await Promise.race([Promise.all(all), new Promise((resolve) => setTimeout(resolve, 3000).unref?.())])
       return hadSocket
     },
   }

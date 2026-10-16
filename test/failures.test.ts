@@ -86,6 +86,8 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   apply(ctx, { targetChannels: ['C_ALLOWED'], language: 'ko', stateDir, transportFactory: () => transport, progressAfterMs: 50, ...config })
   return {
     transport, logs, created, events,
+    /** A chunk of the model's text for a session, as the harness streams it. */
+    write: (sessionId, text) => { for (const fn of listeners['agent/assistant-stream'] ?? []) fn({ agent: { id: sessionId }, frame: { type: 'chunk', chunk: { type: 'text-delta', text } } }) },
     /** A session event, as the harness fires one: a tool call during a turn, say. */
     fire: (sessionId, event) => { for (const fn of listeners['session/event'] ?? []) fn({ header: { id: sessionId } }, event) },
     /** An approval request for a session, as the harness raises one. */
@@ -533,6 +535,33 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   check('marks: and the one it withdrew before it ran, stopped too', JSON.stringify(kinds(b, '2000.3')) === '["seen","stopped"]', JSON.stringify(kinds(b, '2000.3')))
   check('marks: the stop request itself gets none, and nothing comes after an end', kinds(b, '2000.4').length === 0 && b.transport.lateMarks.length === 0, JSON.stringify({ stop: kinds(b, '2000.4'), late: b.transport.lateMarks }))
   b.done()
+}
+
+// Streaming: a turn's text goes to a platform that streams, but not a quiet one's (replyMode 'thread': it may say
+// nothing); and where the platform refused its stream for good, the working message shows progress instead.
+{
+  const a = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { stream: true, typing: true } } })
+  await sleep(60)
+  a.transport.deliver(a.transport.message({ addressed: false }))
+  await sleep(300)
+  a.write('s1', '혼잣말')
+  await sleep(50)
+  check('stream: a quiet turn\'s text is not streamed (its turn did run)', a.events.some((e) => e.kind === 'created') && a.transport.frames.length === 0, JSON.stringify({ events: a.events.length, frames: a.transport.frames }))
+  a.done()
+  const b = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' } }, config: { fake: { stream: true, typing: true } } })
+  await sleep(60)
+  b.transport.deliver(b.transport.message())
+  await sleep(300)
+  b.write('s1', '쓰는 중')
+  await sleep(50)
+  check('stream: a turn that was asked for streams, with no working message', b.transport.frames.some((f) => f.frame.kind === 'text') && b.transport.posted.length === 0, JSON.stringify({ frames: b.transport.frames.length, posted: b.transport.posted.map((p) => p.text) }))
+  b.done()
+  const c = boot({ agent: 'slow', config: { fake: { stream: 'refused', typing: true } } })
+  await sleep(60)
+  c.transport.deliver(c.transport.message())
+  await sleep(400)
+  check('stream: refused for good, the working message shows progress again', c.transport.posted.some((p) => /작업 중/.test(p.text)), JSON.stringify(c.transport.posted.map((p) => p.text)))
+  c.done()
 }
 
 const failed = results.filter((r) => !r.ok)

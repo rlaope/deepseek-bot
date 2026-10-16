@@ -225,6 +225,15 @@ the caveat about version numbers is at the bottom.
   makes; an existing app needs them added and reinstalled; without it the first refusal is logged and nothing more is asked
   until the gateway restarts. A reaction Slack refused to take off is tried again; the end mark is tried a
   few times; a digit holds while an approval waits; and a restart ends a lost turn's mark with a cross.
+- **Slack streams the answer as it is written.** An answer arrived whole, after Slack's working status. The
+  turn's text now streams into the thread as the model writes it (`chat.startStream` / `appendStream`, sent in
+  batches of `streamFlushMs`), a tool step by its name only. The finished answer is posted as a new message,
+  which notifies (an edit does not), and the streamed message is stopped and deleted, so the thread ends with
+  one message in Slack's own formatting; a turn that streamed notifies twice. A failed attempt's stream is
+  deleted; anything else said in the thread (an approval request, a stop's report) comes after all that was
+  streamed; a refused stop is tried again; a stream nothing moved for `streamIdleMs` is stopped, and every open
+  one when the gateway stops. Not for a message that did not mention it in `replyMode: thread`. Refused for
+  good, it says so once and answers arrive whole as before, with the working message showing progress again.
 - **`replyMode: thread`: in a thread the bot takes part in, no mention is needed.** In a Slack thread every
   message had to mention the bot. With `thread`, a mention starts it; then, for a day after its last
   mention or reply there, every message in the thread comes to it, told it did not mention it, and the

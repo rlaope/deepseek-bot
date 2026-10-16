@@ -48,7 +48,7 @@ function stubSlack(options: StubOptions = {}) {
     entry.end = Date.now()
     // auth.test carries the workspace URL, which is where a permalink comes from.
     if (method === 'auth.test') {
-      const auth = { ok: true, user: 'bot', user_id: 'U1', team: 'T1', url: 'https://example.slack.com/' }
+      const auth = { ok: true, user: 'bot', user_id: 'U1', team: 'T1', team_id: 'T1ID', url: 'https://example.slack.com/' }
       return { ok: true, status: 200, json: async () => auth, text: async () => JSON.stringify(auth) }
     }
     const forced = options.errors?.[method]
@@ -799,6 +799,247 @@ function transportFor(api) {
   await new Promise((r) => setTimeout(r, 30))
   k.restore()
   check('marks: too many reactions, ours come off before it is let go', JSON.stringify(reactions(k)) === JSON.stringify(['add eyes', 'add two', 'remove eyes']), JSON.stringify(reactions(k)))
+}
+
+// Streaming a turn's text into its thread, as Slack's chat.startStream / appendStream / stopStream have it. Learned
+// live: a channel needs the recipient (the person who asked, and the team); a message is neither edited nor deleted
+// while it streams, so it is stopped first. The answer is posted new (an edit raises no notification), and the
+// streamed message goes. The core's posts carry no `user`: only the turn's origin, which streams, does.
+{
+  const streamer = (api, extra = {}) => {
+    const logs = []
+    const t = createSlackTransport({
+      cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, streamFlushMs: 5, streamIdleMs: 60_000, streamRetryMs: 5, ...extra },
+      log: (...parts) => logs.push(parts.join(' ')), sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+    })
+    t.logs = logs
+    return t
+  }
+  // A stub whose answers can change with the call: for a refusal that comes once, or a call that throws.
+  const scripted = (answer) => {
+    const calls = []
+    const realFetch = globalThis.fetch
+    let n = 0
+    globalThis.fetch = (async (url, init = {}) => {
+      const method = String(url).split('/api/')[1]?.split('?')[0] ?? ''
+      const raw = init.body === undefined ? '' : String(init.body)
+      const body = raw.startsWith('{') ? JSON.parse(raw) : {}
+      calls.push({ method, body })
+      const json = method === 'auth.test' ? { ok: true, user: 'bot', user_id: 'U1', team: 'T1', team_id: 'T1ID' } : (answer(method, body, calls.filter((c) => c.method === method).length) ?? { ok: true, ts: `ts-${++n}` })
+      return { ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json) }
+    }) as typeof fetch
+    return { calls, restore: () => { globalThis.fetch = realFetch } }
+  }
+  const pause = (ms = 30) => new Promise((r) => setTimeout(r, ms))
+  const chat = (api) => api.calls.filter((c) => /^chat\./.test(c.method)).map((c) => c.method.slice(5))
+  const at = { channel: 'C1', threadTs: '5.0', user: 'U7' }
+  const thread = { channel: 'C1', threadTs: '5.0' }   // what the core posts to: no user
+  // The answer is posted new, and the streamed message goes.
+  const a = stubSlack()
+  const ta = streamer(a)
+  await ta.authenticate(); await ta.identity()
+  ta.stream(at, { kind: 'text', text: '안녕' }); ta.stream(at, { kind: 'text', text: '하세요' })
+  await pause()
+  ta.stream(at, { kind: 'tool', name: 'bash', title: 'curl -H "Authorization: x" https://example.com/?q=1' })
+  ta.stream(at, { kind: 'text', text: ' 끝' })
+  await pause()
+  await ta.post(thread, '최종 **답**', { answer: true })
+  await pause()
+  a.restore()
+  const started = a.calls.find((c) => c.method === 'chat.startStream')
+  const appended = a.calls.filter((c) => c.method === 'chat.appendStream').map((c) => c.body?.markdown_text).join('')
+  const answered = a.calls.find((c) => c.method === 'chat.postMessage')
+  check('stream: started in the thread, for the person who asked and their team', started?.body?.channel === 'C1' && started?.body?.thread_ts === '5.0' && started?.body?.recipient_user_id === 'U7' && started?.body?.recipient_team_id === 'T1ID' && started?.body?.markdown_text === '안녕하세요', JSON.stringify(started?.body))
+  check('stream: a tool step shows by its name only, never its command', appended.includes('`▸ bash`') && !/curl|Authorization|example/.test(appended) && appended.endsWith(' 끝'), JSON.stringify(appended))
+  check('stream: the answer posted new at once (it notifies), then the stream stopped and deleted', JSON.stringify(chat(a)) === JSON.stringify(['startStream', 'appendStream', 'postMessage', 'stopStream', 'delete']) && answered?.body?.text === '최종 *답*' && answered?.body?.thread_ts === '5.0', JSON.stringify(chat(a)))
+  // A failed attempt: what it streamed is not the answer, so it goes, and the next attempt streams anew.
+  const b = stubSlack()
+  const tb = streamer(b)
+  await tb.authenticate(); await tb.identity()
+  tb.stream(at, { kind: 'text', text: '잘못된 시도' }); await pause()
+  tb.stream(at, { kind: 'reset' }); await pause()
+  tb.stream(at, { kind: 'text', text: '다시' }); await pause()
+  b.restore()
+  check('stream: a reset stops and deletes what was streamed; the retry starts a new one', JSON.stringify(chat(b)) === JSON.stringify(['startStream', 'stopStream', 'delete', 'startStream']), JSON.stringify(chat(b)))
+  // Something else said in the thread (an approval request, posted as the core posts: no user): what is streamed,
+  // pending text included, comes first; the text after it streams in a new message.
+  const c = stubSlack()
+  const tc = streamer(c, { streamFlushMs: 10_000 })
+  await tc.authenticate(); await tc.identity()
+  tc.stream(at, { kind: 'text', text: '지울게' })
+  await tc.post(thread, '권한이 필요해')
+  await pause()
+  c.restore()
+  check('stream: another message in the thread comes after what was streamed, pending text too; the stream is stopped, kept', chat(c)[0] === 'startStream' && chat(c).includes('postMessage') && chat(c).includes('stopStream') && !chat(c).includes('delete') && c.calls.find((x) => x.method === 'chat.startStream')?.body?.markdown_text === '지울게', JSON.stringify(chat(c)))
+  // That post does not wait for a stop Slack keeps refusing: an approval request waits for nobody.
+  const c2 = scripted((m) => m === 'chat.stopStream' ? { ok: false, error: 'ratelimited' } : undefined)
+  const tc2 = streamer(c2, { streamRetryMs: 10_000 })
+  await tc2.authenticate(); await tc2.identity()
+  tc2.stream(at, { kind: 'text', text: '하나' }); await pause()
+  const raced = await Promise.race([tc2.post(thread, '권한이 필요해').then(() => 'posted'), pause(1000).then(() => 'waited')])
+  c2.restore()
+  check('stream: another message does not wait for a refused stop to be tried again', raced === 'posted' && chat(c2).includes('postMessage'), `${raced} ${JSON.stringify(chat(c2))}`)
+  // The answer's post throws (the network, a page that is not JSON): the stream is still ended, and kept.
+  const c3 = scripted((m) => { if (m === 'chat.postMessage') throw new Error('socket hang up') })
+  const tc3 = streamer(c3)
+  await tc3.authenticate(); await tc3.identity()
+  tc3.stream(at, { kind: 'text', text: '거의 다' }); await pause()
+  const threw = await tc3.post(thread, '답', { answer: true }).then(() => false, () => true)
+  await pause()
+  c3.restore()
+  check('stream: an answer whose post throws still ends the stream, and keeps its text', JSON.stringify(chat(c3).filter((x) => x !== 'postMessage')) === JSON.stringify(['startStream', 'stopStream']), JSON.stringify({ threw, chat: chat(c3) }))
+  // Refused for good: said once, and the answers arrive whole, as before.
+  const d = stubSlack({ errors: { 'chat.startStream': 'missing_scope' } })
+  const td = streamer(d)
+  await td.authenticate(); await td.identity()
+  td.stream(at, { kind: 'text', text: '하나' }); await pause()
+  td.stream(at, { kind: 'text', text: '둘' }); await pause()
+  await td.post(thread, '답', { answer: true })
+  d.restore()
+  check('stream: refused for good, it stops asking, and the answer is posted whole', JSON.stringify(chat(d)) === JSON.stringify(['startStream', 'postMessage']) && td.streamUnavailable === true && td.logs.filter((l) => /stream/.test(l)).length === 1, JSON.stringify({ chat: chat(d), logs: td.logs }))
+  // A stop refused once (rate limited) is tried again; the message can then go.
+  const e = scripted((m, body, n) => m === 'chat.stopStream' && n === 1 ? { ok: false, error: 'ratelimited' } : undefined)
+  const te = streamer(e)
+  await te.authenticate(); await te.identity()
+  te.stream(at, { kind: 'text', text: '하나' }); await pause()
+  await te.post(thread, '답', { answer: true })
+  await pause(60)
+  e.restore()
+  check('stream: a stop refused once is tried again, then the message goes', JSON.stringify(chat(e)) === JSON.stringify(['startStream', 'postMessage', 'stopStream', 'stopStream', 'delete']), JSON.stringify(chat(e)))
+  // Refused every time: it cannot be deleted while it streams, so it is left and said; the answer is still posted.
+  const f = scripted((m) => m === 'chat.stopStream' ? { ok: false, error: 'internal_error' } : undefined)
+  const tf = streamer(f)
+  await tf.authenticate(); await tf.identity()
+  tf.stream(at, { kind: 'text', text: '하나' }); await pause()
+  await tf.post(thread, '답', { answer: true })
+  await pause(250)
+  f.restore()
+  check('stream: a stop never accepted is tried four times over a while, the message left and said; the answer came first', JSON.stringify(chat(f)) === JSON.stringify(['startStream', 'postMessage', 'stopStream', 'stopStream', 'stopStream', 'stopStream']) && tf.logs.some((l) => /stopStream failed/.test(l)), JSON.stringify({ chat: chat(f), logs: tf.logs }))
+  // Already not streaming (the person stopped it): that is a stop, and the message can go.
+  const f2 = scripted((m) => m === 'chat.stopStream' ? { ok: false, error: 'message_not_in_streaming_state' } : undefined)
+  const tf2 = streamer(f2)
+  await tf2.authenticate(); await tf2.identity()
+  tf2.stream(at, { kind: 'text', text: '하나' }); await pause()
+  await tf2.post(thread, '답', { answer: true })
+  await pause()
+  f2.restore()
+  check('stream: one no longer streaming counts as stopped', JSON.stringify(chat(f2)) === JSON.stringify(['startStream', 'postMessage', 'stopStream', 'delete']), JSON.stringify(chat(f2)))
+  // Stopped by the person in Slack (an append said so): not stopped again, just deleted for the answer.
+  const f3 = scripted((m) => m === 'chat.appendStream' ? { ok: false, error: 'stopped_by_user' } : undefined)
+  const tf3 = streamer(f3)
+  await tf3.authenticate(); await tf3.identity()
+  tf3.stream(at, { kind: 'text', text: '하나' }); await pause()
+  tf3.stream(at, { kind: 'text', text: '둘' }); await pause()
+  await tf3.post(thread, '답', { answer: true })
+  await pause()
+  f3.restore()
+  check('stream: stopped by the person, it is not stopped again', JSON.stringify(chat(f3)) === JSON.stringify(['startStream', 'appendStream', 'postMessage', 'delete']), JSON.stringify(chat(f3)))
+  // No team from auth.test: nothing can be streamed, so the core is told to show progress another way.
+  const realFetch4 = globalThis.fetch
+  const tf4 = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000 },
+    log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+  })
+  globalThis.fetch = (async () => ({ ok: true, status: 200, json: async () => ({ ok: true, user: 'bot', user_id: 'U1', team: 'T1' }), text: async () => '' })) as unknown as typeof fetch
+  await tf4.authenticate(); await tf4.identity()
+  globalThis.fetch = realFetch4
+  check('stream: without a team it is unavailable, and says so to the core', tf4.streamUnavailable === true)
+  // Reasoning and a tool's result keep the stream open; with nothing at all it is stopped once idle.
+  const g = stubSlack()
+  const tg = streamer(g, { streamIdleMs: 50 })
+  await tg.authenticate(); await tg.identity()
+  tg.stream(at, { kind: 'text', text: '생각 중' })
+  for (let i = 0; i < 6; i++) { await pause(20); tg.stream(at, { kind: 'thinking', text: '...' }) }
+  const whileThinking = chat(g).includes('stopStream')
+  await pause(120)
+  g.restore()
+  check('stream: reasoning keeps it open; idle, it is stopped', !whileThinking && JSON.stringify(chat(g)) === JSON.stringify(['startStream', 'stopStream']), JSON.stringify({ whileThinking, chat: chat(g) }))
+  // An append refused for a passing reason: its text is not lost, it goes with the next batch.
+  const h = scripted((m, body, n) => m === 'chat.appendStream' && n === 1 ? { ok: false, error: 'ratelimited' } : undefined)
+  const th = streamer(h)
+  await th.authenticate(); await th.identity()
+  th.stream(at, { kind: 'text', text: '하나' }); await pause()
+  th.stream(at, { kind: 'text', text: '둘' }); await pause()
+  th.stream(at, { kind: 'text', text: '셋' }); await pause()
+  h.restore()
+  const sentText = h.calls.filter((x) => /Stream$/.test(x.method) && x.method !== 'chat.stopStream').map((x) => x.body?.markdown_text)
+  check('stream: an append refused once loses nothing: its text goes again with the next', JSON.stringify(sentText) === JSON.stringify(['하나', '둘', '둘셋']), JSON.stringify(sentText))
+  // More than one call takes: sent in parts, never splitting a character outside the BMP.
+  const k = stubSlack()
+  const tk = streamer(k)
+  await tk.authenticate(); await tk.identity()
+  tk.stream(at, { kind: 'text', text: 'x'.repeat(11_999) + '😀' + 'y'.repeat(1_000) }); await pause()
+  k.restore()
+  const parts = k.calls.filter((x) => /Stream$/.test(x.method)).map((x) => String(x.body?.markdown_text ?? ''))
+  check('stream: a long stretch is sent in parts a call can take, whole characters each', parts.length === 2 && parts[0].length === 11_999 && parts[1].startsWith('😀'), JSON.stringify(parts.map((x) => x.length)))
+  // The person stopped the stream in Slack: nothing more is appended to it.
+  const m = stubSlack({ errors: { 'chat.appendStream': 'stopped_by_user' } })
+  const tm = streamer(m)
+  await tm.authenticate(); await tm.identity()
+  tm.stream(at, { kind: 'text', text: '하나' }); await pause()
+  tm.stream(at, { kind: 'text', text: '둘' }); await pause()
+  tm.stream(at, { kind: 'text', text: '셋' }); await pause()
+  m.restore()
+  check('stream: stopped by the person, nothing more is appended', chat(m).filter((x) => x === 'appendStream').length === 1, JSON.stringify(chat(m)))
+  // The transport closing (a restart) stops every stream still open.
+  const n = stubSlack()
+  const tn = streamer(n)
+  await tn.authenticate(); await tn.identity()
+  tn.stream(at, { kind: 'text', text: '하던 중' }); await pause()
+  await tn.close()
+  n.restore()
+  check('stream: closing the transport stops the streams still open', JSON.stringify(chat(n)) === JSON.stringify(['startStream', 'stopStream']), JSON.stringify(chat(n)))
+  // The answer did not go out: what was streamed is all the person has, so it stays.
+  const r = scripted((m) => m === 'chat.postMessage' ? { ok: false, error: 'msg_too_long' } : undefined)
+  const tr = streamer(r)
+  await tr.authenticate(); await tr.identity()
+  tr.stream(at, { kind: 'text', text: '거의 다' }); await pause()
+  await tr.post(thread, '답', { answer: true })
+  await pause()
+  r.restore()
+  check('stream: an answer that did not go out leaves the streamed text', chat(r).includes('stopStream') && !chat(r).includes('delete'), JSON.stringify(chat(r)))
+  // A delete refused after the stop: said.
+  const u = scripted((m) => m === 'chat.delete' ? { ok: false, error: 'cant_delete_message' } : undefined)
+  const tu = streamer(u)
+  await tu.authenticate(); await tu.identity()
+  tu.stream(at, { kind: 'text', text: '하나' }); await pause()
+  await tu.post(thread, '답', { answer: true })
+  await pause()
+  u.restore()
+  check('stream: a delete refused after the stop is said', tu.logs.some((l) => /could not be deleted/.test(l)), JSON.stringify(tu.logs))
+  // Two posts at once: the second waits until the first has ended the stream, and comes after it.
+  const v = stubSlack()
+  const tv = streamer(v)
+  await tv.authenticate(); await tv.identity()
+  tv.stream(at, { kind: 'text', text: '하나' }); await pause()
+  await Promise.all([tv.post(thread, '사용량 보고'), tv.post(thread, '답', { answer: true })])
+  await pause()
+  v.restore()
+  const posts = v.calls.filter((x) => x.method === 'chat.postMessage').map((x) => x.body?.text)
+  check('stream: two posts at once keep their order, after the stream', chat(v)[0] === 'startStream' && chat(v).filter((x) => x === 'stopStream').length === 1 && JSON.stringify(posts) === JSON.stringify(['사용량 보고', '답']), JSON.stringify({ chat: chat(v), posts }))
+  // Closing: a stream not yet started is not started now, and frames after it are dropped.
+  const w = stubSlack()
+  const tw = streamer(w, { streamFlushMs: 10_000 })
+  await tw.authenticate(); await tw.identity()
+  tw.stream(at, { kind: 'text', text: '아직 안 보냄' })
+  await tw.close()
+  const tw2 = streamer(w)
+  await tw2.authenticate(); await tw2.identity()
+  await tw2.close()
+  tw2.stream(at, { kind: 'text', text: '닫힌 뒤' })
+  await pause()
+  w.restore()
+  check('stream: closing starts no stream, and takes no frame after it', chat(w).length === 0, JSON.stringify(chat(w)))
+  // Nowhere to stream: no thread, or nobody to stream to.
+  const q = stubSlack()
+  const tq = streamer(q)
+  await tq.authenticate(); await tq.identity()
+  tq.stream({ channel: 'C1', threadTs: null, user: 'U7' }, { kind: 'text', text: 'x' })
+  tq.stream({ channel: 'C1', threadTs: '5.0' }, { kind: 'text', text: 'x' })
+  tq.stream({ channel: 'C1', threadTs: '5.0', user: '' }, { kind: 'text', text: 'x' })
+  await pause()
+  q.restore()
+  check('stream: none without a thread or a person to stream to', chat(q).length === 0, JSON.stringify(chat(q)))
 }
 
 const failed = results.filter((r) => !r.ok)

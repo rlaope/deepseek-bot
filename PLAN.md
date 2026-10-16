@@ -71,6 +71,14 @@ Decided against:
 - Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
   `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
   rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.
+- Slack streaming end to end with a real turn: the API's behaviour (recipient required in a channel, no edit or
+  delete while streaming, chat.update after stopStream) was probed live in a lab channel; the transport is checked
+  against a stubbed Web API. Not yet watched: a long answer past one append's 12 000 characters, the Tier 4 limit
+  on appendStream with several threads streaming, how the stream renders the model's Markdown mid-way, what Slack
+  notifies for a streamed message, a stream in a DM, and the recipient team for a person from another workspace
+  (Slack Connect, Enterprise Grid: the team is auth.test's). Probed: chat.delete after chat.stopStream works, and a chat.postMessage into the thread while the bot's stream there is open is accepted and lands after it. Not
+  known: whether the stops close() sends go out before the process exits (the unload does not wait for it), and
+  what Slack does with a stream left open by a crash.
 - `replyMode: thread` against a real model: that DeepSeek answers exactly `[no reply]` to chatter in a thread and
   answers what is meant for it. The suites drive a fake agent; the scenario runner has no conversation to put a
   message without a mention in. Watch `kept quiet` against `answered` in the gateway log on a deployment that uses it.

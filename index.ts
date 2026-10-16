@@ -199,6 +199,11 @@ const DEFAULTS = {
   approveWords: defaultWords('approve'),
   denyWords: defaultWords('deny'),
   progressAfterMs: 8000,
+  // Slack's stream of a turn's text: sent in batches this far apart; stopped when nothing moved for streamIdleMs; a
+  // refused stop tried again after streamRetryMs ×1, ×5, ×15.
+  streamFlushMs: 1500,
+  streamIdleMs: 120_000,
+  streamRetryMs: 2000,
   // How often the mark on the person's message (a platform's reactions) is looked at while a turn runs; it changes
   // only when its digit does, so a turn makes about as many changes as it has digits, whatever this is.
   markEveryMs: 5000,
@@ -1390,7 +1395,7 @@ export function apply(ctx, config) {
           const live = liveOrigins.get(liveSessionId)
           const message = event.data?.message
           const callId = message?.toolCallId ?? message?.source?.callId
-          if (live !== undefined && typeof via(live).stream === 'function' && typeof callId === 'string') {
+          if (live !== undefined && streamsTo(live) && typeof callId === 'string') {
             const text = (Array.isArray(message?.content) ? message.content : [])
               .filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
             // How many lines, counted before the cut: the terminal says "Read 300 lines" of a long file.
@@ -1405,7 +1410,7 @@ export function apply(ctx, config) {
         if (event?.type === 'tool/call' && activeTurns.has(liveSessionId)) {
           // A platform that streams shows the step in place; the progress message is for the rest.
           const live = liveOrigins.get(liveSessionId)
-          const streams = live !== undefined && typeof via(live).stream === 'function'
+          const streams = live !== undefined && streamsTo(live)
           if (streams) via(live).stream(live, toolStep(event.data, liveSessionId))
           const liveKey = streams ? undefined : Object.keys(state.sessions).find((k) => state.sessions[k] === liveSessionId)
           // Nothing is shown for a message that did not mention it: the turn may well say nothing.
@@ -1669,9 +1674,8 @@ export function apply(ctx, config) {
       try {
         const sessionId = payload?.agent?.id ?? payload?.agent?.session?.header?.id
         const origin = typeof sessionId === 'string' ? liveOrigins.get(sessionId) : undefined
-        if (origin === undefined) return
+        if (origin === undefined || !streamsTo(origin)) return
         const part = via(origin)
-        if (typeof part.stream !== 'function') return
         const frame = payload?.frame
         if (frame?.type === 'chunk' && frame.chunk?.type === 'text-delta' && typeof frame.chunk.text === 'string') {
           part.stream(origin, { kind: 'text', text: frame.chunk.text })
@@ -2168,7 +2172,7 @@ export function apply(ctx, config) {
     const startedAt = Date.now()
     turnStartedAt.set(turnKey, startedAt)
     // A platform that streams shows the turn as it happens; a progress message would say it twice.
-    const progressTimer = cfg.progressAfterMs > 0 && turnKey !== '' && typeof via(progressTarget).stream !== 'function' && origin?.quiet !== true
+    const progressTimer = cfg.progressAfterMs > 0 && turnKey !== '' && !streamsTo(progressTarget) && origin?.quiet !== true
       ? setTimeout(() => {
           void progress.force(turnKey, progressTarget)
             .then(() => log(progress.has(turnKey)
@@ -2719,6 +2723,14 @@ export function apply(ctx, config) {
       if (tenths !== shown) { shown = tenths; markOf(target, ts, { kind: 'working', tenths }) }
     }, cfg.markEveryMs)
     return { stop: () => clearInterval(timer), ran: count }
+  }
+  /**
+   * Whether a turn's progress is streamed to where it runs: a platform that streams and has not been refused it, and
+   * not a quiet turn's (it may say nothing). Where it is not, the working message shows progress.
+   */
+  function streamsTo(target: Origin): boolean {
+    const part = via(target)
+    return typeof part.stream === 'function' && part.streamUnavailable !== true && target.quiet !== true
   }
   /** Leave the waiting list; false when a stop withdrew this message meanwhile. */
   function leaveWaiting(key: string, ticket: Ticket): boolean {

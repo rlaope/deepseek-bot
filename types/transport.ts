@@ -196,6 +196,9 @@ export interface Transport {
    */
   stream?(target: Target, frame: StreamFrame): void
 
+  /** True once the transport knows the platform refuses its stream, so the core shows progress another way. */
+  readonly streamUnavailable?: boolean
+
   /**
    * Ask the person the turn's questions and wait. Resolves to their answers, null when they
    * dismissed them, or undefined when nobody is there to ask (the core then lets another

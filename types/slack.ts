@@ -66,6 +66,7 @@ export interface SlackAuthTestResponse extends SlackResponse {
   user?: string
   user_id?: string
   team?: string
+  team_id?: string
 }
 
 /** `apps.connections.open` hands back the Socket Mode websocket URL. */

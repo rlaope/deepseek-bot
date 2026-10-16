@@ -10,7 +10,7 @@
  * Every interaction is recorded so a test can assert on what the core asked for
  * rather than on what a platform happened to reply.
  */
-import type { ActionButton, AttachmentManifest, InboundMessage, ProgressMark, Target, Transport } from '../types/transport.ts'
+import type { ActionButton, AttachmentManifest, InboundMessage, ProgressMark, StreamFrame, Target, Transport } from '../types/transport.ts'
 
 /** What a suite can ask of the fake; each is off unless given. */
 export interface FakeTransportOptions {
@@ -23,6 +23,8 @@ export interface FakeTransportOptions {
   marks?: boolean
   /** The platform refuses the turn's answer (`answer: true`): its post returns null. */
   refuseAnswer?: boolean
+  /** Streaming as Slack has it: every frame is recorded. `'refused'`: the platform refused it for good. */
+  stream?: boolean | 'refused'
   postDelayMs?: number
   history?: { text: string; lastTs: string | null }
   attachments?: AttachmentManifest
@@ -38,6 +40,7 @@ export interface FakeTransport extends Transport {
   marks: Array<{ target: Target; ts: string; state: ProgressMark }>
   /** Marks that came for a message after its end mark: none should. */
   lateMarks: Array<{ ts: string; state: ProgressMark }>
+  frames: Array<{ target: Target; frame: StreamFrame }>
   uploads: Array<{ target: Target; filePath: string; title?: string; bytes: string | null }>
   readonly closed: number
   deliver(message: InboundMessage): void
@@ -57,6 +60,7 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
   const removed: FakeTransport['removed'] = []
   const marks: FakeTransport['marks'] = []
   const lateMarks: FakeTransport['lateMarks'] = []
+  const frames: FakeTransport['frames'] = []
   const uploads: FakeTransport['uploads'] = []
   let onMessage = null
   let onAction = null
@@ -76,6 +80,7 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
     removed,
     marks,
     lateMarks,
+    frames,
     uploads,
     get closed() { return closed },
     /** Push an inbound message as if the platform had delivered it. */
@@ -123,6 +128,10 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
         if (marks.some((m) => m.ts === ts && !['seen', 'working'].includes(m.state.kind))) lateMarks.push({ ts, state })
         marks.push({ target, ts, state })
       },
+    } : {}),
+    ...(options.stream !== undefined && options.stream !== false ? {
+      stream(target, frame) { frames.push({ target, frame }) },
+      streamUnavailable: options.stream === 'refused',
     } : {}),
     // Deleting a message, only when asked for, like Slack's chat.delete.
     ...(options.remove === true ? {
