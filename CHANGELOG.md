@@ -17,6 +17,12 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **A drag copies anywhere on the terminal's screen, as in Claude Code.** Only the conversation could be
+  selected: a drag in the input box moved the cursor, and one over the footer, a queued message or the
+  status line did nothing. A drag in the box now selects the text typed there, scrolling the box past its
+  top or bottom, and copies it with the line breaks typed (a paste chip as the text it stands for). A drag
+  anywhere else that a press does nothing selects what the screen shows, row by row. Either is drawn
+  inverted, one selection at a time, and `esc` clears it before it answers a choice or stops a turn.
 - **`dsh gateway setup` is a guided setup, and the installer no longer does messengers.** Connecting
   Slack took a skipped installer prompt, a manifest to copy, three pages in the browser and a second
   command with flags. Now the installer asks only for the model's key (when the harness has none) and

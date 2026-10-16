@@ -129,10 +129,13 @@ export class Editor {
     return true
   }
 
-  /** A cursor inside an atom (put there by a click, or a row up or down) goes to its end. */
-  private outOfAtom(): void {
+  /**
+   * A cursor inside an atom (put there by a click, or a row up or down) goes to its end, or to its start for
+   * `before`: a drag going up must pass it.
+   */
+  private outOfAtom(before = false): void {
     const atom = this.atomWhere((start, end) => start < this.pos && this.pos < end)
-    if (atom !== null) this.pos = atom.end
+    if (atom !== null) this.pos = before ? atom.start : atom.end
   }
 
   /** Start of the current line (Ctrl+A / Home). */
@@ -213,10 +216,45 @@ export class Editor {
   }
 
   /** A click: the position on visual row `row` (the last one when below it) closest to column `x`. */
-  place(width: number, row: number, x: number): void {
+  place(width: number, row: number, x: number, before = false): void {
     const { cells, rows } = this.measure(width)
     this.pos = this.nearest(cells, Math.max(0, Math.min(row, rows.length - 1)), x)
-    this.outOfAtom()
+    this.outOfAtom(before)
+  }
+
+  /**
+   * Where a selection's end at column `x` of visual row `row` falls, the cursor unmoved: where a click lands, except
+   * past the last character of a row that wraps, where it is after that character (the cursor can be there only on
+   * the next row).
+   */
+  positionAt(width: number, row: number, x: number): number {
+    const { cells, rows } = this.measure(width)
+    const r = Math.max(0, Math.min(row, rows.length - 1))
+    const at = this.nearest(cells, r, x)
+    const g = this.chars[at]
+    return g !== undefined && g !== '\n' && cells[at + 1]?.y === r + 1 && x >= cells[at].x + graphemeWidth(g) ? at + 1 : at
+  }
+
+  /** A selection between two positions, widened to take whole any atom it cuts. */
+  widen(a: number, b: number): { from: number; to: number } {
+    const cut = (p: number) => this.atomWhere((start, end) => start < p && p < end)
+    const from = Math.max(0, Math.min(a, b)), to = Math.min(this.chars.length, Math.max(a, b))
+    return { from: cut(from)?.start ?? from, to: cut(to)?.end ?? to }
+  }
+
+  /** The text between two positions. */
+  slice(from: number, to: number): string {
+    return this.chars.slice(from, to).join('')
+  }
+
+  /** The cells the text between two positions is drawn in: row, column and width of each (a line break has none). */
+  spans(width: number, from: number, to: number): Array<{ x: number; y: number; w: number }> {
+    const { cells } = this.measure(width)
+    const out: Array<{ x: number; y: number; w: number }> = []
+    for (let i = from; i < to && i < this.chars.length; i++) {
+      if (this.chars[i] !== '\n') out.push({ x: cells[i].x, y: cells[i].y, w: graphemeWidth(this.chars[i]) })
+    }
+    return out
   }
 
   layout(width: number): EditorLayout {

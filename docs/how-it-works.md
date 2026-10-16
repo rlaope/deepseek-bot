@@ -563,7 +563,8 @@ the dark palette. What was drawn before the answer is drawn again in its colours
 | `esc` | stop the running turn (what was waiting behind it comes back to the input); on an approval, answer no; in a view, back to the conversation |
 | `?` on an empty box | show the shortcuts (`esc` or any key closes them) |
 | `ctrl+c` twice, `ctrl+d` | quit (the terminal is always restored) |
-| wheel, `PgUp`/`PgDn` | scroll (the keys half a screen); drag selects and copies (pbcopy locally, OSC 52 over SSH) |
+| wheel, `PgUp`/`PgDn` | scroll (the keys half a screen) |
+| drag | select and copy: the conversation's text, the input box's while it has the focus (a paste chip as what was pasted), or, where a press does nothing else, what the screen shows, such as a queued message or the footer (pbcopy locally, OSC 52 over SSH); `esc` clears it |
 | `ctrl+home` / `ctrl+end` | the top of the conversation / the bottom, following it again |
 | `tab`, `↑↓`, `↵`, or a click | the agent panel: open a subagent or a shell |
 | `ctrl+x` | in a subagent view, stop it; in a shell view, stop the job |

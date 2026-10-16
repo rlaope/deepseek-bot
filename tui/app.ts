@@ -130,6 +130,24 @@ function noOption(c: Choice): number {
   return c.options.findIndex((o) => o.style === 'danger' || /(^|:)deny(:|$)/.test(o.id))
 }
 
+/** A selected cell: drawn with SGR 7 added to its own style. */
+function invertCell(screen: Screen, x: number, y: number): void {
+  if (x < 0 || x >= screen.cols || y < 0 || y >= screen.rows) return
+  const i = y * screen.cols + x
+  const cell = screen.cells[i]
+  screen.cells[i] = { ...cell, style: cell.style === '' ? '\x1b[0;7m' : `${cell.style}\x1b[7m` }
+}
+
+/** The rows a screen selection covers, in reading order, each with the columns [from, to) it takes. */
+function screenRows(sel: { anchor: { x: number; y: number }; head: { x: number; y: number } }, cols: number, each: (y: number, from: number, to: number) => void): void {
+  const forward = sel.anchor.y < sel.head.y || (sel.anchor.y === sel.head.y && sel.anchor.x <= sel.head.x)
+  const start = forward ? sel.anchor : sel.head, end = forward ? sel.head : sel.anchor
+  for (let y = start.y; y <= end.y; y++) {
+    const from = y === start.y ? start.x : 0, to = y === end.y ? end.x : cols
+    if (from < to) each(y, from, to)
+  }
+}
+
 export class App {
   readonly mode: ColorMode
   readonly transcript = new Transcript()
@@ -230,7 +248,14 @@ export class App {
   private spinTimer: unknown = null
   /** Turns the conversation has running or waiting: each sends typing on, then off. */
   private busy = 0
-  private dragging = false
+  /** What a drag selects: the transcript's text, the input box's, or what the screen shows anywhere else. */
+  private dragging: 'pane' | 'box' | 'screen' | null = null
+  /** A selection in the input box: grapheme positions, where the press was and where the pointer is, in this text. */
+  private boxSelection: { anchor: number; head: number; text: string } | null = null
+  /** A selection of the screen's cells outside the transcript and the box: the press's cell and the pointer's. */
+  private screenSelection: { anchor: { x: number; y: number }; head: { x: number; y: number } } | null = null
+  /** The last frame drawn, which a screen selection copies from. */
+  private frame: Screen | null = null
   /** The row of the drag's last report: the top row scrolls only when the drag comes into it. */
   private dragRow = -1
   /** The input box's first visible row: kept until the cursor leaves the rows shown. */
@@ -930,7 +955,7 @@ export class App {
       const digit = key.name === 'char' && /^[1-9]$/.test(key.ch ?? '') ? Number(key.ch) - 1 : -1
       const no = noOption(c)
       if (digit >= 0 && digit < c.options.length) { this.pick(digit); this.terminal.requestRender(true); return }
-      if (key.name === 'escape' && no !== -1 && this.pane.selection === null) { this.pick(no); this.terminal.requestRender(true); return }
+      if (key.name === 'escape' && no !== -1 && !this.selecting()) { this.pick(no); this.terminal.requestRender(true); return }
       if (['left', 'right', 'up', 'down', 'tab', 'enter'].includes(key.name)) {
         if (key.name === 'enter') this.pick(c.index)
         else c.index = (c.index + (key.name === 'left' || key.name === 'up' || (key.name === 'tab' && key.shift) ? c.options.length - 1 : 1)) % c.options.length
@@ -946,7 +971,7 @@ export class App {
         else this.submit()
         break
       case 'escape':
-        if (this.pane.selection !== null) this.clearSelection()
+        if (this.selecting()) this.clearSelection()
         else if (this.view.kind !== 'main') this.backToMain()
         else if (this.status.running) this.cancel()
         break
@@ -1232,6 +1257,7 @@ export class App {
   }
 
   private onMouse(m: MouseEvent): void {
+    this.dropStaleBoxSelection()
     const { transcriptTop, transcriptHeight, dividerRow } = this.geometry
     const inTranscript = m.y >= transcriptTop && m.y < transcriptTop + transcriptHeight
     const pane = this.pane
@@ -1248,6 +1274,8 @@ export class App {
     }
     if (m.button !== 0) return
     if (m.action === 'down') {
+      // A press starts over: a selection drawn on cells, left in place, would cover whatever moved there.
+      this.clearSelection()
       if (m.y === dividerRow && pane.unseen > 0) { pane.toBottom(); this.terminal.requestRender(true); return }
       if (pickerLine !== undefined) {
         // A row is picked as with ↵; its effort line steps the effort as → does.
@@ -1258,8 +1286,12 @@ export class App {
       if (completionAt !== -1) { this.completion!.index = completionAt; this.acceptCompletion(true); return }
       if (m.y === g.statusRow && g.effortSpan !== null && m.x >= g.effortSpan.from && m.x < g.effortSpan.to) { this.o.stepEffort?.(); return }
       if (m.y > g.editorTop && m.y <= g.editorTop + g.editorRows && this.focus === 'editor') {
-        // A click in the input box puts the cursor there.
-        this.editor.place(this.editorWidth(), g.editorFirst + (m.y - g.editorTop - 1), Math.max(0, m.x - 4))
+        // A click in the input box puts the cursor there; a drag from it selects the text typed.
+        const row = g.editorFirst + (m.y - g.editorTop - 1), x = Math.max(0, m.x - 4)
+        const anchor = this.editor.positionAt(this.editorWidth(), row, x)
+        this.editor.place(this.editorWidth(), row, x)
+        this.boxSelection = { anchor, head: anchor, text: this.editor.text }
+        this.dragging = 'box'
         this.refreshCompletion()
         this.terminal.requestRender(true)
         return
@@ -1291,17 +1323,54 @@ export class App {
         if (m.x >= span.from && m.x < span.to) { this.pick(m.y - this.geometry.choiceRow); this.terminal.requestRender(true) }
         return
       }
-      // The held prompt's row covers a line: a press there is not a press on that line.
-      if (m.y === g.heldRow) return
-      if (!inTranscript) { this.clearSelection(); return }
+      // Anywhere else a press does nothing, a drag selects what the screen shows. The held prompt's row is one such
+      // place: it covers a line, and a press there is not a press on that line.
+      if (m.y === g.heldRow || !inTranscript) {
+        this.screenSelection = { anchor: { x: m.x, y: m.y }, head: { x: m.x, y: m.y } }
+        this.dragging = 'screen'
+        this.terminal.requestRender(true)
+        return
+      }
       const line = pane.lineAt(m.y - transcriptTop) ?? Math.max(0, pane.size - 1)
       pane.beginSelection({ line, col: m.x })
-      this.dragging = true
+      this.dragging = 'pane'
       this.dragRow = m.y
       this.terminal.requestRender(true)
       return
     }
-    if (m.action === 'drag' && this.dragging) {
+    if (m.action === 'drag' && this.dragging === 'box') {
+      // Past the box's top or bottom, the row beyond: the cursor follows the drag, and the box scrolls to keep it.
+      const row = m.y <= g.editorTop ? g.editorFirst - 1 : m.y > g.editorTop + g.editorRows ? g.editorFirst + g.editorRows : g.editorFirst + (m.y - g.editorTop - 1)
+      const x = Math.max(0, m.x - 4)
+      this.boxSelection!.head = this.editor.positionAt(this.editorWidth(), Math.max(0, row), x)
+      this.editor.place(this.editorWidth(), Math.max(0, row), x, m.y <= g.editorTop)
+      this.terminal.requestRender(true)
+      return
+    }
+    if (m.action === 'drag' && this.dragging === 'screen') {
+      this.screenSelection!.head = { x: Math.max(0, Math.min(m.x, this.o.io.columns())), y: Math.max(0, Math.min(m.y, this.o.io.rows() - 1)) }
+      this.terminal.requestRender(true)
+      return
+    }
+    if (m.action === 'up' && this.dragging === 'box') {
+      this.dragging = null
+      // The cursor went where the drag ended: a list for the word it left is not for this one.
+      this.refreshCompletion()
+      const { anchor, head } = this.boxSelection!
+      // A click, not a drag: the cursor is where it was put, and nothing is selected.
+      if (anchor === head) { this.clearSelection(); return }
+      const { from, to } = this.editor.widen(anchor, head)
+      this.copyOut(this.unchipped(this.editor.slice(from, to)))
+      return
+    }
+    if (m.action === 'up' && this.dragging === 'screen') {
+      this.dragging = null
+      const text = this.screenText()
+      if (text.trim() === '') { this.clearSelection(); return }
+      this.copyOut(text)
+      return
+    }
+    if (m.action === 'drag' && this.dragging === 'pane') {
       // Dragging past the edge scrolls, so a selection can be longer than the screen.
       // Past the top: above the pane, or, when nothing is above it (the main view has no header), into its
       // first row from below. Along that row the drag selects, as anywhere.
@@ -1314,8 +1383,8 @@ export class App {
       this.terminal.requestRender(true)
       return
     }
-    if (m.action === 'up' && this.dragging) {
-      this.dragging = false
+    if (m.action === 'up' && this.dragging === 'pane') {
+      this.dragging = null
       const text = pane.selectedText()
       if (text === '') {
         // A click, not a drag: on a tool's block it folds or unfolds that block alone.
@@ -1327,15 +1396,47 @@ export class App {
         if (turn !== undefined) { pane.keepInPlace(block!, this.o.io.columns(), turn); this.terminal.requestRender(true) }
         return
       }
-      const method = (this.o.copy ?? ((t: string) => systemCopy(t, { env: this.o.env, platform: this.o.platform, write: (d) => this.o.io.write(d) })))(text)
-      this.showToast(t().copied([...text].length, method === 'osc52'))
+      this.copyOut(text)
     }
   }
 
+  /** Put a selection's text on the clipboard, and say so. */
+  private copyOut(text: string): void {
+    const method = (this.o.copy ?? ((t: string) => systemCopy(t, { env: this.o.env, platform: this.o.platform, write: (d) => this.o.io.write(d) })))(text)
+    this.showToast(t().copied([...text].length, method === 'osc52'))
+  }
+
+  /** The screen selection's cells as text, a line a row, each without its trailing blanks. */
+  private screenText(): string {
+    const frame = this.frame
+    if (this.screenSelection === null || frame === null) return ''
+    const lines: string[] = []
+    screenRows(this.screenSelection, frame.cols, (y, from, to) => {
+      let line = ''
+      for (let x = from; x < to; x++) line += frame.at(x, y).ch
+      lines.push(line.trimEnd())
+    })
+    return lines.join('\n')
+  }
+
+  /** Whether anything is selected: the transcript's text, the box's, or the screen's. */
+  private selecting(): boolean {
+    return this.pane.selection !== null || this.boxSelection !== null || this.screenSelection !== null
+  }
+
+  /** A box selection holds only while the text it was made on does: text put in by anything but a key moves it. */
+  private dropStaleBoxSelection(): void {
+    if (this.boxSelection === null || this.boxSelection.text === this.editor.text) return
+    this.boxSelection = null
+    if (this.dragging === 'box') this.dragging = null
+  }
+
   private clearSelection(): void {
-    if (this.pane.selection === null) return
+    if (!this.selecting()) return
     this.pane.selection = null
-    this.dragging = false
+    this.boxSelection = null
+    this.screenSelection = null
+    this.dragging = null
     this.terminal.requestRender()
   }
 
@@ -1347,6 +1448,12 @@ export class App {
 
   private render(screen: Screen): void {
     const { cols, rows } = screen
+    // A resize moves what was under a screen selection: it goes.
+    if (this.frame !== null && (this.frame.cols !== cols || this.frame.rows !== rows)) {
+      this.screenSelection = null
+      if (this.dragging === 'screen') this.dragging = null
+    }
+    this.dropStaleBoxSelection()
     // A screen of another height may fit the welcome letters where this one did not, or the other way round.
     // Letters coming or going are not lines that arrived, and a view scrolled up stays on what it showed.
     if (rows !== this.welcomeRows) {
@@ -1459,12 +1566,7 @@ export class App {
       for (const span of line.spans) x = screen.put(x, y, span.text, span.style, cols, span.link)
       if (pane.selection !== null) {
         const index = pane.top + r
-        for (let c = 0; c < cols; c++) {
-          if (!pane.isSelected(index, c)) continue
-          const i = y * cols + c
-          const cell = screen.cells[i]
-          screen.cells[i] = { ...cell, style: cell.style === '' ? '\x1b[0;7m' : `${cell.style}\x1b[7m` }
-        }
+        for (let c = 0; c < cols; c++) if (pane.isSelected(index, c)) invertCell(screen, c, y)
       }
     })
 
@@ -1518,6 +1620,14 @@ export class App {
         if (first + r === 0) screen.put(2, y, '› ', s(theme.accent))
         screen.put(4, y, editor.rows[first + r] ?? '', '', 2 + inner)
       }
+      // The box's selection, over the text it covers (a chip it cuts, whole).
+      if (this.boxSelection !== null) {
+        const { from, to } = this.editor.widen(this.boxSelection.anchor, this.boxSelection.head)
+        for (const cell of this.editor.spans(this.editorWidth(), from, to)) {
+          if (cell.y < first || cell.y >= first + editorRows) continue
+          for (let k = 0; k < cell.w; k++) invertCell(screen, 4 + cell.x + k, editorTop + 1 + cell.y - first)
+        }
+      }
       screen.put(0, editorTop + 1 + editorRows, `╰${'─'.repeat(Math.max(0, cols - 2))}╯`, s(theme.border))
       if (below > 0) { const tag = ` ${t().moreBelow(below)} `; if (cols >= stringWidth(tag) + 6) screen.put(cols - 2 - stringWidth(tag), editorTop + 1 + editorRows, tag, s(theme.muted)) }
       // A placeholder in the empty box, when it is for a message: not a search's, not a question's answer.
@@ -1549,6 +1659,10 @@ export class App {
       const x = cols - 1 - stringWidth(where)
       if (x >= 1 + stringWidth(hint) + 2) screen.put(x, editorTop + boxRows, where, s(theme.muted))
     }
+
+    // A screen selection, over everything drawn; and the frame kept, for it to copy from.
+    if (this.screenSelection !== null) screenRows(this.screenSelection, cols, (y, from, to) => { for (let x = from; x < to; x++) invertCell(screen, x, y) })
+    this.frame = screen
   }
 
   /**
@@ -1774,7 +1888,7 @@ export class App {
 
   /** Whether esc, now, stops the running turn: not while something on screen takes it (a choice with a "no", a list, the shortcuts, a view). */
   private escStops(): boolean {
-    return this.view.kind === 'main' && this.focus === 'editor' && this.pane.selection === null && !this.shortcuts && this.question === null && this.picker === null && this.search === null && this.completion === null
+    return this.view.kind === 'main' && this.focus === 'editor' && !this.selecting() && !this.shortcuts && this.question === null && this.picker === null && this.search === null && this.completion === null
       && !(this.choice !== null && this.editor.text === '' && noOption(this.choice) !== -1)
   }
 

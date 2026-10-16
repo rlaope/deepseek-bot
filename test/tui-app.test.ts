@@ -2295,6 +2295,183 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('/clear: a message shown as started that still waited comes back when a stop names it', f.app.editor.text === 'started one', JSON.stringify(f.app.editor.text))
 }
 
+// 85. A drag copies outside the transcript too, as in Claude Code: in the input box it copies the text typed there
+// (a paste chip as what was pasted, never its border or prompt mark); anywhere else that a press does nothing, the
+// characters on the screen. One selection at a time, drawn inverted, and esc takes it away before anything else.
+{
+  // The last row that has `needle`, and its column: the footer repeats what the welcome box shows.
+  const findLast = (x, needle) => {
+    for (let r = x.term.screen.text().split('\n').length - 1; r >= 0; r--) {
+      const line = x.term.screen.row(r)
+      const at = line.indexOf(needle)
+      if (at !== -1) return { row: r, col: stringWidth(line.slice(0, at)) }
+    }
+    return null
+  }
+  const invertedCount = (x) => x.term.screen.grid.filter(inverted).length
+  // (a) One row of the box: the words under the drag, Hangul whole; the text stays as typed.
+  const a = setup()
+  a.key('hello world 안녕'); a.clock.advance(20)
+  const w = findLast(a, 'world'), end = findLast(a, '안녕')
+  a.key(SGR(0, w.col, w.row)); a.key(SGR(32, end.col + 2, end.row)); a.key(SGR(32, end.col + 4, end.row)); a.key(SGR(0, end.col + 4, end.row, true))
+  a.clock.advance(20)
+  check('box drag: copies the typed text under it, Hangul whole', a.copied.at(-1) === 'world 안녕', JSON.stringify(a.copied))
+  check('box drag: the status line confirms the copy', a.term.screen.text().includes('copied · 8 chars'))
+  check('box drag: what is selected is drawn inverted, and nothing else', invertedCount(a) === stringWidth('world 안녕'), `${invertedCount(a)} cells`)
+  check('box drag: the text in the box is untouched', a.app.editor.text === 'hello world 안녕')
+  // With a turn running, so that esc has something to stop: the first takes the selection away, the second stops.
+  a.app.turnStarted(); a.clock.advance(20)
+  a.key('\x1b'); a.clock.advance(40)
+  const firstEsc = a.cancels
+  a.key('\x1b'); a.clock.advance(40)
+  check('box drag: esc takes the selection away first; the next esc stops the turn', firstEsc === 0 && a.cancels === 1 && invertedCount(a) === 0, `cancels ${firstEsc} then ${a.cancels}`)
+  a.app.turnEnded(); a.clock.advance(20)
+  a.key(SGR(0, w.col, w.row)); a.key(SGR(0, w.col, w.row, true)); a.clock.advance(20)
+  check('box: a click without a drag copies nothing and puts the cursor there', a.copied.length === 1 && a.term.screen.state.cursor.x === w.col, JSON.stringify(a.term.screen.state.cursor))
+  a.key('X'); a.clock.advance(20)
+  check('box: typing after the click goes where the cursor was put', a.app.editor.text === 'hello Xworld 안녕', JSON.stringify(a.app.editor.text))
+  // (b) Across rows: the line break typed between them is copied; the prompt mark is not.
+  const b = setup()
+  b.key('line one'); b.key('\x1b\r'); b.key('line two'); b.clock.advance(20)
+  const one = findLast(b, 'one'), two = findLast(b, 'two')
+  b.key(SGR(0, one.col, one.row)); b.key(SGR(32, two.col + 3, two.row)); b.key(SGR(0, two.col + 3, two.row, true))
+  check('box drag: across rows, with the line break between them', b.copied.at(-1) === 'one\nline two', JSON.stringify(b.copied))
+  const c0 = findLast(b, 'line one')
+  b.key(SGR(0, 0, c0.row)); b.key(SGR(32, c0.col + 8, c0.row)); b.key(SGR(0, c0.col + 8, c0.row, true))
+  check('box drag: from the border in, the border and the prompt mark are left out', b.copied.at(-1) === 'line one', JSON.stringify(b.copied.at(-1)))
+  // (c) A paste chip is copied as what it stands for, whole even when the drag starts inside it.
+  const c = setup()
+  const pasted = Array.from({ length: 12 }, (_, i) => `row ${i + 1}`).join('\n')
+  c.key(`\x1b[200~${pasted}\x1b[201~`); c.key(' tail'); c.clock.advance(20)
+  const chip = findLast(c, 'paste #1'), tail = findLast(c, 'tail')
+  c.key(SGR(0, chip.col + 2, chip.row)); c.key(SGR(32, tail.col + 4, tail.row)); c.key(SGR(0, tail.col + 4, tail.row, true))
+  check('box drag: a paste chip copies as the text it stands for, whole', c.copied.at(-1) === `${pasted} tail`, JSON.stringify(c.copied.at(-1)))
+  // (d) Past the box's top the box scrolls, so a drag can take rows it does not show.
+  const d = setup()
+  d.key(Array.from({ length: 8 }, (_, i) => `l${i + 1}`).join('\x1b\r')); d.clock.advance(20)
+  const last = findLast(d, 'l8'), top = findLast(d, 'l3')
+  check('box: eight rows show six, from the third', top !== null && findLast(d, 'l2') === null, d.term.screen.text().split('\n').slice(-9).join(' | '))
+  d.key(SGR(0, last.col + 2, last.row))
+  for (let i = 0; i < 4; i++) d.key(SGR(32, 4, top.row - 1))
+  d.key(SGR(0, 4, top.row - 1, true))
+  check('box drag: past the top it scrolls up and takes the rows above', d.copied.at(-1) === Array.from({ length: 8 }, (_, i) => `l${i + 1}`).join('\n'), JSON.stringify(d.copied.at(-1)))
+  check('box drag: only the rows the box shows are drawn selected', invertedCount(d) === 12, `${invertedCount(d)} cells`)
+  // Back down past the bottom: the box scrolls the other way, and the rows now above it are not drawn over its border.
+  const l1 = findLast(d, 'l1')
+  d.key(SGR(0, 4, l1.row))
+  for (let i = 0; i < 4; i++) d.key(SGR(32, 6, l1.row + 7))
+  d.key(SGR(0, 6, l1.row + 7, true)); d.clock.advance(20)
+  check('box drag: past the bottom it scrolls down; rows above the box are not drawn', d.copied.at(-1) === Array.from({ length: 8 }, (_, i) => `l${i + 1}`).join('\n') && findLast(d, 'l8') !== null && invertedCount(d) === 12, `${JSON.stringify(d.copied.at(-1))} ${invertedCount(d)} cells`)
+  // (e) Outside the transcript and the box: the characters on the screen, here the footer's workspace.
+  const e = setup()
+  const where = findLast(e, '~/dsh-agent')
+  e.key(SGR(0, where.col, where.row)); e.key(SGR(32, where.col + 11, where.row)); e.key(SGR(0, where.col + 11, where.row, true))
+  e.clock.advance(20)
+  check('screen drag: the footer copies as it reads', e.copied.at(-1) === '~/dsh-agent', JSON.stringify(e.copied))
+  check('screen drag: drawn inverted, those cells only', invertedCount(e) === 11, `${invertedCount(e)} cells`)
+  e.key(SGR(0, where.col, where.row)); e.key(SGR(0, where.col, where.row, true)); e.clock.advance(20)
+  check('screen: a click copies nothing and takes the selection away', e.copied.length === 1 && invertedCount(e) === 0)
+  e.key(SGR(0, where.col + 11, where.row)); e.key(SGR(32, where.col, where.row)); e.key(SGR(0, where.col, where.row, true)); e.clock.advance(20)
+  check('screen drag: right to left copies the same', e.copied.length === 2 && e.copied.at(-1) === '~/dsh-agent', JSON.stringify(e.copied))
+  e.clock.advance(1600)   // the toast is gone, and the status line has blanks again
+  const status = findLast(e, '(shift+tab)')
+  e.key(SGR(0, status.col + 15, status.row)); e.key(SGR(32, status.col + 30, status.row)); e.key(SGR(0, status.col + 30, status.row, true)); e.clock.advance(20)
+  check('screen drag: over blanks only, nothing is copied or drawn', e.copied.length === 2 && invertedCount(e) === 0, `${JSON.stringify(e.copied)} ${invertedCount(e)} cells`)
+  // A queued message, over the divider: two rows, each as shown (its mark too: this is the screen, not a message),
+  // the break between them.
+  const q = setup()
+  q.key('first\r'); q.app.turnStarted(); q.key('queued one\r'); q.key('queued two\r'); q.clock.advance(20)
+  const q1 = findLast(q, 'queued one'), q2 = findLast(q, 'queued two')
+  q.key(SGR(0, q1.col, q1.row)); q.key(SGR(32, q2.col + 10, q2.row)); q.key(SGR(0, q2.col + 10, q2.row, true))
+  check('screen drag: queued messages over the divider, row by row', /^queued one +queued\n› queued two$/.test(q.copied.at(-1) ?? ''), JSON.stringify(q.copied.at(-1)))
+  // (f) One selection at a time: a drag in the box takes the transcript's away.
+  const f = setup()
+  f.key('question here\r'); f.app.final('an answer'); f.key('typed'); f.clock.advance(20)
+  const ans = f.term.screen.find('an answer')
+  f.key(SGR(0, ans.col, ans.row)); f.key(SGR(32, ans.col + 9, ans.row)); f.key(SGR(0, ans.col + 9, ans.row, true)); f.clock.advance(20)
+  const typed = findLast(f, 'typed')
+  f.key(SGR(0, typed.col, typed.row)); f.key(SGR(32, typed.col + 5, typed.row)); f.key(SGR(0, typed.col + 5, typed.row, true)); f.clock.advance(20)
+  check('selection: one at a time — the box\'s drag takes the transcript\'s away', f.copied.join('|') === 'an answer|typed' && invertedCount(f) === 5, `${JSON.stringify(f.copied)} ${invertedCount(f)} cells`)
+  f.key(SGR(0, ans.col, ans.row)); f.key(SGR(32, ans.col + 9, ans.row)); f.key(SGR(0, ans.col + 9, ans.row, true)); f.clock.advance(20)
+  const inPane = invertedCount(f)
+  const foot = findLast(f, '~/dsh-agent')
+  f.key(SGR(0, foot.col, foot.row)); f.key(SGR(32, foot.col + 11, foot.row)); f.key(SGR(0, foot.col + 11, foot.row, true)); f.clock.advance(20)
+  check('selection: the transcript\'s takes the box\'s away, and the screen\'s the transcript\'s', inPane === 9 && invertedCount(f) === 11, `${inPane}, then ${invertedCount(f)} cells`)
+  // (g) With a choice open, esc takes a selection away first; the next esc answers no.
+  const g = setup()
+  g.app.offer('ts-g', [{ id: 'approval:allow:g', label: 'Allow', style: 'primary' }, { id: 'approval:deny:g', label: 'Deny', style: 'danger' }]); g.clock.advance(20)
+  const hint = findLast(g, 'esc')
+  g.key(SGR(0, hint.col, hint.row)); g.key(SGR(32, hint.col + 3, hint.row)); g.key(SGR(0, hint.col + 3, hint.row, true)); g.clock.advance(20)
+  g.key('\x1b'); g.clock.advance(40)
+  const first = g.actions.length
+  g.key('\x1b'); g.clock.advance(40)
+  check('selection: with a choice open, esc first takes the selection away, then answers no', g.copied.at(-1) === 'esc' && first === 0 && g.actions.at(-1) === 'approval:deny:g', JSON.stringify({ copied: g.copied, first, actions: g.actions }))
+  // (h) A resize moves what is under a screen selection: it goes.
+  const h = setup()
+  const at = findLast(h, '~/dsh-agent')
+  h.key(SGR(0, at.col, at.row)); h.key(SGR(32, at.col + 5, at.row)); h.key(SGR(0, at.col + 5, at.row, true)); h.clock.advance(20)
+  const before = invertedCount(h)
+  h.term.resize(90, 30); h.clock.advance(20)
+  check('screen selection: a resize takes it away', before === 5 && invertedCount(h) === 0, `${before} → ${invertedCount(h)}`)
+  // Found in review.
+  // (i) Rows left blank under a short conversation, over the divider: a drag over several copies nothing.
+  const i1 = setup()
+  const divider = i1.term.screen.text().split('\n').findIndex((l) => /^─+$/.test(l))
+  const blank = [divider - 3, divider - 2, divider - 1].every((r) => i1.term.screen.row(r).trim() === '')
+  i1.key(SGR(0, 5, divider - 3)); i1.key(SGR(32, 20, divider - 1)); i1.key(SGR(0, 20, divider - 1, true)); i1.clock.advance(20)
+  check('screen drag: over several blank rows, nothing is copied or drawn', blank && i1.copied.length === 0 && invertedCount(i1) === 0, `blank=${blank} ${JSON.stringify(i1.copied)} ${invertedCount(i1)} cells`)
+  // (j) A press that does something else takes the selection away: cells left inverted would cover what moved there.
+  const j = setup()
+  const footJ = findLast(j, '~/dsh-agent')
+  j.key(SGR(0, footJ.col, footJ.row)); j.key(SGR(32, footJ.col + 11, footJ.row)); j.key(SGR(0, footJ.col + 11, footJ.row, true)); j.clock.advance(20)
+  j.app.offer('ts-j', [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }, { id: 'three', label: 'Three' }]); j.clock.advance(20)
+  const oneJ = findLast(j, '1. One')
+  j.key(SGR(0, oneJ.col + 1, oneJ.row)); j.key(SGR(0, oneJ.col + 1, oneJ.row, true)); j.clock.advance(20)
+  check('selection: a click that picks an option takes it away', j.actions.at(-1) === 'one' && invertedCount(j) === 0, `${JSON.stringify(j.actions)} ${invertedCount(j)} cells`)
+  // (k) To the right edge of a row the box wraps: its last character is taken.
+  const k = setup({ cols: 40 })
+  const typedK = '0123456789'.repeat(4) + 'wxyz'
+  k.key(typedK); k.clock.advance(20)
+  const rowK = findLast(k, '0123456789')
+  k.key(SGR(0, 4, rowK.row)); k.key(SGR(32, 39, rowK.row)); k.key(SGR(0, 39, rowK.row, true))
+  check('box drag: to the edge of a wrapped row, its last character too', k.copied.at(-1) === typedK.slice(0, 34), JSON.stringify(k.copied.at(-1)))
+  // (l) The list for a word follows the cursor a drag left elsewhere.
+  const l = setup({ extra: { files: () => ['src/app.ts'] } })
+  l.key('see @ap'); l.clock.advance(20)
+  const listed = l.app.completion !== null
+  const see = findLast(l, 'see @ap')
+  l.key(SGR(0, see.col + 7, see.row)); l.key(SGR(32, see.col, see.row)); l.key(SGR(0, see.col, see.row, true)); l.clock.advance(20)
+  check('box drag: the completion list goes with the word the cursor left', listed && l.copied.at(-1) === 'see @ap' && l.app.completion === null, `listed=${listed} ${JSON.stringify(l.copied)} ${l.app.completion === null ? 'closed' : 'open'}`)
+  // (m) Up past a paste chip that wraps across the box's top row: the box keeps scrolling.
+  const m = setup({ cols: 40 })
+  const pasteM = Array.from({ length: 12 }, (_, n) => `p${n}`).join('\n')
+  m.key('first'); m.key('\x1b\r'); m.key('x'.repeat(20)); m.key(`\x1b[200~${pasteM}\x1b[201~`)
+  for (let n = 1; n <= 6; n++) { m.key('\x1b\r'); m.key(`m${n}`) }
+  m.clock.advance(20)
+  const m6 = findLast(m, 'm6'), topM = findLast(m, 'm1')
+  const hiddenBefore = findLast(m, 'first') === null
+  m.key(SGR(0, m6.col + 2, m6.row))
+  for (let n = 0; n < 8; n++) m.key(SGR(32, 36, topM.row - 1))
+  m.key(SGR(0, 36, topM.row - 1, true)); m.clock.advance(20)
+  check('box drag: up past a chip on the top row, to the first row', hiddenBefore && findLast(m, 'first') !== null && (m.copied.at(-1) ?? '').includes(pasteM), `${m.term.screen.text().split('\n').slice(-10, -2).join(' | ')}`)
+  // (n) Text put into the box by anything but a key moves what was selected: the selection goes.
+  const tb = setup()
+  tb.key('first\r'); tb.app.turnStarted(); tb.key('waiting\r'); tb.key('typed'); tb.clock.advance(20)
+  const typedN = findLast(tb, 'typed')
+  tb.key(SGR(0, typedN.col, typedN.row)); tb.key(SGR(32, typedN.col + 5, typedN.row)); tb.key(SGR(0, typedN.col + 5, typedN.row, true)); tb.clock.advance(20)
+  const selected = invertedCount(tb)
+  tb.app.withdrawn([tb.sentIds.at(-1)], [], true); tb.clock.advance(20)
+  check('box selection: text taken back into the box takes it away', selected === 5 && tb.app.editor.text.includes('waiting') && invertedCount(tb) === 0, `${selected} → ${invertedCount(tb)}, box ${JSON.stringify(tb.app.editor.text)}`)
+  // And before a frame has shown the new text: a drag ended on text no longer there copies nothing.
+  const tc = setup()
+  tc.key('hello there'); tc.clock.advance(20)
+  const hello = findLast(tc, 'hello there')
+  tc.key(SGR(0, hello.col, hello.row)); tc.key(SGR(32, hello.col + 5, hello.row))
+  tc.app.editor.set('changed text')
+  tc.key(SGR(0, hello.col + 5, hello.row, true))
+  check('box selection: a drag ended after the text changed, before any frame, copies nothing', tc.copied.length === 0, JSON.stringify(tc.copied))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)
