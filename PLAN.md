@@ -38,6 +38,10 @@ is built before the thing it stands on. The detailed history of each milestone i
 
 ## Open
 
+- **The agent's own commands reach the network unbounded.** The fetch gate bounds `web_fetch`; a command the agent
+  runs (`curl`) goes out under the sandbox runner, which allows outbound connections, so neither
+  `fetchAllowedHosts` nor the metadata refusal applies to it. Seatbelt cannot filter by remote address beyond
+  localhost, so closing it is not a line in the runner.
 - **A check-then-write window in `writeInside`.** It checks a directory's real path, then writes by
   path; Node has no `openat` to write relative to a checked directory descriptor. Exploiting it needs
   a process inside the agent's sandbox racing the check. Uploads no longer share the window: the
@@ -71,6 +75,9 @@ Decided against:
 
 ## Unverified
 
+- The fetch gate against the harness's tool name: a manual probe (a fetch of the metadata address, refused with the
+  gate's reason) is all that ties the gate to `web_fetch`; no daily scenario does, because the harness refuses that
+  address too. The allowlist was not exercised live: a scenario would need its own profile with an allowlist.
 - Long answers on Telegram and Discord against the platforms themselves: the parts are checked against fakes that
   enforce the limits as documented (Telegram's 4096 counted after the entities, Discord's 2000); no multi-part
   answer was sent live. A part dense with Markdown now carries up to four times the entities it did; whether

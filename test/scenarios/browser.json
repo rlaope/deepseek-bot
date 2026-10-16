@@ -1,5 +1,5 @@
 {
-  "_comment": "Does the bot actually open a link and read it? The page is served from a local HTTP server and contains a fact that appears nowhere in the prompt, so the answer can only come from fetching it. The assertion is the fact and the URL it came from — an answer without the citation would mean the model guessed. What this is not: a browser. It is an HTTP fetch, with no JavaScript execution and no clicking.",
+  "_comment": "Does the bot actually open a link and read it? The page is served from a local HTTP server and contains a fact that appears nowhere in the prompt, so the answer can only come from reading it. The assertion is the fact and the URL it came from — an answer without the citation would mean the model guessed. The harness's web_fetch refuses a loopback address, so seen live the agent reads it with curl from its shell. What this is not: a browser. No JavaScript runs and nothing is clicked.",
   "steps": [
     {
       "session": "B",

@@ -93,6 +93,42 @@ export const inject = [
 /** Where the identity section sits: after the preset's persona prefix (0), before plan and tool guidance (500+). */
 const IDENTITY_ORDER = 10
 
+/**
+ * Addresses that answer with credentials rather than content. A fetch tool that can reach
+ * them turns "summarize this page" into a way to hand out an instance's keys.
+ */
+const METADATA_HOSTS = new Set([
+  '169.254.169.254',            // AWS, Azure, GCP, DigitalOcean
+  'metadata.google.internal',
+  'fd00:ec2::254',
+  '100.100.100.200',            // Alibaba Cloud
+  'metadata',
+])
+const isMetadataHost = (host: string) => METADATA_HOSTS.has(host) || host.startsWith('169.254.')
+
+/**
+ * A URL's host as it is compared: an IPv6 address without the brackets a URL writes it in (compared as written,
+ * fd00:ec2::254 matched nothing), no trailing dots. The URL has already made it lower case and short.
+ */
+const requestHost = (hostname: string) => hostname.replace(/^\[(.*)\]$/, '$1').replace(/\.+$/, '')
+
+/**
+ * An allowlist entry as a host, in the form requestHost gives ("[2001:DB8:0::1]" and "example.com." included), or null
+ * when it is not a host: a scheme, a port, a path or a user in it would otherwise have been read as some other host,
+ * or as one that matches nothing.
+ */
+function allowlistHost(entry: unknown): string | null {
+  const bare = String(entry).trim().replace(/^\[(.*)\]$/, '$1').replace(/\.+$/, '')
+  // A backslash is a path's separator to a URL; a leading dot or a * reads as a pattern and matches no host (a host's
+  // subdomains are allowed already).
+  if (bare === '' || /[/\\@?#*\s]/.test(bare) || bare.startsWith('.')) return null
+  try {
+    return requestHost(new URL(bare.includes(':') ? `http://[${bare}]/` : `http://${bare}/`).hostname)
+  } catch {
+    return null
+  }
+}
+
 // Config is validated by hand instead of with a schemastery schema, to keep the
 // dependency surface at zero.
 const DEFAULTS = {
@@ -187,11 +223,11 @@ const DEFAULTS = {
   // preset its session runs under, which model answers, and where its persona comes from.
   // A tenant with no entry here uses the deployment's own settings.
   tenantPolicies: {},          // { acme: { preset, permission, model: { provider, model }, persona } }
-  // What the agent may fetch. The `fetch` tool runs in the harness, not in the sandbox
+  // What web_fetch may open. The harness's web_fetch runs in the harness, not in the sandbox
   // runner, so "inside the sandbox" needed its own policy: only http(s), never the cloud
-  // metadata service, and an optional allowlist.
+  // metadata service, and an optional allowlist. The agent's own commands are not bounded by it.
   fetchPolicy: true,
-  fetchAllowedHosts: [],       // empty means any public host
+  fetchAllowedHosts: [],       // empty means any host web_fetch opens (the harness opens public ones only)
   approvalTimeoutMs: 600000,
   // A thread is shared, so the person who typed 허용 is not necessarily the person who asked.
   // With this on, only the requester's decision counts; anybody else is told whose it is.
@@ -348,7 +384,16 @@ export function apply(ctx, config) {
   if (messengers.length > 1) {
     problems.push(`platform: one messenger at a time, with 'local' beside it (got: ${messengers.join(', ')}) — keep one in the profile, or run dsh gateway setup <slack|telegram|discord>, which replaces the messenger`)
   }
+  // Not a list, or an entry that is not text, would have turned the allowlist off without a word.
+  if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
+    problems.push('fetchAllowedHosts: must be a list of host names (e.g. [example.com])')
+  }
+  const allowlistEntries = Array.isArray(cfg.fetchAllowedHosts) ? cfg.fetchAllowedHosts.filter((h: unknown) => typeof h === 'string' && h !== '') : []
+  for (const entry of allowlistEntries) {
+    if (allowlistHost(entry) === null) problems.push(`fetchAllowedHosts: ${JSON.stringify(entry)} is not a host name (no scheme, port, path, user, wildcard or leading dot)`)
+  }
   if (problems.length > 0) throw new Error(`deepbot config error:\n  - ${problems.join('\n  - ')}`)
+  const allowedHosts = allowlistEntries.map(allowlistHost).filter((h: string | null): h is string => h !== null)
 
   const language = languageOf(cfg.language)
   const say = messages(language)
@@ -1925,38 +1970,29 @@ export function apply(ctx, config) {
     return null
   }
 
-  /**
-   * Addresses that answer with credentials rather than content. A fetch tool that can reach
-   * them turns "summarize this page" into a way to hand out an instance's keys.
-   */
-  const METADATA_HOSTS = new Set([
-    '169.254.169.254',            // AWS, Azure, GCP, DigitalOcean
-    'metadata.google.internal',
-    'fd00:ec2::254',
-    '100.100.100.200',            // Alibaba Cloud
-    'metadata',
-  ])
-
   /** Bound a fetch: scheme, metadata service, optional allowlist. Null defers. */
   function fetchDecision(exec): { kind: string; reason: string } | null {
     if (cfg.fetchPolicy !== true) return null
     const name = exec?.name ?? exec?.toolName
-    if (name !== 'fetch') return null
+    // The harness's tool is web_fetch. 'fetch' was matched, a name it never sends, and the gate never ran.
+    if (name !== 'web_fetch') return null
     const url = String(exec?.arguments?.url ?? '')
     if (url === '') return null
     let parsed: URL
-    try { parsed = new URL(url) } catch { return { kind: 'deny', reason: `that URL could not be parsed: ${url.slice(0, 120)}` } }
+    try { parsed = new URL(url) } catch {
+      log('fetch denied: an address that could not be parsed')
+      return { kind: 'deny', reason: `that URL could not be parsed: ${url.slice(0, 120)}` }
+    }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       log(`fetch denied: scheme ${parsed.protocol}`)
       return { kind: 'deny', reason: `only http and https can be fetched, not ${parsed.protocol}` }
     }
-    const host = parsed.hostname.toLowerCase()
-    if (METADATA_HOSTS.has(host) || host.startsWith('169.254.')) {
+    const host = requestHost(parsed.hostname)
+    if (isMetadataHost(host)) {
       log(`fetch denied: metadata address ${host}`)
       return { kind: 'deny', reason: 'that address is the cloud metadata service, which answers with credentials rather than content' }
     }
-    const allowed = Array.isArray(cfg.fetchAllowedHosts) ? cfg.fetchAllowedHosts.filter((h: unknown): h is string => typeof h === 'string' && h !== '') : []
-    if (allowed.length > 0 && !allowed.some((entry: string) => host === entry.toLowerCase() || host.endsWith('.' + entry.toLowerCase()))) {
+    if (allowedHosts.length > 0 && !allowedHosts.some((entry) => host === entry || host.endsWith('.' + entry))) {
       log(`fetch denied: ${host} is not in the allowlist`)
       return { kind: 'deny', reason: `${host} is not in the configured fetch allowlist` }
     }

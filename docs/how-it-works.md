@@ -403,10 +403,12 @@ reads exactly like one that did.
 
 ## Opening a link
 
-The agent has the harness's `fetch` tool, so a URL in the conversation is something it can
-actually read, and it is expected to say where it read it. Verified against a page served locally
-whose fact appears nowhere in the prompt (`test:scenario:browser`, 2 steps): the answer carries
-both the fact and its source, because the only way to have the fact is to have fetched the page.
+The agent has the harness's `web_fetch` tool, so a URL in the conversation is something it can
+actually read, and it is expected to say where it read it. `web_fetch` opens public addresses only:
+the harness refuses a loopback or private one. `test:scenario:browser` serves its page on
+127.0.0.1 and asks for a fact that appears nowhere in the prompt: the answer carries both the fact
+and its source, and seen live, the agent read it with `curl` from its shell after `web_fetch`
+refused the address.
 
 **What this is not:** a browser. It is an HTTP fetch — no JavaScript execution, no clicking, no
 form filling — so a page that renders its content client-side arrives empty. That is a real limit
@@ -422,8 +424,10 @@ rather than assumed, with a concrete condition to revisit it: a page a user actu
 arrives empty, more than once. Until then a client-rendered page is answered honestly — the fetch
 reports what it received, and an empty body is reported as empty.
 
-**It runs with bounds, because "in the sandbox" needed its own policy.** The `fetch` tool runs in
-the harness rather than under the sandbox runner, so the tool gate bounds it:
+**It runs with bounds, because "in the sandbox" needed its own policy.** The harness's `web_fetch`
+tool runs in the harness rather than under the sandbox runner, so the tool gate bounds it (until
+this was found the gate matched the name `fetch`, which the harness never sends, and bounded
+nothing; the harness's own refusal of non-public addresses is what kept the metadata service out):
 
 ```yaml
 - id: deepbot
@@ -433,13 +437,20 @@ the harness rather than under the sandbox runner, so the tool gate bounds it:
 ```
 
 Only `http` and `https` are fetchable; other schemes are refused with the scheme named. The
-**cloud metadata service** is refused outright (`169.254.169.254`, `metadata.google.internal`,
-`fd00:ec2::254`, `100.100.100.200`, and the link-local range) — it answers with credentials rather
-than content, and a reader that can reach it turns "summarize this page" into a way to hand out an
-instance's keys. An allowlist, when set, is the whole reachable web.
+**cloud metadata service** is refused by name and by address as written (`169.254.169.254`,
+`metadata.google.internal`, `fd00:ec2::254` in any spelling, `100.100.100.200`, and the IPv4
+link-local range; trailing dots change nothing) — it answers with credentials rather than
+content, and a reader that can reach it turns "summarize this page" into a way to hand out an
+instance's keys. A name that resolves to it, or an IPv4-mapped spelling of it, is left to the
+harness, which refuses every non-public address it resolves to. An allowlist, when set, is the
+whole web `web_fetch` may open; its entries are compared as hosts are (an IPv6 entry in any
+spelling, a trailing dot), and one that is not a host (a scheme, a port, a path, a wildcard), or a value that is not a list of names, is a
+config error.
+It bounds `web_fetch` only: the agent's own commands (`curl` from its shell) reach the network
+under the sandbox runner, which neither the allowlist nor the metadata refusal covers (`PLAN.md`).
 
 One boundary worth stating: the injection guard covers channel history, attachments and pages that
-arrive as material. The `fetch` tool's own output goes straight into the model's context and is
+arrive as material. The `web_fetch` tool's own output goes straight into the model's context and is
 **not** annotated.
 
 ## Progress on a turn

@@ -903,13 +903,15 @@ if (process.platform === 'win32') {
   t.done()
 }
 
-// 23. The fetch tool is bounded: scheme, the metadata service, and an optional allowlist.
+// 23. The fetch tool is bounded: scheme, the metadata service, and an optional allowlist. The harness's tool is
+// web_fetch (dsh-tool-web); these checks called it 'fetch', a name the harness never sends, and passed while the gate
+// never ran.
 {
   const t = boot({})
   await sleep(80)
-  const fetch = (url) => t.gate({ name: 'fetch', arguments: { url }, agent: { session: { header: { id: 's' } } } })
+  const fetch = (url) => t.gate({ name: 'web_fetch', arguments: { url }, agent: { session: { header: { id: 's' } } } })
   check('an https page is fetchable', fetch('https://example.com/docs') === 'delegated')
-  check('an http page is fetchable', fetch('http://127.0.0.1:8899/page.html') === 'delegated', 'loopback stays allowed — a self-hosted wiki is a legitimate target')
+  check('a loopback page is left to the harness', fetch('http://127.0.0.1:8899/page.html') === 'delegated', 'the gate defers it; the harness itself refuses a non-public address')
   const file = fetch('file:///etc/passwd')
   check('a file URL is refused', file?.kind === 'deny', JSON.stringify(file))
   check('and the reason names the scheme', /only http and https/.test(String(file?.reason)), String(file?.reason).slice(0, 70))
@@ -918,25 +920,51 @@ if (process.platform === 'win32') {
   check('and the reason says what it is', /answers with credentials/.test(String(metadata?.reason)), String(metadata?.reason).slice(0, 80))
   check('the GCP metadata name is refused too', fetch('http://metadata.google.internal/computeMetadata/v1/')?.kind === 'deny')
   check('another link-local address is refused', fetch('http://169.254.10.10/x')?.kind === 'deny')
+  // A URL names an IPv6 host in brackets, and its hostname keeps them: compared as written, it matched nothing.
+  check('the IPv6 metadata address is refused', fetch('http://[fd00:ec2::254]/latest/meta-data/')?.kind === 'deny')
+  check('and in another spelling of it', fetch('http://[FD00:EC2:0::254]/latest/meta-data/')?.kind === 'deny')
+  check('a metadata name with a trailing dot is refused', fetch('http://metadata.google.internal./computeMetadata/v1/')?.kind === 'deny')
+  check('and with two', fetch('http://metadata.google.internal../computeMetadata/v1/')?.kind === 'deny')
   const broken = fetch('not a url')
   check('an unparseable url is refused rather than passed through', broken?.kind === 'deny', JSON.stringify(broken))
-  check('fetch refusals are logged', t.logs.some((l) => /fetch denied/.test(l)))
+  check('fetch refusals are logged, an unparseable address too', t.logs.some((l) => /fetch denied: metadata/.test(l)) && t.logs.some((l) => /fetch denied: an address that could not be parsed/.test(l)))
   check('another tool is not affected', t.gate({ name: 'grep', arguments: { pattern: 'x' }, agent: { session: { header: { id: 's' } } } }) === 'delegated')
   t.done()
 }
 
-// 24. An allowlist, when configured, is the whole reachable web.
+// 24. An allowlist, when configured, is the whole web web_fetch may open (the agent's own commands are not bounded by it).
 {
   const t = boot({ config: { targetChannels: ['*'], fetchAllowedHosts: ['example.com'] } })
   await sleep(80)
-  const fetch = (url) => t.gate({ name: 'fetch', arguments: { url }, agent: { session: { header: { id: 's' } } } })
+  const fetch = (url) => t.gate({ name: 'web_fetch', arguments: { url }, agent: { session: { header: { id: 's' } } } })
   check('an allowlisted host is fetchable', fetch('https://example.com/x') === 'delegated')
   check('a subdomain of an allowlisted host is fetchable', fetch('https://docs.example.com/x') === 'delegated')
   const other = fetch('https://evil.test/x')
   check('any other host is refused', other?.kind === 'deny', JSON.stringify(other))
   check('and the reason names the allowlist', /allowlist/.test(String(other.reason)), String(other?.reason).slice(0, 70))
   check('a lookalike domain is not accepted as a subdomain', fetch('https://notexample.com/x')?.kind === 'deny')
+  check('an allowlisted host written with a trailing dot is fetchable', fetch('https://example.com./x') === 'delegated')
   t.done()
+  // Entries are compared as hosts are: an IPv6 entry however it is written, a name with its trailing dot.
+  const v6 = boot({ config: { targetChannels: ['*'], fetchAllowedHosts: ['[2001:DB8:0::1]', 'docs.test.'] } })
+  await sleep(80)
+  const fetch6 = (url) => v6.gate({ name: 'web_fetch', arguments: { url }, agent: { session: { header: { id: 's' } } } })
+  check('an IPv6 entry matches the address in its short form', fetch6('http://[2001:db8::1]/x') === 'delegated')
+  check('an entry with a trailing dot matches its host', fetch6('https://docs.test/x') === 'delegated')
+  check('and anything else is still refused', fetch6('https://other.test/x')?.kind === 'deny')
+  v6.done()
+  // An entry that is not a host is a config error: read as a host it was another one (a path dropped, a user's
+  // host taken), or one that matched nothing.
+  for (const entry of ['https://example.com', 'example.com:443', 'example.com/docs', 'me@example.com', 'example.com\\docs', '.example.com', '*.example.com']) {
+    let refused = ''
+    try { boot({ config: { targetChannels: ['*'], fetchAllowedHosts: [entry] } }).done() } catch (err) { refused = String((err as Error).message) }
+    check(`an allowlist entry that is not a host is a config error: ${entry}`, refused.includes('fetchAllowedHosts') && refused.includes(JSON.stringify(entry)), refused.split('\n')[1] ?? refused)
+  }
+  for (const value of ['example.com', [42], [{ host: 'example.com' }]]) {
+    let refused = ''
+    try { boot({ config: { targetChannels: ['*'], fetchAllowedHosts: value } }).done() } catch (err) { refused = String((err as Error).message) }
+    check(`an allowlist that is not a list of names is a config error: ${JSON.stringify(value)}`, /fetchAllowedHosts: must be a list of host names/.test(refused), refused.split('\n')[1] ?? refused)
+  }
 }
 
 // 25. QA: can somebody else answer an approval that was not theirs?

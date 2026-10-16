@@ -7,6 +7,17 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **The fetch gate never ran.** It matched a tool named `fetch`; the harness's tool is `web_fetch`. So
+  `fetchAllowedHosts` bounded nothing, nor did the gate's scheme and metadata refusals; the metadata service was
+  kept out by the harness itself, which refuses a non-public address (seen live; its handling of other schemes
+  was not checked). The gate now matches `web_fetch`. A host is compared without the brackets a URL writes an
+  IPv6 address in (so `[fd00:ec2::254]` is refused) and without trailing dots, and an allowlist entry in the same
+  form; an entry that is not a host (a scheme, a port, a path, a user, a wildcard), or an allowlist that is not a list of
+  names, is a config error. Its checks had called it
+  `fetch` and passed while it never ran; they now use the harness's name. Checked live: a fetch of the metadata
+  address is refused by the gate, with its reason. The docs said `web_fetch` reads a page served locally; the
+  harness refuses a loopback address, and in a live run the scenario's agent read that page with `curl`. They
+  also said the allowlist was the whole reachable web; it bounds `web_fetch`, not the agent's own commands.
 - **The agent's commands could read most of the harness home.** The sandbox runner denied a list of
   names in `~/.dsh` — credentials, sessions, the recall index, profiles, the gateway's logs — and the
   harness keeps more there: its session index (every conversation's text, with its WAL), the
