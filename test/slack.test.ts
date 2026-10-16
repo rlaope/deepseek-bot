@@ -447,6 +447,22 @@ function transportFor(api) {
   check('a markdown link becomes a Slack link', body.includes('<https://example.com/a|the docs>'), body.slice(0, 90))
   check('and the markdown form is gone', !body.includes('](https://example.com/a)'))
   check('bold still converts', body.includes('*this*'))
+  // Slack shows no tables: one arrives as a list, in Slack's own bullets and bold.
+  const apiT = stubSlack()
+  const tT = transportFor(apiT)
+  await tT.authenticate()
+  await tT.post({ channel: 'C1', threadTs: null }, '| 층 | 값 |\n|---|---|\n| 페르소나 | 아리 |')
+  apiT.restore()
+  const table = apiT.calls.find((c) => c.method === 'chat.postMessage')?.body?.text ?? ''
+  check('a table arrives as a list', table === '• *페르소나* — 아리', JSON.stringify(table))
+  // A list keeps the blank line before it: the bullet rule matched across line ends and ate it.
+  const apiL = stubSlack()
+  const tL = transportFor(apiL)
+  await tL.authenticate()
+  await tL.post({ channel: 'C1', threadTs: null }, '소개:\n\n- 하나\n- 둘')
+  apiL.restore()
+  const listed = apiL.calls.find((c) => c.method === 'chat.postMessage')?.body?.text ?? ''
+  check('a list keeps the blank line before it', listed === '소개:\n\n• 하나\n• 둘', JSON.stringify(listed))
 
   const api2 = stubSlack()
   const t2 = transportFor(api2)

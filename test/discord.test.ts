@@ -166,6 +166,11 @@ function message(overrides = {}) {
   const sent = await t.post({ channel: 'C1', threadTs: null }, 'the answer')
   check('post sends a message and returns its id', sent?.ts !== undefined && sent?.channel === 'C1', JSON.stringify(sent))
   check('it went to the channel', api.rest.some((c) => c.path === '/channels/C1/messages' && c.method === 'POST'))
+  // Discord renders Markdown, but no tables.
+  await t.post({ channel: 'C1', threadTs: null }, '| 층 | 값 |\n|---|---|\n| 페르소나 | 아리 |')
+  const tableBody = api.rest.filter((c) => c.path === '/channels/C1/messages' && c.method === 'POST').at(-1)
+  const tableContent = tableBody?.body?.content
+  check('a table arrives as a list', tableContent === '- **페르소나** — 아리', JSON.stringify(tableContent))
 
   const api2 = fakeDiscord()
   const t2 = transportFor(api2, mkdtempSync(join(tmpdir(), 'dc-')))

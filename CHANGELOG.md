@@ -101,6 +101,14 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A table in an answer arrived as its pipes.** Slack, Discord and Telegram draw no Markdown tables, so a
+  table the model wrote showed as rows of `|` and a line of dashes. The three transports now send a table
+  as a list before they format the rest (Telegram before it cuts a long answer into parts): a bullet a
+  row, its first cell in bold and the rest after a dash, later cells named by their header when there are
+  three columns or more. A table in a code block stays code, and one with a row of more cells than its
+  header (a pipe left unescaped in code or a link) stays as written. Not as aligned columns in a code
+  block: those fonts give Hangul no fixed width. Slack also ate the blank line before every list; it no
+  longer does.
 - **A mention was answered twice in `replyMode: all`, once its app gets the channel's messages.** Slack
   sends a mention as an `app_mention` and as a `message`; the second is now dropped in every mode. The
   Slack manifest `dsh gateway setup` makes now subscribes to `message.channels` and `message.groups`,

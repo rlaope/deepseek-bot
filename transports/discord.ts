@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
+import { tablesAsLists } from './tables.js'
 import type { ActionButton, ActionEvent, AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 
 interface DiscordHost {
@@ -368,7 +369,9 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     },
 
     /** Discord edits are PATCHes against the message; that is how progress is replaced. */
-    async post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
+    async post(target: Target, markdown: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
+      // Discord renders Markdown, but no tables.
+      const text = tablesAsLists(markdown)
       const chunks: string[] = []
       for (let i = 0; i < text.length; i += MESSAGE_LIMIT) chunks.push(text.slice(i, i + MESSAGE_LIMIT))
       if (chunks.length === 0) chunks.push('(empty response)')

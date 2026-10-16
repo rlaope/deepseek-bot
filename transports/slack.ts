@@ -23,6 +23,7 @@ import type {
 } from '../types/slack.js'
 import type { AttachmentManifest, InboundMessage, PostedMessage, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
+import { tablesAsLists } from './tables.js'
 
 export function createSlackApi({ cfg, log, sessionCwd }) {
   // ── Slack Web API (built-in fetch) ────────────────────────────────────────
@@ -183,16 +184,17 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     })
   }
 
-  /** DSH emits standard Markdown; Slack uses its own dialect. */
+  /** DSH emits standard Markdown; Slack uses its own dialect, which has no tables. */
   function toSlackMarkdown(md) {
-    return md
+    return tablesAsLists(md)
       // Links first, so the bold rule cannot reach inside one. Slack wants <url|label>; a bare URL
       // is linked by Slack itself, so it is left alone. A local path cannot be made clickable here —
       // that needs an upload, which is a separate job.
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
       .replace(/\*\*(.+?)\*\*/g, '*$1*')
       .replace(/^#{1,6}\s+(.*)$/gm, '*$1*')
-      .replace(/^\s*[-*]\s+/gm, '• ')
+      // Within a line: \s crossed line ends and ate the blank line before every list.
+      .replace(/^[ \t]*[-*][ \t]+/gm, '• ')
   }
 
   async function say(botToken, channel, threadTs, text, replaceTs = null) {

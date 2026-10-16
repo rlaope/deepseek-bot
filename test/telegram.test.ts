@@ -160,6 +160,11 @@ function groupMessage(overrides = {}) {
   await t.post({ channel: '7', threadTs: null }, 'replaced', { replace: '55' })
   check('a replace edits instead of sending', api.calls.some((c) => c.method === 'editMessageText' && c.body?.message_id === 55))
   check('the edit carries the new text', api.calls.find((c) => c.method === 'editMessageText')?.body?.text === 'replaced')
+  // A long answer is cut into parts after its tables become lists: cut first, a table across the cut kept its pipes.
+  const long = `${'가'.repeat(4056)}\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n| 7 | 8 |`
+  await t.post({ channel: '7', threadTs: null }, long)
+  const parts = api.calls.filter((c) => c.method === 'sendMessage').slice(-2).map((c) => String(c.body?.text ?? ''))
+  check('a long answer\'s table is a list in every part', parts.length === 2 && parts.every((p) => !p.includes('|')) && parts.join('').includes('<b>7</b> — 8'), JSON.stringify(parts.map((p) => p.slice(-60))))
 }
 
 // 7. If the edit is refused, the answer is still delivered.
@@ -352,6 +357,9 @@ function groupMessage(overrides = {}) {
 // numbers, so a message already holding one duplicated another part or printed "undefined"; and a list
 // marker opened italics: "* item *one*" came out as "<i> item </i>one*".
 {
+  // Telegram shows no tables either.
+  const tableHtml = toTelegramHtml('| 층 | 값 |\n|---|---|\n| 페르소나 | 아리 & co |')
+  check('a table arrives as a list, escaped', tableHtml === '- <b>페르소나</b> — 아리 &amp; co', JSON.stringify(tableHtml))
   const dup = toTelegramHtml('`a` and \u00000\u0000')
   check('a placeholder-shaped text cannot copy another part', (dup.match(/<code>a<\/code>/g) ?? []).length === 1, JSON.stringify(dup))
   check('nor print undefined', !toTelegramHtml('x \u00007\u0000 y').includes('undefined'))

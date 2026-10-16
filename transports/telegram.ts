@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
+import { tablesAsLists } from './tables.js'
 import type { AttachmentManifest, AttachmentRef, InboundMessage, PostedMessage, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 
 interface TelegramHost {
@@ -56,8 +57,9 @@ const API_BASE = 'https://api.telegram.org'
 
 /**
  * The model writes Markdown; Telegram showed it as raw marks. This turns the common parts into Telegram's
- * HTML: fenced and inline code, links, bold, italic, headings. The text is escaped first, so nothing in
- * it becomes a tag; code and links are set aside before that and restored after, escaped on their own.
+ * HTML: fenced and inline code, links, bold, italic, headings, and a table, which it has none of, into a
+ * list. The text is escaped first, so nothing in it becomes a tag; code and links are set aside before that
+ * and restored after, escaped on their own.
  */
 export function toTelegramHtml(markdown: string): string {
   const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -65,7 +67,7 @@ export function toTelegramHtml(markdown: string): string {
   const keep = (html: string) => `\u0000${kept.push(html) - 1}\u0000`
   // The placeholders are NUL-delimited, so a NUL in the text itself is dropped first: one there made a
   // placeholder of its own, copying another part or printing "undefined".
-  let text = markdown.replace(/\u0000/g, '')
+  let text = tablesAsLists(markdown).replace(/\u0000/g, '')
     .replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code: string) => keep(`<pre>${escape(code.replace(/\n$/, ''))}</pre>`))
     .replace(/`([^`\n]+)`/g, (_, code: string) => keep(`<code>${escape(code)}</code>`))
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label: string, url: string) =>
@@ -357,7 +359,9 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     },
 
     /** Telegram edits only recent messages; if the edit is refused, send a new one. */
-    async post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
+    async post(target: Target, markdown: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
+      // Tables become lists before the answer is cut into parts: a table across the cut kept its pipes.
+      const text = tablesAsLists(markdown)
       // Buttons as an inline keyboard on the last part, where the question ends. callback_data is capped
       // at 64 bytes by Telegram; an id longer than that goes without a button and is answered by typing.
       const keyboard = (options?.buttons ?? []).filter((button) => Buffer.byteLength(button.id) <= 64)

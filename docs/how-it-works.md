@@ -57,7 +57,7 @@ Each line is traceable to code and to something that checks it.
 
 | It | Where | Checked by |
 |---|---|---|
-| Serves Slack over **Socket Mode**: receive, reply in thread, chunk long answers, drop duplicate events | `transports/slack.ts` | `test/slack.test.ts` 54/54; `tools/qa-slack.ts` against a live workspace |
+| Serves Slack over **Socket Mode**: receive, reply in thread, chunk long answers, drop duplicate events, a Markdown table sent as a list (Slack, Discord and Telegram draw no tables) | `transports/slack.ts`, `transports/tables.ts` | `test/tables.test.ts`; `test/slack.test.ts` 54/54; `tools/qa-slack.ts` against a live workspace |
 | Serves **Telegram** by long polling | `transports/telegram.ts` | `test/telegram.test.ts` 41/41 |
 | Serves **Discord** (gateway websocket + REST), with buttons for approvals | `transports/discord.ts` | `test/discord.test.ts` 38/38 |
 | Serves a **terminal** (`dsh`) over a local socket, beside Slack or alone: streamed answers, approval buttons, a turn's questions, its subagents and shells | `transports/local.ts`, `transports/composite.ts`, `tui/` | `test/local.test.ts` 132/132, `test/tui-*.test.ts`; `test/tui-live.ts` 11/11 against a model |
