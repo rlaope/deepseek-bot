@@ -1,9 +1,10 @@
 /**
- * Colour and text attributes, resolved once for the terminal in front of us.
+ * Colour and text attributes for the terminal in front of us.
  *
  * Three modes: 24-bit when the terminal says it has it (`COLORTERM`), the 256-colour cube
- * otherwise, and nothing at all under `NO_COLOR`. A style is reduced to its SGR string up front,
- * and that string doubles as the cell's style key, so the diff compares styles as strings.
+ * otherwise, and nothing at all under `NO_COLOR`. A style is reduced to its SGR string when a block
+ * is laid out (again when the palette changes), and that string doubles as the cell's style key, so
+ * the diff compares styles as strings.
  */
 
 export type ColorMode = 'truecolor' | '256' | 'none'
@@ -165,8 +166,18 @@ export function backgroundOf(env: Record<string, string | undefined>): 'light' |
   return bg === 7 || (bg >= 9 && bg <= 15) ? 'light' : bg >= 0 && bg <= 8 ? 'dark' : null
 }
 
-/** Light or dark colours from now on. Blocks drawn before keep the colours they were made with. */
+let generation = 0
+/** Bumped when the palette changes: a layout made before it is drawn again. */
+export function themeGeneration(): number {
+  return generation
+}
+
+let current: 'light' | 'dark' = 'dark'
+/** Light or dark colours from now on; what is on screen is drawn again in them, when they changed. */
 export function useBackground(kind: 'light' | 'dark'): void {
+  if (kind === current) return
+  current = kind
   Object.assign(palette, kind === 'light' ? LIGHT : DARK)
   Object.assign(theme, themeOf(palette))
+  generation++
 }

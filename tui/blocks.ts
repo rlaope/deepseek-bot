@@ -40,13 +40,14 @@ function callName(name: string): string {
 /** What the person said, on a band of its own across the pane, so a question never reads as part of an answer. */
 export function userBlock(text: string, mode: ColorMode): Block {
   const banded = mode !== 'none'
-  const mark = sgr(banded ? theme.userMark : theme.user, mode)
-  const body = sgr(banded ? theme.userBand : theme.text, mode)
   return {
     id: nextId('user'),
     version: 0,
     prompt: text,
     lines(width) {
+      // Styles as the palette is now: a light terminal's answer draws this again.
+      const mark = sgr(banded ? theme.userMark : theme.user, mode)
+      const body = sgr(banded ? theme.userBand : theme.text, mode)
       const lines = layout(text, width, body, { first: pad('› ', mark), rest: pad('  ', body) })
       // The band runs to the edge; without colour there is no band, and no trailing spaces.
       if (banded) for (const line of lines) line.spans.push(pad(' '.repeat(Math.max(0, width - widthOf(line))), body))
@@ -66,8 +67,6 @@ export interface AnswerBlock extends Block {
 }
 
 export function answerBlock(mode: ColorMode): AnswerBlock {
-  const styles = markdownStyles(mode)
-  const mark = sgr(theme.answerMark, mode)
   const block: AnswerBlock = {
     id: nextId('answer'),
     version: 0,
@@ -80,7 +79,8 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
       // A deep interview's state blocks are for the gauges, not for reading.
       const shown = stripState(block.text)
       if (shown === '' && !block.streaming) return []
-      const lines = markdown(shown, width, styles, pad('  '))
+      const mark = sgr(theme.answerMark, mode)
+      const lines = markdown(shown, width, markdownStyles(mode), pad('  '))
       if (lines.length === 0) lines.push({ spans: [pad('  ')], soft: false })
       // A dot where the answer starts, in the indent it would have had.
       const lead = lines[0].spans[0]
@@ -92,11 +92,9 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
 }
 
 export function toolBlock(name: string, detail: string, mode: ColorMode): Block {
-  const mark = sgr(theme.toolMark, mode)
-  const style = sgr(theme.tool, mode)
   // As a call is written in the main transcript: Name(what it was asked).
   const text = detail === '' ? callName(name) : `${callName(name)}(${detail})`
-  return { id: nextId('tool'), version: 0, lines: (width) => layout(text, width, style, { first: pad('● ', mark), rest: pad('  ') }) }
+  return { id: nextId('tool'), version: 0, lines: (width) => layout(text, width, sgr(theme.tool, mode), { first: pad('● ', sgr(theme.toolMark, mode)), rest: pad('  ') }) }
 }
 
 /** What folded blocks show: a few lines, or all of them — ctrl+o for tool steps, ctrl+t for thinking. */
@@ -147,8 +145,6 @@ export interface ThinkingBlock extends Block {
 
 /** The model's reasoning: its latest lines while it streams, "Thought for Ns" after, all of it on ctrl+t. */
 export function thinkingBlock(detail: Detail, mode: ColorMode, now: () => number = Date.now): ThinkingBlock {
-  const head = sgr(theme.thinking, mode)
-  const body = sgr(theme.thinkingBody, mode)
   let own = 0
   let began: number | null = null
   let ended: number | null = null
@@ -164,6 +160,8 @@ export function thinkingBlock(detail: Detail, mode: ColorMode, now: () => number
     lines(width) {
       const text = block.text.trim()
       if (text === '') return []
+      const head = sgr(theme.thinking, mode)
+      const body = sgr(theme.thinkingBody, mode)
       const seconds = Math.max(1, Math.round(((ended ?? now()) - (began ?? now())) / 1000))
       const label = block.streaming
         ? shimmer(t().thinking, palette.sky, palette.glint, currentFrame(), mode)
@@ -195,15 +193,6 @@ export interface ToolCallBlock extends Block {
 
 /** A tool call: its name and title, an edit's changed lines, then its result under it. */
 export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): ToolCallBlock {
-  const marks = {
-    on: sgr({ fg: palette.light, bold: true }, mode), off: sgr({ fg: palette.deep }, mode),
-    ok: sgr(theme.ok, mode), failed: sgr(theme.danger, mode), settled: sgr(theme.muted, mode),
-  }
-  const name = sgr({ ...theme.text, bold: true }, mode)
-  const style = sgr(theme.tool, mode)
-  const removed = sgr(theme.danger, mode)
-  const removedRow = sgr(theme.diffRemoved, mode)
-  const addedRow = sgr(theme.diffAdded, mode)
   // Only what changed: the lines around a change are in the file (and the core sends the changed
   // part alone). When a side was cut, the comparison was made against a text that stops early, and
   // proves little:
@@ -243,6 +232,16 @@ export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): 
     result(ok, text, lines) { outcome = { ok, text, lines }; own++ },
     settle() { if (running()) { settled = true; own++ } },
     lines(width) {
+      // Styles as the palette is now: a light terminal's answer draws this again.
+      const marks = {
+        on: sgr({ fg: palette.light, bold: true }, mode), off: sgr({ fg: palette.deep }, mode),
+        ok: sgr(theme.ok, mode), failed: sgr(theme.danger, mode), settled: sgr(theme.muted, mode),
+      }
+      const name = sgr({ ...theme.text, bold: true }, mode)
+      const style = sgr(theme.tool, mode)
+      const removed = sgr(theme.danger, mode)
+      const removedRow = sgr(theme.diffRemoved, mode)
+      const addedRow = sgr(theme.diffAdded, mode)
       const title = (step.title ?? '').split('\n')[0]
       const mark = outcome !== null ? (outcome.ok ? marks.ok : marks.failed) : settled ? marks.settled : blink(currentFrame()) ? marks.on : marks.off
       // As Claude Code writes a call: the tool's name, then what it was asked in brackets.
@@ -309,16 +308,25 @@ export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): 
 
 /** A turn stopped by the person: under it, as Claude Code marks it. */
 export function interruptedBlock(mode: ColorMode): Block {
-  const style = sgr(theme.danger, mode)
-  return { id: nextId('interrupted'), version: 0, lines: () => [{ spans: [pad('  ⎿  ', style), { text: t().interrupted, style }], soft: false }] }
+  return {
+    id: nextId('interrupted'),
+    version: 0,
+    lines: () => { const style = sgr(theme.danger, mode); return [{ spans: [pad('  ⎿  ', style), { text: t().interrupted, style }], soft: false }] },
+  }
 }
 
 export type NoticeKind = 'info' | 'warn' | 'error' | 'ok'
 
 export function noticeBlock(text: string, kind: NoticeKind, mode: ColorMode): Block {
-  const style = sgr(kind === 'error' ? theme.danger : kind === 'warn' ? theme.warn : kind === 'ok' ? theme.ok : theme.muted, mode)
   const mark = kind === 'error' ? '✕ ' : kind === 'warn' ? '⚠ ' : kind === 'ok' ? '✓ ' : '· '
-  return { id: nextId('notice'), version: 0, lines: (width) => layout(text, width, style, { first: pad(mark, style), rest: pad('  ') }) }
+  return {
+    id: nextId('notice'),
+    version: 0,
+    lines: (width) => {
+      const style = sgr(kind === 'error' ? theme.danger : kind === 'warn' ? theme.warn : kind === 'ok' ? theme.ok : theme.muted, mode)
+      return layout(text, width, style, { first: pad(mark, style), rest: pad('  ') })
+    },
+  }
 }
 
 /**
@@ -334,12 +342,12 @@ export interface Welcome { version: string; model: string; workspace: string; se
  * narrow for a box, the words alone.
  */
 export function welcomeBlock(info: () => Welcome, mode: ColorMode): Block & { refresh(): void } {
-  const border = sgr(theme.border, mode)
   const block = {
     id: nextId('welcome'),
     version: 0,
     refresh() { block.version++ },
     lines(width: number): Line[] {
+      const border = sgr(theme.border, mode)
       const i = info()
       const words: Array<{ text: string; style: string }> = [
         { text: `deepseek-bot${i.version !== '' ? ` v${i.version}` : ''}`, style: sgr(theme.brand, mode) },

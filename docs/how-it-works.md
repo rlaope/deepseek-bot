@@ -552,8 +552,8 @@ selected, esc clears the selection first). A question or a list opened over an a
 until it closes. Under `NO_COLOR` there is no band and nothing sweeps. On a light background the colours
 are the light palette's (dark text, a light band, light red and green behind an edit): the terminal
 says which by `COLORFGBG`, or by its answer to the OSC 11 query `dsh` sends at start (not every terminal
-answers it, and tmux may not pass it on); with neither, the dark palette. What was drawn before the
-answer keeps its colours.
+answers it; tmux may not pass it on, and one with no terminal attached does not answer); with neither,
+the dark palette. What was drawn before the answer is drawn again in its colours.
 
 | Keys | |
 |---|---|

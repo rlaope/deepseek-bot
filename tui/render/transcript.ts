@@ -7,6 +7,7 @@
  * bottom until the user scrolls away, and says how much arrived while they were reading.
  */
 import { extract, type Line } from './text.js'
+import { themeGeneration } from './style.js'
 
 export interface Block {
   id: string
@@ -17,7 +18,7 @@ export interface Block {
   prompt?: string
 }
 
-interface Cached { version: number | string; width: number; lines: Line[] }
+interface Cached { version: number | string; width: number; theme: number; lines: Line[] }
 
 export interface Point { line: number; col: number }
 
@@ -28,6 +29,8 @@ export class Transcript {
   /** Where each block's lines are in `flat`, in order. */
   private spans: Array<{ block: Block; from: number; to: number }> = []
   private flatWidth = -1
+  /** The palette the layout was made in: a light terminal's answer draws every block again. */
+  private flatTheme = -1
   private dirty = true
   /** First visible line. */
   top = 0
@@ -107,14 +110,15 @@ export class Transcript {
 
   /** All lines at this width. Cheap when nothing changed. */
   layout(width: number): Line[] {
-    if (!this.dirty && width === this.flatWidth) return this.flat
+    const theme = themeGeneration()
+    if (!this.dirty && width === this.flatWidth && theme === this.flatTheme) return this.flat
     const before = this.flat.length
     const out: Line[] = []
     const spans: Array<{ block: Block; from: number; to: number }> = []
     for (const block of this.blocks) {
       let hit = this.cache.get(block.id)
-      if (hit === undefined || hit.version !== block.version || hit.width !== width) {
-        hit = { version: block.version, width, lines: block.lines(width) }
+      if (hit === undefined || hit.version !== block.version || hit.width !== width || hit.theme !== theme) {
+        hit = { version: block.version, width, theme, lines: block.lines(width) }
         this.cache.set(block.id, hit)
       }
       const from = out.length
@@ -129,6 +133,7 @@ export class Transcript {
     const grew = out.length - before
     this.flat = out
     this.flatWidth = width
+    this.flatTheme = theme
     this.dirty = false
     if (!this.follow && grew > 0 && width === this.lastWidth && !this.quiet) this.unseen += grew
     this.quiet = false

@@ -81,7 +81,8 @@ async function until(predicate, ms = 3000) {
   const closed = []
   const switched = []
   const stepped = []
-  const modelApp = { stop: () => {}, notice: (text, kind) => notices.push([kind, text]), clear: () => {}, setStatus: (s) => statusSeen.push(s), status: {}, openPicker: (spec) => pickers.push(spec), closePicker: (spec) => closed.push(spec), effortStepped: (e) => stepped.push(e) }
+  const cleared = []
+  const modelApp = { stop: () => {}, notice: (text, kind) => notices.push([kind, text]), clear: (...a) => cleared.push(a), setStatus: (s) => statusSeen.push(s), status: {}, openPicker: (spec) => pickers.push(spec), closePicker: (spec) => closed.push(spec), effortStepped: (e) => stepped.push(e) }
   const link = { conversation: 'c-1', tenant: undefined, switchTo: (c, tenant) => switched.push([c, tenant]), send: (f) => { sent.push(f); return true } }
   const cmds = createCommands(modelApp, link)
   cmds.intercept('/model 1')
@@ -131,6 +132,13 @@ async function until(predicate, ms = 3000) {
   bind({ withdrawn: (...a) => told.push(a) }, { type: 'withdrawn', ids: ['b-1'], asked: [], stop: true })
   bind({ withdrawn: (...a) => told.push(a) }, { type: 'withdrawn', ids: ['a-2'], asked: ['a-2'] })
   check('withdrawn: the app is told the ids, what was asked, and a stop\'s from a withdraw\'s', JSON.stringify(told) === JSON.stringify([[['b-1'], [], true], [['a-2'], ['a-2'], false]]), JSON.stringify(told))
+  // /clear is the same conversation (what the gateway gave back stays); /new is another.
+  cleared.length = 0
+  cmds.intercept('/clear')
+  cmds.intercept('/new')
+  cmds.intercept('/resume tui-another')
+  cmds.intercept('/tenant acme')
+  check('/clear: clears the screen of this conversation; /new, /resume and /tenant of another', JSON.stringify(cleared) === JSON.stringify([[true], [], [], []]), JSON.stringify(cleared))
   cmds.stepEffort()
   check('effort: shift+tab asks the gateway for the next effort', JSON.stringify(sent.at(-1)) === JSON.stringify({ type: 'effort', step: 1 }), JSON.stringify(sent.at(-1)))
   // A model picker open when the model or effort changes under it (another terminal, a click on the

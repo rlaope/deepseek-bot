@@ -7,10 +7,11 @@
  * be tested against a fake terminal and a fake backend.
  *
  * Layout, top to bottom: the transcript (under a header only in a subagent's or a shell's view), a
- * divider, the status line, the input box, and a hint line. Nothing frames the whole screen. The input box keeps the last rows; the
- * transcript fills the rows over it from the top, a short one with the empty rows under it, and once it is
- * longer than they are it follows its newest line. A choice (a picker, a question's options, an approval) takes the box's
- * place while nothing is typed; the completion list opens just above the box.
+ * divider, the status line, the input box, and a hint line. Nothing frames the whole screen. The input
+ * box keeps the last rows; the transcript fills the rows over it from the top, a short one with the empty
+ * rows under it, and once it is longer than they are it follows its newest line. A choice (a picker, a
+ * question's options, an approval) takes the box's place while nothing is typed; the completion list
+ * opens just above the box.
  */
 import { answerBlock, interruptedBlock, welcomeBlock, noticeBlock, spacerBlock, thinkingBlock, toolBlock, toolCallBlock, userBlock, type AnswerBlock, type Detail, type NoticeKind, type ThinkingBlock, type ToolCallBlock, type ToolStep } from './blocks.js'
 import { complete, type CommandInfo, type Completion } from './complete.js'
@@ -423,9 +424,11 @@ export class App {
     if (this.busy === 0) {
       this.status.running = false
       this.stopSpinner()
-      // Nothing is waiting any more: whatever is still shown above the input was answered with it.
-      // Into the transcript as started: one may still be waiting for its typing to begin, and a stop name it.
-      for (const waiting of this.pending.splice(0)) this.startedHere(waiting.id, waiting.text)
+      // Nothing runs: what is still shown above the input goes into the transcript, as started. One may still be
+      // waiting for its typing to begin (the turn that runs it), and a stop name it; the first is that turn's.
+      const moved = this.pending.splice(0)
+      for (const waiting of moved) this.startedHere(waiting.id, waiting.text)
+      if (moved.length > 0) this.turnMessage = moved[0].id
       this.withdrawing = 0
     } else if (this.withdrawing > 0) {
       // A waiting turn a stop or a withdraw took back ended: the turn running is still the same one.
@@ -682,31 +685,40 @@ export class App {
     this.terminal.requestRender(true)
   }
 
-  /** A fresh screen for another conversation: the welcome box and nothing else. */
-  clear(): void {
-    this.interview = null
+  /**
+   * A fresh screen, the welcome box and nothing else: for another conversation, or (`sameConversation`, /clear)
+   * for this one, whose turn goes on: what runs and waits, an approval, what the gateway gave back to the box.
+   * A switch the gateway refused (cli.ts rolledBack) had already cleared for another conversation.
+   */
+  clear(sameConversation = false): void {
+    // What was being drawn goes with the screen: the next words start blocks of their own.
     this.thought = null
     this.attemptThought = null
-    this.calls.clear()
-    // Another conversation: whatever was running belongs to the old one, and so does what it gave back.
-    this.takenBack = []
-    this.asking = null
-    this.started.clear()
-    this.turnMessage = null
-    this.mark = null
-    this.busy = 0
-    this.status.running = false
-    this.stopSpinner()
-    this.question = null
-    this.picker = null
     this.closeAnswer()
-    this.posted.clear()
     this.turnBlock = null
-    // Nothing of the old conversation's turn: what waited behind it, its running tool.
-    this.pending = []
-    this.runningTool = null
+    this.mark = null
+    this.picker = null
     this.gapped = true
-    this.choice = null
+    // (/clear keeps `posted`: an edit of a message posted before it lands on a block no longer on screen. The
+    // terminal's messages are not edited today: it has its own typing sign, so no working message is posted.)
+    // Another conversation: whatever was running belongs to the old one, and so does what it gave back.
+    if (!sameConversation) {
+      this.interview = null
+      this.calls.clear()
+      this.takenBack = []
+      this.asking = null
+      this.started.clear()
+      this.turnMessage = null
+      this.busy = 0
+      this.status.running = false
+      this.stopSpinner()
+      this.question = null
+      this.posted.clear()
+      // Nothing of the old conversation's turn: what waited behind it, its running tool.
+      this.pending = []
+      this.runningTool = null
+      this.choice = null
+    }
     this.transcript.clear()
     this.transcript.push(this.banner)
     this.terminal.requestRender(true)

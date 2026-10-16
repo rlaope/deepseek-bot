@@ -95,6 +95,17 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **What the terminal drew before a light background was known stayed dark.** Blocks fixed their colours
+  when they were made, so the welcome box and anything drawn before the terminal answered the OSC 11
+  query (a resumed conversation's history, over a slow link) kept the dark palette on a light terminal.
+  Blocks now take their colours when they are drawn, and the layout is made again when the palette
+  changes.
+- **/clear dropped the conversation's turn with the screen.** It reset the turn as if the conversation had
+  changed: an approval waiting on screen disappeared (its keys typed into the box, and esc no longer
+  stopped the turn), what waited behind the turn was lost to a later stop, an ↑ in flight came back to
+  nothing, and text the gateway had given back while an approval, a subagent's view or a list held the
+  box was thrown away. `/clear` is the same conversation: now only the screen goes, and the turn, what
+  waits, the approval and what came back stay (a switch to another conversation still lets them go).
 - **A grep for a pattern starting with `/` was refused as a read outside the workspace.** The read scope
   took any tool's absolute `pattern` for a path, but grep's is a regular expression (the harness gives it
   to ripgrep as `--regexp`), so `/api/v1` was refused. Now only glob's pattern is checked, and grep

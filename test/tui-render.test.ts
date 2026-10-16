@@ -23,7 +23,7 @@ import { banner, BANNER_WIDTHS } from '../dist/tui/render/banner.js'
 import { welcomeBlock } from '../dist/tui/blocks.js'
 import { copy, osc52 } from '../dist/tui/render/clipboard.js'
 import { emulator, fakeTerminal, fakeClock } from './tui-fakes.ts'
-import { sgr, detectColorMode, rgbTo256, backgroundOf, useBackground, theme, palette } from '../dist/tui/render/style.js'
+import { sgr, detectColorMode, rgbTo256, backgroundOf, useBackground, themeGeneration, theme, palette } from '../dist/tui/render/style.js'
 import { markdown } from '../dist/tui/render/markdown.js'
 import { lineDiff } from '../dist/tui/render/linediff.js'
 
@@ -454,6 +454,9 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   check('input: rxvt ctrl+home, ctrl+end, shift+home', rx.length === 3 && rx[0].name === 'home' && rx[0].ctrl && rx[1].name === 'end' && rx[1].ctrl && rx[2].name === 'home' && rx[2].shift, JSON.stringify(rx))
   const alt = p.feed('\x1b]a')
   check('background: alt+] followed by a key is still alt+]', alt.length === 2 && alt[0].type === 'key' && alt[0].alt && alt[0].ch === ']', JSON.stringify(alt))
+  // The same palette again is no change: nothing is drawn again for it (a dark terminal answering dark).
+  useBackground('dark'); const same = themeGeneration(); useBackground('dark')
+  check('background: the same palette again changes nothing', themeGeneration() === same)
   useBackground('light')
   const lightText = theme.userBand.fg, lightBand = theme.userBand.bg
   useBackground('dark')

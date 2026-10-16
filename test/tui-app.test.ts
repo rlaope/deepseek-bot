@@ -1843,9 +1843,23 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.app.turnStarted(); t.key('I-msg\r'); t.app.turnStarted(); t.clock.advance(20)
   const idI = t.sentIds.at(-1)
   t.key('\x1b[A')
-  t.app.ask('q-i', [{ id: 'q', question: 'which?', options: [{ label: 'a' }], multiSelect: false }]); t.clock.advance(20)
-  t.app.withdrawn([idI], [idI]); t.app.clear(); t.clock.advance(20)
-  check('queue: what was held for the box stays with its conversation', t.app.editor.text === '' && !t.term.screen.text().includes('I-msg'), JSON.stringify(t.app.editor.text))
+  // An approval holds the box (/clear can be typed over one, not over a question: that would be the answer).
+  t.app.message('ts-i', 'I need permission: ls', null, false)
+  t.app.offer('ts-i', [{ id: 'approval:allow:i', label: 'Allow', style: 'primary' }, { id: 'approval:deny:i', label: 'Deny', style: 'danger' }]); t.clock.advance(20)
+  // /clear is the same conversation: the approval stays, and what was held comes to the box once it is answered.
+  t.app.withdrawn([idI], [idI]); t.app.clear(true); t.clock.advance(20)
+  const whileApproval = t.app.editor.text
+  t.key('1'); t.clock.advance(20)
+  check('queue: /clear keeps what was held for the box, and the approval; it is this conversation\'s', whileApproval === '' && t.actions.at(-1) === 'approval:allow:i' && t.app.editor.text === 'I-msg', JSON.stringify({ whileApproval, action: t.actions.at(-1), text: t.app.editor.text }))
+  t.app.turnEnded(); t.app.turnEnded(); t.clock.advance(20)
+  // Another conversation (the gateway names another session): what was held goes with the old one.
+  t.app.editor.set('')
+  t.app.turnStarted(); t.key('J-msg\r'); t.app.turnStarted(); t.clock.advance(20)
+  const idJ = t.sentIds.at(-1)
+  t.key('\x1b[A')
+  t.app.ask('q-j', [{ id: 'q', question: 'which?', options: [{ label: 'a' }], multiSelect: false }]); t.clock.advance(20)
+  t.app.withdrawn([idJ], [idJ]); t.app.clear(); t.clock.advance(20)
+  check('queue: what was held for the box stays with its conversation', t.app.editor.text === '' && !t.term.screen.text().includes('J-msg'), JSON.stringify(t.app.editor.text))
 }
 
 // 80. Lists and scrolling after Claude Code and pi. Typing filters a picker instead of closing it, and a long list
@@ -2020,9 +2034,20 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const dark = setup()
   dark.key('hello\r'); dark.clock.advance(20)
   check('theme: the next app, told nothing, is dark again', Number(/38;2;(\d+);/.exec(band(dark))?.[1] ?? 0) > 0xc0, JSON.stringify(band(dark)))
+  // Drawn before the answer: a tool's result, in the tool's grey.
+  dark.app.turnStarted(); dark.app.toolCall({ name: 'bash', callId: 'd1', title: 'ls' }); dark.app.toolResult('d1', true, 'one line'); dark.app.turnEnded(); dark.clock.advance(20)
+  const toolGrey = () => { const p = dark.term.screen.find('one line'); return p === null ? '' : dark.term.screen.grid[p.row * 80 + p.col].style }
+  const brand = () => { const p = dark.term.screen.find('deepseek-bot'); return p === null ? '' : dark.term.screen.grid[p.row * 80 + p.col].style }
+  const before = { band: band(dark), tool: toolGrey(), brand: brand() }
   dark.key('\x1b]11;rgb:ffff/ffff/ffff\x07'); dark.clock.advance(20)
+  // Drawn again at once, with nothing new to draw.
+  const atOnce = { band: band(dark), tool: toolGrey(), brand: brand() }
   dark.key('after it\r'); dark.clock.advance(20)
   check('theme: the terminal\'s answer to OSC 11 turns it light, and nothing is typed', dark.app.editor.text === '' && Number(/48;2;(\d+);/.exec(band(dark, '› after it'))?.[1] ?? 0) > 0xc0, JSON.stringify([dark.app.editor.text, band(dark, '› after it')]))
+  // What was drawn before the answer is drawn again in the light palette, not left dark.
+  const light2 = Number(/48;2;(\d+);/.exec(band(dark))?.[1] ?? 0) > 0xc0
+  const greyNow = Number(/38;2;(\d+);/.exec(toolGrey())?.[1] ?? 255)
+  check('theme: what was drawn before the answer takes the light palette too, at once', light2 && greyNow < 0x80 && before.tool !== toolGrey() && atOnce.band === band(dark) && atOnce.tool === toolGrey() && before.brand !== atOnce.brand && atOnce.brand.includes('38;2;26;95;214'), JSON.stringify({ before, atOnce, after: { band: band(dark), tool: toolGrey() } }))
   const none = setup({ env: { NO_COLOR: '1' } })
   check('theme: under NO_COLOR it does not ask', !none.term.out.join('').includes('\x1b]11;?'))
   setup()
@@ -2200,6 +2225,13 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   n2.app.turnEnded(); n2.app.turnStarted(); n2.clock.advance(20)
   n2.app.withdrawn([n2.sentIds.at(-1)], [], true); n2.app.turnEnded(); n2.clock.advance(20)
   check('stop elsewhere: a message moved in when nothing ran, still waiting, comes back', n2.app.editor.text === 'race' && !/^› race/m.test(n2.term.screen.text()), JSON.stringify(n2.app.editor.text))
+  // And when this terminal stops it itself: it is that turn's message, so the mark esc put under it goes too.
+  const n3 = setup({ cols: 80, rows: 30 })
+  n3.app.turnStarted(); n3.key('race2\r'); n3.clock.advance(20)
+  n3.app.turnEnded(); n3.app.turnStarted(); n3.clock.advance(20)
+  n3.key('\x1b'); n3.clock.advance(60)
+  n3.app.withdrawn([n3.sentIds.at(-1)], [], true); n3.app.turnEnded(); n3.clock.advance(20)
+  check('stop here: a message moved in when nothing ran, stopped while it waited: back, and no mark', marks(n3) === 0 && n3.app.editor.text === 'race2', `marks=${marks(n3)} ${JSON.stringify(n3.app.editor.text)}`)
   // N5. A word answered at once, sent while idle right after a message, is not the turn's message.
   const n5 = setup({ cols: 80, rows: 30 })
   n5.app.setAnsweredAtOnce([], ['usage'])
@@ -2207,6 +2239,60 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   n5.key('\x1b'); n5.clock.advance(60)
   n5.app.withdrawn([idFirst], [], true); n5.app.turnEnded(); n5.clock.advance(20)
   check('stop here: a word answered at once does not take the turn\'s place; nothing ran, no mark', marks(n5) === 0 && n5.app.editor.text === 'first', `marks=${marks(n5)} ${JSON.stringify(n5.app.editor.text)}`)
+}
+
+// 84. /clear clears the screen; the conversation stays, and so does its turn: what runs, what waits, an approval,
+// an ↑ in flight, and the Interrupted mark a stop after it puts.
+{
+  const marks = (x) => x.term.screen.text().split('Interrupted').length - 1
+  // (a) An approval: still there, still answered by its keys; esc still stops the turn.
+  const a = setup({ cols: 80, rows: 30 })
+  a.app.turnStarted(); a.app.message('ts-a', 'I need permission: rm x', null, false)
+  a.app.offer('ts-a', [{ id: 'approval:allow:a', label: 'Allow', style: 'primary' }, { id: 'approval:deny:a', label: 'Deny', style: 'danger' }]); a.clock.advance(20)
+  a.app.clear(true); a.clock.advance(20)
+  const title = a.term.screen.text().split('\n').find((l) => l.startsWith(' ⚠')) ?? '(none)'
+  check('/clear: the approval keeps its title, the request\'s first line', /⚠ I need permission: rm x/.test(title), title)
+  a.key('1'); a.clock.advance(20)
+  const answered = a.actions.at(-1)
+  a.key('\x1b'); a.clock.advance(60)
+  check('/clear: an approval stays and its keys answer it; esc still stops the turn', answered === 'approval:allow:a' && a.app.editor.text === '' && a.cancels === 1, JSON.stringify({ answered, text: a.app.editor.text, cancels: a.cancels }))
+  // (b) A message waiting: esc after /clear brings it back.
+  const b = setup({ cols: 80, rows: 30 })
+  b.app.turnStarted(); b.key('m2\r'); b.app.turnStarted(); b.clock.advance(20)
+  b.app.clear(true); b.clock.advance(20)
+  b.key('\x1b'); b.clock.advance(60)
+  check('/clear: what waits is still there; a stop after it brings it back', b.cancels === 1 && b.app.editor.text === 'm2', JSON.stringify({ cancels: b.cancels, text: b.app.editor.text }))
+  // (c) An ↑ in flight: its answer after /clear still brings the message back.
+  const c = setup({ cols: 80, rows: 30 })
+  c.app.turnStarted(); c.key('m3\r'); c.app.turnStarted(); c.clock.advance(20)
+  const idM3 = c.sentIds.at(-1)
+  c.key('\x1b[A'); c.app.clear(true); c.clock.advance(20)
+  c.app.withdrawn([idM3], [idM3]); c.clock.advance(20)
+  check('/clear: an ↑ answered after it still brings the message back', c.app.editor.text === 'm3', JSON.stringify(c.app.editor.text))
+  // (d) The waiting message's turn starts after /clear: it is shown, and the status says a turn runs.
+  const d = setup({ cols: 80, rows: 30 })
+  d.app.turnStarted(); d.key('m4\r'); d.app.turnStarted(); d.clock.advance(20)
+  d.app.clear(true); d.clock.advance(20)
+  d.app.turnEnded(); d.clock.advance(20)
+  check('/clear: the next turn after it is shown, and running', /^› m4/m.test(d.term.screen.text()) && /✻ Working/.test(d.term.screen.text()), d.term.screen.text().split('\n').filter((l) => /m4|✻/.test(l)).join(' | '))
+  // (e) A stop of the running turn after /clear marks it.
+  const e = setup({ cols: 80, rows: 30 })
+  e.app.turnStarted(); e.app.clear(true); e.clock.advance(20)
+  e.key('\x1b'); e.clock.advance(60)
+  e.app.withdrawn([], [], true); e.clock.advance(20)
+  check('/clear: a stop after it marks the turn Interrupted', marks(e) === 1 && e.cancels === 1, `marks=${marks(e)} cancels=${e.cancels}`)
+  // The running tool and a deep interview's strip stay with the turn.
+  const r = setup({ cols: 80, rows: 30 })
+  r.app.startInterview('topic'); r.app.turnStarted(); r.app.toolCall({ name: 'bash', callId: 'r1', title: 'make' }); r.clock.advance(20)
+  r.app.clear(true); r.clock.advance(20)
+  const status = r.term.screen.text().split('\n').find((l) => l.includes('✻')) ?? '(none)'
+  check('/clear: the status line still names the running tool, and the interview strip stays', /Running bash/.test(status) && r.term.screen.text().includes('deep interview'), status)
+  // MA. A message shown as started, still waiting, then /clear, then another terminal's stop: it comes back.
+  const f = setup({ cols: 80, rows: 30 })
+  f.key('started one\r'); f.app.turnStarted(); f.clock.advance(20)
+  f.app.clear(true); f.clock.advance(20)
+  f.app.withdrawn([f.sentIds.at(-1)], [], true); f.app.turnEnded(); f.clock.advance(20)
+  check('/clear: a message shown as started that still waited comes back when a stop names it', f.app.editor.text === 'started one', JSON.stringify(f.app.editor.text))
 }
 
 const failed = results.filter((r) => !r.ok)

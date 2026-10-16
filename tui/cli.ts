@@ -282,7 +282,7 @@ export function createCommands(app: App, link: ConversationLink, options: { now?
           if (!link.send({ type: 'usage' })) offline()
           break
         case 'clear':
-          app.clear()
+          app.clear(true)
           break
         case 'help':
           app.notice(help(), 'info')
