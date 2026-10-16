@@ -80,8 +80,8 @@ Define success criteria. Loop until verified.
   and call `launchctl`. Their logic is tested by sourcing `install.sh` with
   `DEEPBOT_INSTALL_SOURCED=1`, which defines its functions and runs nothing.
 - **Verify where it runs.** `node test/run-scenario.ts test/scenarios/<name>.json` against a real
-  model (not in CI; `service/run-scenarios.sh` runs the set daily), then restart the live bot and
-  read `node ~/.dsh/service/health-check.mjs --status`.
+  model (not in CI; `service/install-scenarios.sh` schedules `service/run-scenarios.sh` daily), then
+  restart the live bot and read `node ~/.dsh/service/health-check.mjs --status`.
 - **One heavy job at a time.** Suites, scenarios and review agents run one after another, never side
   by side: the machines this runs on are small, and a full disk once failed a gate with `ENOSPC`.
 

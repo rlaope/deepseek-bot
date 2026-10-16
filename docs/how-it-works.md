@@ -838,7 +838,12 @@ Named shortcuts exist for the common ones (`pnpm test:doc`, `test:vision`, `test
 `test:approval-gate`, `test:interrupt`, `test:immediate`, ...; the full list is in
 `package.json`). `service/run-scenarios.sh` runs the set unattended, writes
 `$DSH_HOME/slack-state/scenario-report.txt`, takes a lock so two runs cannot share state, and runs
-`--quick` (interrupt and approval-gate) when asked. `test/dist-fresh.ts` guards the scenario
+`--quick` (interrupt and approval-gate) when asked. `service/install-scenarios.sh` makes it a daily
+launchd job (09:30 unless `HOUR`/`MINUTE` say otherwise); `install.sh` does not, since every scenario is
+a paid turn of a real model. The job starts node, which starts the script: macOS closes a checkout under
+`~/Desktop`, `~/Documents` or `~/Downloads` to a shell that launchd starts itself, while node, once
+allowed (macOS may ask), reads it. The health probe says so when the report is more than a day late, as
+it does when one fails. `test/dist-fresh.ts` guards the scenario
 runner too, so a scenario can never run a stale build.
 
 ## Changing the voice

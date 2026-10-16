@@ -101,6 +101,16 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The daily scenario run had stopped, and nothing said so.** Its launchd job, made by hand, started
+  `/bin/bash` on `run-scenarios.sh` in a checkout under `~/Desktop`; macOS closes that folder to a shell
+  launchd starts itself, so every run ended at "Operation not permitted" before it began, and the only
+  sign was a line in `scenarios.err.log`. `service/install-scenarios.sh` now installs the job (it is not
+  part of `install.sh`: every scenario is a paid turn of a real model). The job starts node, which starts
+  the script in the checkout; on the machine this was found on, macOS let that node read it (elsewhere it
+  may ask once), and a run that cannot start now says why in `scenarios.err.log`. The health probe now
+  also alerts when the report is more than a day late, once per wait (installing again starts another).
+  The tenant scenario counted an English "declined" as no refusal; it now counts it.
+
 - **What the terminal drew before a light background was known stayed dark.** Blocks fixed their colours
   when they were made, so the welcome box and anything drawn before the terminal answered the OSC 11
   query (a resumed conversation's history, over a slow link) kept the dark palette on a light terminal.

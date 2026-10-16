@@ -22,7 +22,7 @@ import { spawnSync } from 'node:child_process'
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -141,9 +141,9 @@ async function waitForRecovery(ms) {
 // was suppressed or failed is tried again on the next probe.
 const SCENARIO_REPORT = process.env.DEEPBOT_SCENARIO_REPORT ?? join(homedir(), '.dsh', 'slack-state', 'scenario-report.txt')
 async function checkScenarios() {
-  if (!existsSync(SCENARIO_REPORT)) return
-  const text = readFileSync(SCENARIO_REPORT, 'utf8')
+  const text = existsSync(SCENARIO_REPORT) ? readFileSync(SCENARIO_REPORT, 'utf8') : ''
   const ran = (text.match(/^scenarios run (\S+)/m) ?? [])[1]
+  await checkStale(ran)
   const failed = Number((text.match(/^\s*(\d+) scenario\(s\) failed/m) ?? [])[1] ?? NaN)
   if (ran === undefined || !Number.isFinite(failed) || failed === 0) return
   if (loadProbeState().scenarioReportAlerted === ran) return
@@ -153,6 +153,31 @@ async function checkScenarios() {
   console.log(`  scenarios: ${note}${dryRun ? ` — ${message}` : ''}`)
   if (note === 'alert sent' || note.startsWith('dry-run')) {
     const state = loadProbeState(); state.scenarioReportAlerted = ran; saveProbeState(state)
+  }
+}
+
+// A report that stops coming is a failure too. The job started a shell that macOS kept out of a checkout
+// under ~/Desktop, and for days the only sign was a line in scenarios.err.log. With the job installed, no
+// report for more than a day, counted from the later of the last report and the job's install, is said once
+// per such wait: installing again starts another, so a job that still does not start is said again.
+const SCENARIO_JOB = process.env.DEEPBOT_SCENARIO_JOB ?? join(homedir(), 'Library', 'LaunchAgents', 'ai.deepbot.scenarios.plist')
+const REPORT_LATE_MS = 26 * 3600_000
+async function checkStale(ran: string | undefined) {
+  const job = statSync(SCENARIO_JOB, { throwIfNoEntry: false })
+  if (job === undefined) return
+  // A report time ahead of the clock, or one that cannot be read (NaN fails the comparison too), says nothing about
+  // when the job last ran.
+  const at = ran === undefined ? NaN : Date.parse(ran)
+  const since = Math.max(at <= Date.now() + 3600_000 ? at : 0, job.mtimeMs)
+  if (Date.now() - since < REPORT_LATE_MS) return
+  const key = String(since)
+  if (loadProbeState().scenarioStaleAlerted === key) return
+  const message = `:warning: deepbot's scenario run has not reported since ${since === job.mtimeMs ? 'it was installed' : ran}: it may not be starting. Its errors go to scenarios.err.log in the plugin's state directory.`
+  // The failure alert's slot: one may wait behind the other, and neither is lost, since a suppressed one is not recorded.
+  const note = await alert(message, 'lastScenarioAlertAt')
+  console.log(`  scenarios: ${note}${dryRun ? ` — ${message}` : ''}`)
+  if (note === 'alert sent' || note.startsWith('dry-run')) {
+    const state = loadProbeState(); state.scenarioStaleAlerted = key; saveProbeState(state)
   }
 }
 if (!statusOnly) await checkScenarios()

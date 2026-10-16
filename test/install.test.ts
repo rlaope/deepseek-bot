@@ -418,6 +418,55 @@ for (const installer of ['service/install-service.sh', 'service/install-health.s
   rmSync(root, { recursive: true, force: true })
 }
 
+// The daily scenario run. Its job started /bin/bash on run-scenarios.sh in a checkout under ~/Desktop, and macOS
+// closed the checkout to it ("Operation not permitted"): no run happened for days, and nothing said so but a log.
+// The job now starts node, which starts the script; the job's own directory is outside the checkout.
+{
+  const installer = fileURLToPath(new URL('../service/install-scenarios.sh', import.meta.url))
+  const text = readFileSync(installer, 'utf8')
+  const guard = text.search(/^if \[ "\$\{DEEPBOT_INSTALL_SOURCED:-0\}" = 1 \]; then return 0; fi$/m)
+  check('scenarios: sourced, it stops before installing anything', guard !== -1 && guard < text.indexOf('launchctl '))
+  check('scenarios: install.sh does not run it (every scenario is a real model\'s turn)', !readFileSync(new URL('../install.sh', import.meta.url), 'utf8').includes('install-scenarios'))
+}
+// Sourced only when it would stop before launchctl: a test never installs anything.
+if (/^if \[ "\$\{DEEPBOT_INSTALL_SOURCED:-0\}" = 1 \]; then return 0; fi$/m.test(readFileSync(new URL('../service/install-scenarios.sh', import.meta.url), 'utf8'))) {
+  const installer = fileURLToPath(new URL('../service/install-scenarios.sh', import.meta.url))
+  const text = readFileSync(installer, 'utf8')
+  const home = join(dir, 'scenarios-home')
+  mkdirSync(join(home, 'Library/LaunchAgents'), { recursive: true })
+  const plist = (env = {}) => execFileSync('/bin/bash', ['-c', 'DEEPBOT_INSTALL_SOURCED=1 source "$1" && plist_xml', 'bash', installer], {
+    encoding: 'utf8', env: { ...process.env, HOME: home, DEEPBOT_NODE: '/opt/node/bin/node', HOUR: '', MINUTE: '', ...env },
+  })
+  const field = (xml, key) => (new RegExp(`<key>${key}</key>\\s*<(?:string|integer)>([^<]*)<`).exec(xml) ?? [])[1]
+  const args = (xml) => [...(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(xml)?.[1] ?? '').matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1])
+  const xml = plist()
+  const repoDir = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '')
+  check('scenarios: the job starts node, not a shell', args(xml)[0] === '/opt/node/bin/node' && args(xml)[1] === '-e', JSON.stringify(args(xml).slice(0, 2)))
+  check('scenarios: the job\'s own directory is outside the checkout', field(xml, 'WorkingDirectory') === join(home, '.dsh/service'), field(xml, 'WorkingDirectory'))
+  check('scenarios: it names the checkout, and every day at 09:30 unless told', field(xml, 'DEEPBOT_REPO') === repoDir && field(xml, 'Hour') === '9' && field(xml, 'Minute') === '30', `${field(xml, 'DEEPBOT_REPO')} ${field(xml, 'Hour')}:${field(xml, 'Minute')}`)
+  writeFileSync(join(home, 'Library/LaunchAgents/ai.deepbot.scenarios.plist'), plist({ HOUR: '6', MINUTE: '5' }))
+  const again = plist()
+  check('scenarios: run again with nothing set, it keeps the installed schedule', field(again, 'Hour') === '6' && field(again, 'Minute') === '5', `${field(again, 'Hour')}:${field(again, 'Minute')}`)
+  check('scenarios: the plist is valid', spawnSync('plutil', ['-lint', join(home, 'Library/LaunchAgents/ai.deepbot.scenarios.plist')]).status === 0)
+  // What node runs: the checkout's run-scenarios.sh, from the checkout, with its exit status the job's.
+  const fake = join(dir, 'scenarios-repo')
+  mkdirSync(join(fake, 'service'), { recursive: true })
+  writeFileSync(join(fake, 'service/run-scenarios.sh'), 'pwd > "$OUT"\nexit 3\n')
+  const out = join(dir, 'scenarios-cwd.txt')
+  const run = spawnSync(process.execPath, ['-e', args(xml)[2]], { env: { ...process.env, DEEPBOT_REPO: fake, OUT: out }, cwd: dir })
+  // A checkout that is not there (moved, or closed to node): the job fails, and says why in its error log.
+  const gone = spawnSync(process.execPath, ['-e', args(xml)[2]], { env: { ...process.env, DEEPBOT_REPO: join(dir, 'no-such-checkout') }, cwd: dir, encoding: 'utf8' })
+  check('scenarios: a run that cannot start fails and says so on stderr', gone.status !== 0 && /could not start in .*no-such-checkout/.test(gone.stderr), `status ${gone.status}, stderr ${JSON.stringify(gone.stderr)}`)
+  // A time the job cannot fire at is refused before anything is written; a leading zero is a number.
+  const time = (h, m) => spawnSync('/bin/bash', ['-c', 'DEEPBOT_INSTALL_SOURCED=1 source "$1" && check_time && echo "$HOUR:$MINUTE"', 'bash', installer], { encoding: 'utf8', env: { ...process.env, HOME: home, HOUR: h, MINUTE: m } })
+  const bad = [['24', '0'], ['9am', '0'], ['9', '60']].map(([h, m]) => time(h, m))
+  check('scenarios: an hour or minute the job cannot fire at is refused', bad.every((r) => r.status !== 0 && /HOUR must be/.test(r.stdout)), bad.map((r) => `${r.status} ${r.stdout.trim()}`).join(' | '))
+  check('scenarios: 09:08 is nine and eight', time('09', '08').stdout.trim() === '9:8', JSON.stringify(time('09', '08').stdout))
+  const order = ['check_time || exit 1', 'plist_xml > "$NEW"', 'plutil -lint "$NEW"', 'mv "$NEW" "$PLIST"'].map((step) => text.indexOf(step))
+  check('scenarios: the time is checked, then the new plist, before it takes the installed one\'s place', order.every((i, n) => i !== -1 && (n === 0 || i > order[n - 1])), JSON.stringify(order))
+  check('scenarios: node runs the checkout\'s script there, and its status is the job\'s', run.status === 3 && existsSync(out) && readFileSync(out, 'utf8').trim().endsWith('/scenarios-repo'), `status ${run.status}, cwd ${existsSync(out) ? readFileSync(out, 'utf8').trim() : '(none)'}`)
+}
+
 rmSync(dir, { recursive: true, force: true })
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
