@@ -44,6 +44,9 @@ is built before the thing it stands on. The detailed history of each milestone i
   bytes are read from the descriptor that was checked.
 - **The live round trip on Discord and Telegram**: typing, uploads, buttons and Telegram's rendering
   are tested against mocked APIs only (see Unverified).
+- **Slack's own part cutter** (`postChunked`) keeps its number's room but does not recount it when the parts
+  reach ten (about 36 000 characters at 4000), and can cut a surrogate pair. `transports/parts.ts` does both;
+  Slack can use it.
 - **A background job ends with its turn.** The adapter releases the agent after every turn and
   dsh-jobs disposes an agent's jobs with it, so "I'll tell you when it finishes" cannot be kept — on
   any platform. A continuable subagent can be messaged only while its parent's turn runs, for the
@@ -68,6 +71,10 @@ Decided against:
 
 ## Unverified
 
+- Long answers on Telegram and Discord against the platforms themselves: the parts are checked against fakes that
+  enforce the limits as documented (Telegram's 4096 counted after the entities, Discord's 2000); no multi-part
+  answer was sent live. A part dense with Markdown now carries up to four times the entities it did; whether
+  Telegram limits the entities in one message, and with what error, is not known.
 - Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
   `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
   rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.

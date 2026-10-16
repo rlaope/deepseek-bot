@@ -171,6 +171,19 @@ function message(overrides = {}) {
   const tableBody = api.rest.filter((c) => c.path === '/channels/C1/messages' && c.method === 'POST').at(-1)
   const tableContent = tableBody?.body?.content
   check('a table arrives as a list', tableContent === '- **페르소나** — 아리', JSON.stringify(tableContent))
+  // Every part fits a message with its number, and no character is cut in half: a part one over the limit is refused.
+  const before = api.rest.length
+  const huge = 'x'.repeat(1993) + '😀' + 'y'.repeat(2100)   // the emoji across where the first part ends
+  await t.post({ channel: 'C1', threadTs: null }, huge)
+  const hugeParts = api.rest.slice(before).filter((c) => c.path === '/channels/C1/messages' && c.method === 'POST').map((c) => String(c.body?.content ?? ''))
+  const bare = hugeParts.map((p) => p.replace(/^\(\d+\/\d+\)\n/, ''))
+  check('every part of a long answer fits, its number included', hugeParts.length === 3 && hugeParts.every((p) => p.length <= 2000) && hugeParts.every((p, i) => p.startsWith(`(${i + 1}/3)\n`)), JSON.stringify(hugeParts.map((p) => p.length)))
+  check('the parts are the whole answer, no character cut in half', bare.join('') === huge && bare[0].length === 1993 && bare.every((p) => !/[\ud800-\udbff]$/.test(p)), JSON.stringify(bare.map((p) => p.length)))
+  // Buttons go with the last part, where the question ends: a long approval request has one set.
+  const atButtons = api.rest.length
+  await t.post({ channel: 'C1', threadTs: null }, 'q'.repeat(2500), { buttons: [{ id: 'a1', label: 'Allow' }, { id: 'd1', label: 'Deny' }] })
+  const withButtons = api.rest.slice(atButtons).filter((c) => c.path === '/channels/C1/messages' && c.method === 'POST').map((c) => c.body?.components !== undefined)
+  check('a long message\'s buttons are on its last part only', JSON.stringify(withButtons) === JSON.stringify([false, true]), JSON.stringify(withButtons))
 
   const api2 = fakeDiscord()
   const t2 = transportFor(api2, mkdtempSync(join(tmpdir(), 'dc-')))

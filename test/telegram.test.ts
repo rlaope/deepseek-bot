@@ -25,7 +25,7 @@ function check(name, ok, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** A Bot API that answers from a queue and records what it was asked. */
-function fakeApi(options: { updates?: unknown[]; rejectHtml?: boolean; editFails?: boolean } = {}) {
+function fakeApi(options: { updates?: unknown[]; rejectHtml?: boolean; tooLong?: boolean; editFails?: boolean } = {}) {
   const calls = []
   const updates = [...(options.updates ?? [])]
   const fetchImpl = async (url, init) => {
@@ -43,6 +43,10 @@ function fakeApi(options: { updates?: unknown[]; rejectHtml?: boolean; editFails
     if (method === 'sendMessage') {
       const body = init?.body ? JSON.parse(String(init.body)) : {}
       if (options.rejectHtml && body.parse_mode === 'HTML') return json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" }, false)
+      if (options.tooLong && body.parse_mode === 'HTML') return json({ ok: false, error_code: 400, description: 'Bad Request: message is too long' }, false)
+      // As Telegram: 4096 characters, counted after the entities are parsed.
+      const counted = body.parse_mode === 'HTML' ? String(body.text).replace(/<[^>]*>/g, '').replace(/&(?:amp|lt|gt|quot);/g, '&').length : String(body.text).length
+      if (counted > 4096) return json({ ok: false, error_code: 400, description: 'Bad Request: message is too long' }, false)
       return json({ ok: true, result: { message_id: 100 + calls.length, chat: { id: 7 } } })
     }
     if (method === 'editMessageText') {
@@ -165,6 +169,36 @@ function groupMessage(overrides = {}) {
   await t.post({ channel: '7', threadTs: null }, long)
   const parts = api.calls.filter((c) => c.method === 'sendMessage').slice(-2).map((c) => String(c.body?.text ?? ''))
   check('a long answer\'s table is a list in every part', parts.length === 2 && parts.every((p) => !p.includes('|')) && parts.join('').includes('<b>7</b> — 8'), JSON.stringify(parts.map((p) => p.slice(-60))))
+  // Every part fits a message with its number, and no character is cut in half: a part one over the limit is refused.
+  const before = api.calls.length
+  const huge = 'x'.repeat(4089) + '😀' + 'y'.repeat(4200)   // the emoji across where the first part ends
+  await t.post({ channel: '7', threadTs: null }, huge)
+  const hugeParts = api.calls.slice(before).filter((c) => c.method === 'sendMessage').map((c) => String(c.body?.text ?? ''))
+  const bare = hugeParts.map((p) => p.replace(/^\(\d+\/\d+\)\n/, ''))
+  check('every part of a long answer fits, its number included', hugeParts.length === 3 && hugeParts.every((p) => p.length <= 4096) && hugeParts.every((p, i) => p.startsWith(`(${i + 1}/3)\n`)), JSON.stringify(hugeParts.map((p) => p.length)))
+  check('the parts are the whole answer, no character cut in half', bare.join('') === huge && bare[0].length === 4089 && bare.every((p) => !/[\ud800-\udbff]$/.test(p)), JSON.stringify(bare.map((p) => p.length)))
+  // At the limit, one message, unnumbered; one over, two.
+  const atLimit = api.calls.length
+  await t.post({ channel: '7', threadTs: null }, 'w'.repeat(4096))
+  await t.post({ channel: '7', threadTs: null }, 'v'.repeat(4097))
+  const edge = api.calls.slice(atLimit).filter((c) => c.method === 'sendMessage').map((c) => String(c.body?.text ?? ''))
+  check('an answer at the limit is one message; one over is two', JSON.stringify(edge.map((p) => p.length)) === JSON.stringify([4096, 4096, 13]) && !edge[0].startsWith('('), JSON.stringify(edge.map((p) => p.length)))
+  // Every part of a long answer is rendered: Telegram counts the text after the entities, not the tags.
+  const atMarked = api.calls.length
+  // Escapes outnumber the markup on each line, so a count that kept "&amp;" would put every part over.
+  await t.post({ channel: '7', threadTs: null }, '**굵게** `code` & & & & 끝\n'.repeat(700))
+  const marked = api.calls.slice(atMarked).filter((c) => c.method === 'sendMessage')
+  check('every part of a long answer is sent rendered, not as its Markdown', marked.length >= 3 && marked.every((c) => c.body?.parse_mode === 'HTML'), JSON.stringify(marked.map((c) => [c.body?.parse_mode ?? 'plain', String(c.body?.text ?? '').length])))
+  // An empty answer is still a message: Telegram refuses an empty text.
+  const atEmpty = api.calls.length
+  await t.post({ channel: '7', threadTs: null }, '')
+  const emptyText = api.calls.slice(atEmpty).find((c) => c.method === 'sendMessage')?.body?.text
+  check('an empty answer is sent as a word, not as nothing', emptyText === '(empty response)', JSON.stringify(emptyText))
+  // Nine parts by the limit, ten once each leaves room for its number: "(10/10)" is wider than "(9/9)", and still fits.
+  const at10 = api.calls.length
+  await t.post({ channel: '7', threadTs: null }, 'z'.repeat(9 * 4090 + 1))
+  const tenParts = api.calls.slice(at10).filter((c) => c.method === 'sendMessage').map((c) => String(c.body?.text ?? ''))
+  check('a wider number when the parts reach ten still fits', tenParts.length === 10 && tenParts.every((p) => p.length <= 4096) && tenParts[9].startsWith('(10/10)\n'), JSON.stringify(tenParts.map((p) => p.length)))
 }
 
 // 7. If the edit is refused, the answer is still delivered.
@@ -325,6 +359,13 @@ function groupMessage(overrides = {}) {
   const attempts = api2.calls.filter((c) => c.method === 'sendMessage')
   check('a message Telegram will not parse is sent again as plain text', posted !== null && attempts.length === 2 && attempts[1].body.parse_mode === undefined
     && attempts[1].body.text === '**굵게**', JSON.stringify(attempts.map((a) => a.body)))
+  // Rendered and refused as too long (the count is Telegram's): the text as written fits, and is sent.
+  const api3 = fakeApi({ tooLong: true })
+  const t3 = transportFor(api3, mkdtempSync(join(tmpdir(), 'tg-')))
+  await t3.identity()
+  const fitted = await t3.post({ channel: '7', threadTs: null }, '**굵게**').catch(() => null)
+  const tries = api3.calls.filter((c) => c.method === 'sendMessage')
+  check('a rendering refused as too long is sent again as plain text', fitted !== null && tries.length === 2 && tries[1].body.parse_mode === undefined, JSON.stringify(tries.map((a) => a.body)))
 }
 
 // 15. Approval buttons: an inline keyboard, and the press as a callback query. They existed only on

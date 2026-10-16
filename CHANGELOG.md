@@ -101,6 +101,14 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A long answer on Telegram or Discord was refused.** It was cut at the platform's limit and then numbered
+  `(1/2)`, so every part but the last was six or more characters over the limit (4096, 2000); the platform
+  refused the first, and nothing of the answer arrived. Each part now leaves room for its number, recounted when
+  the parts reach ten, and a cut never splits a surrogate pair (an emoji made of several code points, a flag or a
+  family, can still fall across one). On Telegram every part that fits is also sent rendered: its length is measured as
+  Telegram counts it, after the entities, where the HTML's tags and escapes had sent the full parts as plain
+  Markdown; a rendering refused as too long is sent as written. On Discord, a long message's buttons are on its
+  last part only.
 - **A table in an answer arrived as its pipes.** Slack, Discord and Telegram draw no Markdown tables, so a
   table the model wrote showed as rows of `|` and a line of dashes. The three transports now send a table
   as a list before they format the rest (Telegram before it cuts a long answer into parts): a bullet a

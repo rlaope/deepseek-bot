@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
+import { numberedParts } from './parts.js'
 import type { AttachmentManifest, AttachmentRef, InboundMessage, PostedMessage, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 
 interface TelegramHost {
@@ -54,6 +55,11 @@ interface TelegramCallbackQuery { id: string; from?: TelegramUser; data?: string
 interface TelegramUpdate { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; callback_query?: TelegramCallbackQuery }
 
 const API_BASE = 'https://api.telegram.org'
+
+/** What Telegram counts of an HTML message: its text after the entities are parsed, without the tags or escapes. */
+function telegramLength(html: string): number {
+  return html.replace(/<[^>]*>/g, '').replace(/&(?:amp|lt|gt|quot);/g, '&').length
+}
 
 /**
  * The model writes Markdown; Telegram showed it as raw marks. This turns the common parts into Telegram's
@@ -123,14 +129,16 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
 
   /**
    * Send with the Markdown rendered as HTML, or as it was written when Telegram refuses the markup — a
-   * tag a chunk boundary cut in half, say — or when the rendering would not fit a message.
+   * tag a chunk boundary cut in half, say — or when the rendering would not fit a message. Telegram counts
+   * its limit after parsing the entities, so the tags and escapes do not count: measured on the HTML, every
+   * full part of a long answer went as plain text, its Markdown showing.
    */
   async function rendered<T>(method: string, base: Record<string, unknown>, body: string): Promise<T> {
     const html = toTelegramHtml(body)
-    if (html.length <= MESSAGE_LIMIT) {
+    if (telegramLength(html) <= MESSAGE_LIMIT) {
       try { return await call<T>(method, { ...base, text: html, parse_mode: 'HTML' }) }
       catch (e) {
-        if (!/parse entities|can't parse|unsupported start tag|can't find end tag/i.test(String((e as Error)?.message ?? e))) throw e
+        if (!/parse entities|can't parse|unsupported start tag|can't find end tag|too[ _]long/i.test(String((e as Error)?.message ?? e))) throw e
         log(`telegram refused the markup, sending plain text: ${String((e as Error)?.message ?? e).slice(0, 120)}`)
       }
     }
@@ -366,13 +374,10 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
       // at 64 bytes by Telegram; an id longer than that goes without a button and is answered by typing.
       const keyboard = (options?.buttons ?? []).filter((button) => Buffer.byteLength(button.id) <= 64)
         .slice(0, 5).map((button) => ({ text: button.label.slice(0, 64), callback_data: button.id }))
-      const chunks: string[] = []
-      for (let i = 0; i < text.length; i += MESSAGE_LIMIT) chunks.push(text.slice(i, i + MESSAGE_LIMIT))
-      if (chunks.length === 0) chunks.push('(empty response)')
+      const chunks = numberedParts(text, MESSAGE_LIMIT)
       let first: PostedMessage | null = null
       let replace = options?.replace ?? null
-      for (const [i, chunk] of chunks.entries()) {
-        const body = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n${chunk}` : chunk
+      for (const [i, body] of chunks.entries()) {
         let sent: TelegramMessage | null = null
         if (replace !== null && first === null) {
           try {

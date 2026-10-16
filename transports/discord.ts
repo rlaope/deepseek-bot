@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
+import { numberedParts } from './parts.js'
 import type { ActionButton, ActionEvent, AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 
 interface DiscordHost {
@@ -372,13 +373,10 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     async post(target: Target, markdown: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
       // Discord renders Markdown, but no tables.
       const text = tablesAsLists(markdown)
-      const chunks: string[] = []
-      for (let i = 0; i < text.length; i += MESSAGE_LIMIT) chunks.push(text.slice(i, i + MESSAGE_LIMIT))
-      if (chunks.length === 0) chunks.push('(empty response)')
+      const chunks = numberedParts(text, MESSAGE_LIMIT)
       let first: PostedMessage | null = null
       let replace = options?.replace ?? null
-      for (const [i, chunk] of chunks.entries()) {
-        const body = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n${chunk}` : chunk
+      for (const [i, body] of chunks.entries()) {
         let sent: DiscordMessage | null = null
         if (replace !== null) {
           try {
@@ -396,8 +394,8 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
             body: JSON.stringify({
               content: body,
               // An action row of buttons: the decision is made in place rather than by
-              // typing a reply, which is what Discord is good at.
-              ...(buttons.length > 0
+              // typing a reply, which is what Discord is good at. On the last part, where the question ends.
+              ...(buttons.length > 0 && i === chunks.length - 1
                 ? { components: [{ type: 1, components: buttons.slice(0, 5).map((button) => ({
                     type: 2,
                     style: BUTTON_STYLES[button.style ?? 'secondary'] ?? 2,
