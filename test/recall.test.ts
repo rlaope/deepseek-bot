@@ -114,6 +114,30 @@ rmSync(dir, { recursive: true, force: true })
   check('only the first message, before its first marker, can place a session', channelsOf('s-gated') === '(none)', `s-gated: ${channelsOf('s-gated')}`)
 }
 
+// 4b. A turn that kept quiet (replyMode 'thread') answered "[no reply]": nothing was said, so nothing is indexed.
+{
+  const dshHome = join(dir, 'dsh-quiet')
+  const agentHome = join(dir, 'agent-quiet')
+  mkdirSync(agentHome, { recursive: true })
+  const at = join(dshHome, 'sessions', 'bucket', 's-quiet')
+  mkdirSync(at, { recursive: true })
+  const said = (seq, text) => ({ type: 'assistant/message', seq, time: 10 + seq, data: { message: { content: [{ type: 'text', text }], source: { kind: 'model' } } } })
+  const asked = (seq, text) => ({ type: 'user/message', seq, time: 10 + seq, data: { content: [{ type: 'text', text }], source: { kind: 'user' } } })
+  const events = [
+    { type: 'session', id: 's-quiet', createdAt: 1, cwd: agentHome },
+    asked(1, '점심 뭐 먹지'), said(2, '[no reply]'),
+    asked(3, '배포 언제 해?'), said(4, '내일 10시에 해. no reply가 오면 다시 물어볼게.'),
+    // What the adapter also posts nothing for: the marker opening an explanation, or closing one.
+    asked(5, '퇴근해?'), said(6, '[no reply]\n(둘이 하는 얘기)'),
+    asked(7, '응 먼저 가'), said(8, '둘이 하는 얘기야.\n[no reply]'),
+  ]
+  writeFileSync(join(at, 'session.v4.jsonl.zstd'), Buffer.concat(events.map((e) => zstdCompressSync(Buffer.from(JSON.stringify(e) + '\n')))))
+  const out = join(dir, 'quiet.jsonl')
+  execFileSync(process.execPath, [CLI, 'index', '--out', out, '--cwd', agentHome, '--quiet'], { encoding: 'utf8', env: { ...process.env, DSH_HOME: dshHome, DEEPBOT_HOME: agentHome } })
+  const rows = readFileSync(out, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.role === 'assistant').map((r) => r.text)
+  check('a "[no reply]" answer is not indexed, with an explanation either side; an answer that says it in passing is', rows.length === 1 && rows[0].startsWith('내일 10시'), JSON.stringify(rows))
+}
+
 // 5. A home reached through a symlink. The adapter names it by its resolved path (the process's cwd) and
 // the harness records that path in each session; the indexer took DEEPBOT_HOME as given, so it wrote
 // another index than the adapter reads, and skipped every session as "another working directory".

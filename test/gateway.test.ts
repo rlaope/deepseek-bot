@@ -417,7 +417,7 @@ for (const [name, profile] of [['no deepbot row', '- id: other\n  config: {}\n']
   const scopes = m?.oauth_config?.scopes?.bot ?? []
   check('manifest: JSON, Socket Mode on, interactivity on', code === 0 && m?.settings?.socket_mode_enabled === true && m.settings.interactivity.is_enabled === true)
   check('manifest: every bot scope docs/setup.md lists is in it', documented.length >= 8 && documented.every((x) => scopes.includes(x)), `documented: ${documented.join(' ')}`)
-  check('manifest: the events the setup names', JSON.stringify(m?.settings?.event_subscriptions?.bot_events) === '["app_mention","message.im"]')
+  check('manifest: the events the setup names', JSON.stringify(m?.settings?.event_subscriptions?.bot_events) === '["app_mention","message.im","message.channels","message.groups"]')
   check('manifest: the same as slackManifest()', JSON.stringify(m) === JSON.stringify(slackManifest()))
   s.done()
 }

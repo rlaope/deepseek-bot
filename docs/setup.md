@@ -103,7 +103,8 @@ app-level token; generate that under Basic Information → App-Level Tokens. By 
 3. **OAuth & Permissions** → bot scopes: `app_mentions:read`, `chat:write`, `channels:read`,
    `channels:history` (plus `groups:history` for private channels and `im:history` for DMs),
    `users:read`, `files:read` (attachments) and `files:write` (document uploads).
-4. **Event Subscriptions** → subscribe to `app_mention` (and `message.im` for DMs).
+4. **Event Subscriptions** → subscribe to `app_mention` (and `message.im` for DMs; `message.channels` and
+   `message.groups` for `replyMode: thread`, below).
    **Interactivity & Shortcuts** → on (no request URL is needed in Socket Mode), for the approval
    buttons; without it a press does nothing and the person types allow / deny (or 허용 / 거부, 允许 / 拒绝) instead.
 5. Install it to the workspace and copy the bot token (`xoxb-…`). Give both tokens to
@@ -187,7 +188,16 @@ set `DEEPBOT_DENY_READ` (colon-separated paths) before installing the services.
 
 `targetChannels` in the profile's `cordis.patch.yml` accepts channel ids or `'*'` for every channel
 the bot was invited to; **the plugin refuses to start with an empty list**. `replyMode: mention`
-answers @-mentions in channels (DMs always); `'all'` answers every human message in them.
+answers @-mentions in channels (DMs always); `'all'` answers every human message in them. `thread`
+(Slack only; elsewhere it is `mention`) takes a mention to start, and then every message in a thread the
+bot takes part in, mention or not, for a day after it was last mentioned or spoke there. Told the message
+did not mention it, the model answers only when it is meant for it and otherwise posts nothing, with no
+working status shown; a failure or a timeout says nothing either. Several such messages in a row are one
+turn. Words such as `stop`, `usage` or `yes` are commands only with a mention; an approval may be answered
+without one by the person it asks, in the buttons' words (Allow/Deny, 허용/거부, 允许/拒绝). Each such
+message is a model turn, and the thread's chatter enters the session, so the channel's recall can find it.
+It needs the `message.channels` and `message.groups` events (the app `dsh gateway setup` makes has them); a
+thread under the bot's own post (a watch's report) needs a mention to start, like any other.
 `allowedUsers` narrows who, as above.
 
 ## Windows, by hand (the terminal only)

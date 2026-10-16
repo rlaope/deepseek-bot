@@ -86,6 +86,10 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   apply(ctx, { targetChannels: ['C_ALLOWED'], language: 'ko', stateDir, transportFactory: () => transport, progressAfterMs: 50, ...config })
   return {
     transport, logs, created, events,
+    /** A session event, as the harness fires one: a tool call during a turn, say. */
+    fire: (sessionId, event) => { for (const fn of listeners['session/event'] ?? []) fn({ header: { id: sessionId } }, event) },
+    /** An approval request for a session, as the harness raises one. */
+    ask: (sessionId) => listeners['approval/request'][0]({ agent: { session: { header: { id: sessionId } } }, reason: 'rm -rf build' }),
     read: () => JSON.parse(readFileSync(join(stateDir, 'sessions.json'), 'utf8')),
     done: () => rmSync(stateDir, { recursive: true, force: true }),
   }
@@ -361,6 +365,133 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   check('a missing credential is an error, not an empty token', message !== '', message)
   check('and the error names the reference', /SLACK_BOT_TOKEN_MISSING/.test(message), message)
   check('the transport is not ready', t.ready() === false)
+}
+
+// replyMode 'thread', with turns that take time: what is heard without a mention, and how it stays quiet.
+{
+  const quietRuns = (t) => t.logs.filter((l) => /kept quiet/.test(l)).length
+  // (a) Heard during the bot's first turn in a thread, before the thread has a session; a run of such messages is
+  // one turn (the earlier gives way, and comes to the later one as history); and quiet, they post nothing.
+  const a = boot({ agent: 'slow', config: { replyMode: 'thread', runTimeoutMs: 400, fake: { typing: true } } })
+  await sleep(60)
+  a.transport.deliver(a.transport.message({ text: 'CI 실패 좀 봐줘', user: 'U_ASKER' }))
+  await sleep(150)
+  a.transport.deliver(a.transport.message({ addressed: false, text: 'lint job도 같이 봐줘', user: 'U_OTHER' }))
+  a.transport.deliver(a.transport.message({ addressed: false, text: '아 그리고 테스트도', user: 'U_OTHER' }))
+  await sleep(2000)
+  const accepted = a.logs.filter((l) => /accepted channel=/.test(l)).length
+  check('thread: heard while its first turn there still runs', accepted === 3, `${accepted} accepted`)
+  check('thread: two in a row are one turn, the earlier giving way', a.logs.filter((l) => /gave way/.test(l)).length === 1 && quietRuns(a) === 1, a.logs.filter((l) => /gave way|kept quiet/.test(l)).join(' | '))
+  check('thread: the turn that timed out for a mention says so; the quiet one does not', a.transport.posted.filter((p) => p.text === '시간이 초과돼서 멈췄어.').length === 1, JSON.stringify(a.transport.posted.map((p) => p.text)))
+  a.done()
+  // (b) A quiet turn that runs long shows nothing: no status, no working message after progressAfterMs.
+  const b = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { typing: true } } })
+  await sleep(60)
+  b.transport.deliver(b.transport.message({ addressed: false }))
+  await sleep(400)
+  check('thread: a long quiet turn shows nothing while it runs', b.transport.posted.length === 0 && b.transport.typing.length === 0, `${JSON.stringify(b.transport.posted.map((p) => p.text))} ${b.transport.typing.length} status(es)`)
+  // A tool it runs meanwhile does not put up the working message either.
+  b.fire('s1', { type: 'tool/call', data: { name: 'bash' } })
+  await sleep(150)
+  check('thread: nor does a tool it runs', b.transport.posted.length === 0, JSON.stringify(b.transport.posted.map((p) => p.text)))
+  const marked = b.read().inflight?.['C_ALLOWED:t1']?.quiet === true
+  b.transport.deliver(b.transport.message({ text: '이것도 봐줘' }))
+  await sleep(150)
+  const record = b.read().inflight?.['C_ALLOWED:t1']
+  check('thread: its in-flight record is marked quiet, and a mention after it unmarks it', marked && record !== undefined && record.quiet === undefined, JSON.stringify(record))
+  b.done()
+  // (c) "그만" without a mention is not a stop, from anyone: said to a person, it stopped a turn nobody saw and
+  // withdrew everyone's waiting messages. Not the requester's either, during their turn or a quiet one after it.
+  const c = boot({ agent: 'slow', config: { replyMode: 'thread', runTimeoutMs: 600, fake: { typing: true } } })
+  await sleep(60)
+  c.transport.deliver(c.transport.message({ text: '배포 로그 봐줘', user: 'U_ASKER' }))
+  await sleep(200)
+  c.transport.deliver(c.transport.message({ addressed: false, text: '그만', user: 'U_ASKER' }))
+  await sleep(900)
+  c.transport.deliver(c.transport.message({ addressed: false, text: '회의 어떻게 됐어?', user: 'U_OTHER' }))
+  await sleep(200)
+  c.transport.deliver(c.transport.message({ addressed: false, text: '그만', user: 'U_ASKER' }))
+  await sleep(300)
+  check('thread: "그만" without a mention stops nothing, the requester\'s neither', !c.logs.some((l) => /cancel requested/.test(l)) && !c.transport.posted.some((p) => p.text === '중단했어.'), c.logs.filter((l) => /cancel requested|accepted/.test(l)).join(' | '))
+  c.done()
+  // (c2) An approval a quiet turn raises is its author's: they may answer it without a mention, in the buttons' words.
+  const c2 = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { typing: true } } })
+  await sleep(60)
+  c2.transport.deliver(c2.transport.message({ addressed: false, text: '빌드 폴더 날려도 될 듯', user: 'U_OTHER' }))
+  await sleep(300)
+  const raised = c2.ask('s1')
+  await sleep(100)
+  c2.transport.deliver(c2.transport.message({ addressed: false, text: '허용', user: 'U_OTHER' }))
+  const outcome = await Promise.race([raised, sleep(500).then(() => 'pending')])
+  check('thread: a quiet turn\'s approval is its author\'s to answer', outcome === 'allowed-once', String(outcome))
+  c2.done()
+  // (c3) A message with a file does not give way: its file would not be fetched for the later turn.
+  const c3 = boot({ agent: 'slow', config: { replyMode: 'thread', runTimeoutMs: 300, fake: { typing: true } } })
+  await sleep(60)
+  c3.transport.deliver(c3.transport.message({ text: '로그 볼래?', user: 'U_ASKER' }))
+  await sleep(150)
+  c3.transport.deliver(c3.transport.message({ addressed: false, text: '이 로그 봐줘', files: [{ name: 'a.log' }] }))
+  c3.transport.deliver(c3.transport.message({ addressed: false, text: '에러는 맨 아래야' }))
+  await sleep(1800)
+  check('thread: a message with a file does not give way to the next', !c3.logs.some((l) => /gave way/.test(l)) && c3.logs.filter((l) => /kept quiet/.test(l)).length === 2, c3.logs.filter((l) => /gave way|kept quiet/.test(l)).join(' | '))
+  c3.done()
+  // (c4) A working message a waiting message put up is that message's: a quiet turn ending before it leaves it be.
+  const c4 = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', runTimeoutMs: 300, fake: { remove: true } } })
+  await sleep(60)
+  c4.transport.deliver(c4.transport.message({ addressed: false, text: '음' }))
+  await sleep(150)
+  c4.transport.deliver(c4.transport.message({ text: '이거 봐줘', user: 'U_ASKER' }))
+  await sleep(1800)
+  const working = c4.transport.posted.findIndex((p) => /작업 중/.test(p.text))
+  const workingTs = `ts-${working + 1}`
+  const settled = c4.transport.posted.some((p) => p.replace === workingTs) || c4.transport.removed.some((r) => r.ts === workingTs)
+  check('thread: the waiting message\'s working message is answered in place, not left behind', working !== -1 && settled && c4.transport.posted.some((p) => p.text === '시간이 초과돼서 멈췄어.'), `${JSON.stringify(c4.transport.posted.map((p) => [p.text.slice(0, 12), p.replace]))} removed ${JSON.stringify(c4.transport.removed)}`)
+  c4.done()
+  // (c5) A stop said with a mention, while a quiet turn runs, withdraws a message waiting with its working message up:
+  // that working message is the quiet turn's to settle, and the stop's report takes its place.
+  const c5 = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { remove: true } } })
+  await sleep(60)
+  c5.transport.deliver(c5.transport.message({ addressed: false, text: '음' }))
+  await sleep(150)
+  c5.transport.deliver(c5.transport.message({ text: '이거 봐줘', user: 'U_ASKER' }))
+  await sleep(150)
+  c5.transport.deliver(c5.transport.message({ text: '그만', user: 'U_OTHER' }))
+  await sleep(500)
+  const up = c5.transport.posted.findIndex((p) => /작업 중/.test(p.text))
+  const upTs = `ts-${up + 1}`
+  const gone = c5.transport.posted.some((p) => p.replace === upTs) || c5.transport.removed.some((r) => r.ts === upTs)
+  check('thread: a working message whose message a stop withdrew does not stay up', up !== -1 && gone, `${JSON.stringify(c5.transport.posted.map((p) => [p.text.slice(0, 12), p.replace]))} removed ${JSON.stringify(c5.transport.removed)}`)
+  c5.done()
+  // (f) Once only messages that did not mention it remain, the in-flight record says so: a restart then says nothing.
+  // The turn for the mention times out at about 0.65 s, the quiet one after it at about 1.25 s: looked at between.
+  const f = boot({ agent: 'slow', config: { replyMode: 'thread', runTimeoutMs: 500, fake: { typing: true } } })
+  await sleep(60)
+  f.transport.deliver(f.transport.message({ text: '봐줘', user: 'U_ASKER' }))
+  await sleep(150)
+  f.transport.deliver(f.transport.message({ addressed: false, text: '나도 궁금' }))
+  await sleep(750)
+  const runningQuiet = f.logs.some((l) => /turn cancelled cause=timed out/.test(l)) && !f.logs.some((l) => /kept quiet/.test(l))
+  check('thread: with only a quiet turn left, the in-flight record is marked quiet', runningQuiet && f.read().inflight?.['C_ALLOWED:t1']?.quiet === true, `${runningQuiet} ${JSON.stringify(f.read().inflight)}`)
+  f.done()
+  // (e) A stop said to it with a mention ends a quiet turn, and is answered.
+  const e = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { typing: true } } })
+  await sleep(60)
+  e.transport.deliver(e.transport.message({ addressed: false }))
+  await sleep(300)
+  e.transport.deliver(e.transport.message({ text: '그만' }))
+  await sleep(400)
+  check('thread: a stop with a mention ends a quiet turn, and says so', e.transport.posted.some((p) => p.text === '중단했어.'), JSON.stringify(e.transport.posted.map((p) => p.text)))
+  e.done()
+  // (d) A restart that cut off only quiet turns says nothing; one with a mention in it still says it was lost.
+  const since = Date.now() - 5000
+  const d = boot({ state: { inflight: {
+    'C_ALLOWED:t0': { channel: 'C_ALLOWED', threadTs: 't0', since, quiet: true },
+    'C_ALLOWED:t1': { channel: 'C_ALLOWED', threadTs: 't1', since },
+  } } })
+  await sleep(500)
+  const notices = d.transport.posted.filter((p) => /끊겼어/.test(p.text))
+  check('thread: a restart says nothing where only quiet turns were cut off', notices.length === 1 && notices[0].target.threadTs === 't1', JSON.stringify(d.transport.posted.map((p) => [p.target.threadTs, p.text])))
+  d.done()
 }
 
 const failed = results.filter((r) => !r.ok)

@@ -101,7 +101,9 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     await loadNames(botToken)
     const limit = Math.max(1, Math.min(200, Number(cfg.historyLimit)))
     const r = threadTs
-      ? await slackGet<SlackHistoryResponse>(botToken, 'conversations.replies', { channel, ts: threadTs ?? '', limit: String(limit) })
+      // From what was seen last, as much as one call gives: a thread is read oldest first, so asking for `limit` gave
+      // a long thread's oldest page, and its new lines never arrived. The newest `limit` are kept below.
+      ? await slackGet<SlackHistoryResponse>(botToken, 'conversations.replies', { channel, ts: threadTs ?? '', limit: '200', ...(sinceTs ? { oldest: sinceTs } : {}) })
       : await slackGet<SlackHistoryResponse>(botToken, 'conversations.history', { channel, limit: String(limit) })
     if (!r.ok) {
       log(`history fetch failed (${r.error}) — answering without it`)
@@ -113,15 +115,17 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     const unknown = [...new Set((r.messages ?? []).map((m) => m.user).filter((id) => id && !nameCache.has(id)))]
     if (unknown.length > 0) await resolveMissingNames(botToken, unknown)
 
+    const fresh = (r.messages ?? []).filter((m) => m.ts !== currentTs && Number(m.ts) <= Number(currentTs) && (sinceTs === null || Number(m.ts) > Number(sinceTs)))
     const lines = []
     let chars = 0
     let lastTs = null
-    for (const m of (r.messages ?? [])) {
+    for (const m of threadTs ? fresh.slice(-limit) : (r.messages ?? [])) {
       if (m.ts === currentTs) continue                       // the question itself
       // Nor anything after it: those belong to later turns, and the bot's own working message is
       // posted before the history is read. The pointer stays behind them, so the next turn gets them.
       if (Number(m.ts) > Number(currentTs)) continue
-      if (m.subtype && m.subtype !== 'thread_broadcast') continue
+      // A message with a file is a person's words too.
+      if (m.subtype && m.subtype !== 'thread_broadcast' && m.subtype !== 'file_share') continue
       // Only what has not been delivered yet. Without this the whole thread is
       // re-sent every turn and stays in history, so a long thread is repeated
       // once per turn.
@@ -320,13 +324,22 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
    * mention syntax that has to be stripped before the text is a prompt.
    */
   function parseEvent(event: SlackEvent, eventId: string): InboundMessage | null {
-    if (event.bot_id || event.subtype || (event as { edited?: unknown }).edited) return null
+    // A message with a file, or one also sent to the channel, is still a person's message; other subtypes are not.
+    const shared = event.subtype === 'file_share' || event.subtype === 'thread_broadcast'
+    if (event.bot_id || (event.subtype && !shared) || (event as { edited?: unknown }).edited) return null
     if (!event.user || event.user === botUserId) return null
     if (!event.channel || !event.ts) return null
     if (!event.text?.trim()) return null
     const isMention = event.type === 'app_mention'
     const isDm = isDirectChannel(event.channel) || event.channel_type === 'im' || event.channel_type === 'mpim'
-    if (!isDm && cfg.replyMode === 'mention' && !isMention) return null
+    if (!isDm && !isMention) {
+      if (cfg.replyMode === 'mention') return null
+      // One that mentions the bot comes again as its app_mention, which is the turn: taking both answered it twice.
+      if (botUserId !== null && event.text.includes(`<@${botUserId}>`)) return null
+      // 'thread': a message in a thread comes in unaddressed, and the core takes it only in a thread the bot takes
+      // part in; one at the top of a channel needs a mention.
+      if (cfg.replyMode === 'thread' && (typeof event.thread_ts !== 'string' || event.thread_ts === event.ts)) return null
+    }
     const text = botUserId === null
       ? event.text
       : event.text.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim()
@@ -337,7 +350,7 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
       ts: event.ts,
       text,
       user: event.user,
-      addressed: isDm || isMention || cfg.replyMode !== 'mention',
+      addressed: isDm || isMention || cfg.replyMode === 'all',
       files: event.files ?? [],
       raw: event,
     }

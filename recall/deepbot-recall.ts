@@ -226,6 +226,9 @@ function readSession(file, sessionId, includeInjected) {
     }
     if (role === 'user') text = stripInjectedPreamble(text)
     if (text === '') continue
+    // A turn that kept quiet (replyMode 'thread') answered with the marker, which the adapter posts nothing for: nothing
+    // was said, so nothing is recalled. The adapter's NO_REPLY, repeated: this job imports nothing from the plugin.
+    if (role === 'assistant' && /^[\s\p{P}\p{S}]*(\[no[\s_-]?reply\]|no[\s_-]?reply[\s\p{P}\p{S}]*$)|(^|\n)[ \t]*\[no[\s_-]?reply\][\s\p{P}\p{S}]*$/iu.test(text)) continue
     // Second gate for the shapes that carry no `source` at all.
     if (!includeInjected && isBoilerplate(text)) { skippedInjected++; continue }
     records.push({

@@ -35,4 +35,6 @@ export interface Origin {
   threadTs: string | null
   /** Who wrote the message, in platform terms, when a person did. */
   user?: string
+  /** The message did not mention the bot (replyMode 'thread'): the turn may answer "[no reply]" and post nothing. */
+  quiet?: boolean
 }

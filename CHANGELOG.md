@@ -101,6 +101,16 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A mention was answered twice in `replyMode: all`, once its app gets the channel's messages.** Slack
+  sends a mention as an `app_mention` and as a `message`; the second is now dropped in every mode. The
+  Slack manifest `dsh gateway setup` makes now subscribes to `message.channels` and `message.groups`,
+  which `thread` needs.
+- **A long Slack thread's new lines were not in the history a turn was given.** Without `oldest`, a thread
+  past `historyLimit` answered with its first page. The history is now read from the last message seen,
+  and keeps a message shared with a file.
+- **A Slack message with a file was dropped.** Slack marks it `file_share`, which was read as not a
+  person's message: a DM with a file and words started no turn. It now does, as does a reply also sent
+  to the channel (`thread_broadcast`).
 - **The daily scenario run had stopped, and nothing said so.** Its launchd job, made by hand, started
   `/bin/bash` on `run-scenarios.sh` in a checkout under `~/Desktop`; macOS closes that folder to a shell
   launchd starts itself, so every run ended at "Operation not permitted" before it began, and the only
@@ -110,7 +120,6 @@ the caveat about version numbers is at the bottom.
   may ask once), and a run that cannot start now says why in `scenarios.err.log`. The health probe now
   also alerts when the report is more than a day late, once per wait (installing again starts another).
   The tenant scenario counted an English "declined" as no refusal; it now counts it.
-
 - **What the terminal drew before a light background was known stayed dark.** Blocks fixed their colours
   when they were made, so the welcome box and anything drawn before the terminal answered the OSC 11
   query (a resumed conversation's history, over a slow link) kept the dark palette on a light terminal.
@@ -199,6 +208,14 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **`replyMode: thread`: in a thread the bot takes part in, no mention is needed.** In a Slack thread every
+  message had to mention the bot. With `thread`, a mention starts it; then, for a day after its last
+  mention or reply there, every message in the thread comes to it, told it did not mention it, and the
+  model answers only when the message is meant for it, otherwise posting nothing ("[no reply]"). Nothing
+  shows it was heard, and a failure, a timeout or a restart says nothing there. Several such messages in
+  a row are one turn (not one with a file). Without a mention, stop, usage and approval words are not
+  commands, except an approval's answer in the buttons' words (Allow/Deny, 허용/거부, 允许/拒绝) from the
+  person it asks. `mention` stays the default; Slack only.
 - **`dsh update`.** Updating meant finding the install line again. `dsh update` fetches the branch the
   source checkout is on and runs that commit's installer, which builds, keeps the agent home, the
   profile, every edited file and every key, and reinstalls the services. Nothing runs when the last

@@ -106,7 +106,11 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
         }
         throw new Error('fake: agents.create is not implemented')
       },
-      resume: async () => { throw new Error('fake: agents.resume is not implemented') },
+      // A conversation that has a session resumes it: the agents that answer do so the same way either way.
+      resume: async (options) => {
+        if (agent === 'answer' || agent === 'ready') return (stubs.agents as { create: (o: unknown) => Promise<unknown> }).create(options)
+        throw new Error('fake: agents.resume is not implemented')
+      },
     },
     sessions: { flush: async () => {} },
     agentDefaultModel: { currentSelection: () => ({ provider: 'fake', model: 'fake' }) },
@@ -189,6 +193,165 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   await sleep(200)
   check('an unaddressed message is ignored', t.transport.historyCalls.length === 0)
   t.done()
+}
+
+// 3b. replyMode 'thread': a message in a thread the bot takes part in needs no mention. It is a turn the model may
+// keep quiet in: told the message did not mention it, it answers "[no reply]" when the message is not for it, and
+// then nothing is posted. Only there: a thread it has no session in, or mode 'mention', still ignores it.
+{
+  // As Slack is: its own working status, and messages it can delete.
+  // A thread it answered in an hour ago.
+  const recent = { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() - 3600_000 } }
+  const quiet = (text, fake: { typing?: boolean; remove?: boolean } = { typing: true, remove: true }, agent: 'answer' | 'throw' = 'answer', state: Record<string, unknown> = recent) => boot({ agent, home: mkdtempSync(join(tmpdir(), 'deepbot-quiet-')), config: { replyMode: 'thread', fake }, state, answer: { text } })
+  const a = quiet('[no reply]')
+  await sleep(80)
+  a.transport.deliver(a.transport.message({ addressed: false, text: '이거 내일 같이 보자' }))
+  await sleep(400)
+  const seen = a.followups.map(textOf).join('\n')
+  check('thread: in a thread it takes part in, a message without a mention is a turn', a.followups.length === 1, `${a.followups.length} turn(s)`)
+  check('thread: told that the message did not mention it, and how to stay quiet', /\[not addressed\]/.test(seen) && /\[no reply\]/.test(seen), seen.slice(0, 200))
+  check('thread: "[no reply]" posts nothing', a.transport.posted.length === 0, JSON.stringify(a.transport.posted.map((p) => p.text)))
+  a.done()
+  // Nothing shows it was heard, even where the platform has no working status and a working message would stand in.
+  const w = quiet('No reply.', { remove: true })
+  await sleep(80)
+  w.transport.deliver(w.transport.message({ addressed: false, text: '점심 뭐 먹지' }))
+  await sleep(400)
+  check('thread: kept quiet, nothing is posted, not even a working message', w.followups.length === 1 && w.transport.posted.length === 0 && w.transport.removed.length === 0, `${JSON.stringify(w.transport.posted.map((p) => p.text))} removed ${JSON.stringify(w.transport.removed)}`)
+  w.done()
+  const tq = quiet('[no reply]')
+  await sleep(80)
+  tq.transport.deliver(tq.transport.message({ addressed: false }))
+  await sleep(300)
+  check('thread: and no working status either', tq.transport.typing.length === 0, `${tq.transport.typing.length} status(es)`)
+  tq.done()
+  // The marker opening an answer that explains itself is still quiet; a real answer that says "no reply" is not.
+  for (const [text, posts, why] of [['[no reply]\n\n(This is between the two of them.)', false, 'the marker, then an explanation'], ['아직 no reply야. 내일 다시 물어볼게.', true, 'a Korean answer that says "no reply"'], ['[No_Reply]', false, 'the marker in another case'], ['둘이 하는 얘기야.\n[no reply]', false, 'an explanation, then the marker']]) {
+    const v = quiet(text as string)
+    await sleep(80)
+    v.transport.deliver(v.transport.message({ addressed: false, text: '그 업체 답장 왔어?' }))
+    await sleep(400)
+    check(`thread: ${why} is ${posts ? 'posted' : 'not posted'}`, (v.transport.posted.length === 1) === posts, JSON.stringify(v.transport.posted.map((p) => p.text)))
+    v.done()
+  }
+  // A failure or an empty answer says nothing in a thread where nobody asked it.
+  for (const [what, x] of [['a turn that fails', quiet('', { typing: true }, 'throw')], ['an empty answer', quiet('')]] as const) {
+    await sleep(80)
+    x.transport.deliver(x.transport.message({ addressed: false }))
+    await sleep(400)
+    check(`thread: ${what} posts nothing`, x.transport.posted.length === 0 && x.logs.some((l) => /kept quiet/.test(l)), JSON.stringify(x.transport.posted.map((p) => p.text)))
+    x.done()
+  }
+  // It listens for a day after it was last mentioned or spoke there.
+  const old = quiet('응', { typing: true }, 'answer', { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() - 25 * 3600_000 } })
+  await sleep(80)
+  old.transport.deliver(old.transport.message({ addressed: false }))
+  await sleep(300)
+  check('thread: a day after its last mention or reply there, it no longer listens', old.followups.length === 0)
+  old.done()
+  const keeps = quiet('응, 내가 볼게.', { typing: true }, 'answer', { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() - 23 * 3600_000 } })
+  await sleep(80)
+  keeps.transport.deliver(keeps.transport.message({ addressed: false, text: '이거 누가 볼래?' }))
+  await sleep(400)
+  check('thread: a reply of its own there keeps it listening', keeps.transport.posted.length === 1 && Date.now() - Number(keeps.read().touched?.['C_ALLOWED:t1']) < 60_000, String(keeps.read().touched?.['C_ALLOWED:t1']))
+  keeps.done()
+  const chatter = quiet('[no reply]', { typing: true }, 'answer', { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() - 23 * 3600_000 } })
+  await sleep(80)
+  chatter.transport.deliver(chatter.transport.message({ addressed: false }))
+  await sleep(400)
+  check('thread: chatter it kept quiet in does not', Date.now() - Number(chatter.read().touched?.['C_ALLOWED:t1']) > 22 * 3600_000, String(chatter.read().touched?.['C_ALLOWED:t1']))
+  chatter.done()
+  const b = quiet('응, 내일 10시에 같이 보자.')
+  await sleep(80)
+  b.transport.deliver(b.transport.message({ addressed: false, text: '민수도 내일 10시 괜찮아?' }))
+  await sleep(400)
+  check('thread: an answer it does give is posted', b.transport.posted.some((p) => /내일 10시/.test(p.text)), JSON.stringify(b.transport.posted.map((p) => p.text)))
+  b.done()
+  // A thread it has no session in: someone else's thread.
+  const c = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-quiet-')), config: { replyMode: 'thread' }, answer: { text: 'x' } })
+  await sleep(80)
+  c.transport.deliver(c.transport.message({ addressed: false }))
+  await sleep(300)
+  check('thread: in a thread it does not take part in, a message without a mention is ignored', c.followups.length === 0 && c.transport.historyCalls.length === 0)
+  c.done()
+  // Mode 'mention' keeps the old rule, session or not.
+  const d = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-quiet-')), state: { sessions: { 'C_ALLOWED:t1': 's1' } }, answer: { text: 'x' } })
+  await sleep(80)
+  d.transport.deliver(d.transport.message({ addressed: false }))
+  await sleep(300)
+  check('mention: a message without a mention is ignored even in its own thread', d.followups.length === 0)
+  d.done()
+  // Mentioned, the turn is not told it may stay quiet, and what it says is posted.
+  const e = quiet('[no reply]')
+  await sleep(80)
+  e.transport.deliver(e.transport.message({ addressed: true }))
+  await sleep(400)
+  const told = e.followups.map(textOf).join('\n')
+  check('thread: a message that mentions it is answered, never kept quiet', !/\[not addressed\]/.test(told) && e.transport.posted.length === 1, `${e.transport.posted.length} post(s)`)
+  e.done()
+  // Words that are commands to the bot are not, said without a mention: "그만" to someone else stops nothing,
+  // "사용량" is not a request for its totals, and "허용" does not answer its approval.
+  for (const [word, what] of [['그만', 'stop'], ['사용량', 'usage']]) {
+    const x = quiet('[no reply]')
+    await sleep(80)
+    x.transport.deliver(x.transport.message({ addressed: false, text: word }))
+    await sleep(400)
+    check(`thread: "${word}" without a mention is not a ${what} command`, x.transport.posted.length === 0 && x.followups.length === 1, `${JSON.stringify(x.transport.posted.map((p) => p.text))} ${x.followups.length} turn(s)`)
+    x.done()
+  }
+  const ap = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-quiet-')), config: { replyMode: 'thread', fake: { typing: true } }, state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' }, touched: { 'C_ALLOWED:t1': Date.now() } }, answer: { text: '[no reply]' } })
+  await sleep(60)
+  const outcome = ap.askApproval()
+  await sleep(100)
+  ap.transport.deliver(ap.transport.message({ addressed: false, text: '허용' }))
+  const early = await Promise.race([outcome, sleep(300).then(() => 'pending')])
+  ap.transport.deliver(ap.transport.message({ text: '허용' }))
+  check('thread: "허용" without a mention leaves the approval waiting; with one, it answers it', early === 'pending' && await outcome === 'allowed-once', `${early} → ${await outcome}`)
+  ap.done()
+  // The person who asked may answer without a mention: the request asks them to type it. Nobody else may.
+  const own = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-quiet-')), config: { replyMode: 'thread', fake: { typing: true } }, state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' }, touched: { 'C_ALLOWED:t1': Date.now() } }, answer: { text: '해볼게.' } })
+  await sleep(60)
+  own.transport.deliver(own.transport.message({ text: '빌드 폴더 정리해줘', user: 'U_ASKER' }))
+  await sleep(300)
+  // Someone else's chatter after it is a turn too; it does not make them the requester.
+  own.transport.deliver(own.transport.message({ addressed: false, text: '나 점심 먹고 올게', user: 'U_OTHER' }))
+  await sleep(300)
+  const asked = own.askApproval()
+  await sleep(100)
+  own.transport.deliver(own.transport.message({ addressed: false, text: '허용', user: 'U_OTHER' }))
+  // Nor the requester's everyday "응", said to someone in the thread.
+  own.transport.deliver(own.transport.message({ addressed: false, text: '응', user: 'U_ASKER' }))
+  const notTheirs = await Promise.race([asked, sleep(300).then(() => 'pending')])
+  own.transport.deliver(own.transport.message({ addressed: false, text: '허용', user: 'U_ASKER' }))
+  const theirs = await Promise.race([asked, sleep(500).then(() => 'pending')])
+  check('thread: the requester\'s "허용" without a mention answers it; another person\'s does not, nor their "응"', notTheirs === 'pending' && theirs === 'allowed-once', `${notTheirs} → ${theirs}`)
+  own.done()
+  // Recall is not brought in for chatter: past passages would come into every line of a thread.
+  {
+    // Its real path, as on Linux: under macOS's /var link the refresh wrote elsewhere and hid what it does to the index.
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'home-')))
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-'))
+    const previousDsh = process.env.DSH_HOME
+    process.env.DSH_HOME = dshHome
+    const index = recallIndexPath(home)
+    mkdirSync(dirname(index), { recursive: true })
+    writeFileSync(index, JSON.stringify({ ts: 1, role: 'user', sessionId: 'a', channel: 'C_ALLOWED', text: '지난번 배포 롤백 past-7c2' }))
+    // No refresh after a turn: it would rebuild this hand-written index from the (fake) session logs.
+    const r = boot({ agent: 'answer', home, config: { replyMode: 'thread', autoIndex: false }, state: recent, answer: { text: '[no reply]' } })
+    await sleep(80)
+    r.transport.deliver(r.transport.message({ addressed: false, text: '지난번 배포 롤백 어떻게 했지' }))
+    await sleep(300)
+    r.transport.deliver(r.transport.message({ text: '지난번 배포 롤백 어떻게 했지' }))
+    await sleep(400)
+    const [chat, mentioned] = r.followups.map(textOf)
+    check('thread: no recall for a message without a mention; with one, as before', chat !== undefined && !chat.includes('past-7c2') && (mentioned ?? '').includes('past-7c2'), `${r.followups.length} turn(s), recalled ${[chat, mentioned].map((x) => (x ?? '').includes('past-7c2'))}`)
+    if (previousDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousDsh
+    for (const dir of [home, dshHome]) rmSync(dir, { recursive: true, force: true })
+    r.done()
+  }
+  let refused = ''
+  try { boot({ config: { replyMode: 'threads' } }) } catch (err) { refused = String((err as Error).message) }
+  check('replyMode: a mode it does not have is a config error', /replyMode: must be 'mention', 'thread' or 'all' \(got: threads\)/.test(refused), refused.split('\n')[1] ?? refused)
 }
 
 // 4. The same platform event twice is handled once.

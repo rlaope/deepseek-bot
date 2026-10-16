@@ -495,6 +495,119 @@ function transportFor(api) {
   check('a channel without a thread has no permalink', bare === null, String(bare))
 }
 
+// replyMode 'thread': a message in a thread comes in without a mention, marked not addressed (the core knows which
+// threads the bot takes part in); one at the top of a channel does not; one that mentions the bot comes as its
+// app_mention, so its message event is dropped and the turn is not taken twice.
+{
+  const api = stubSlack()
+  const received: Record<string, Array<{ ts: string; addressed: boolean; target: { threadTs: string | null } }>> = {}
+  for (const mode of ['thread', 'mention', 'all']) {
+    const sockets = []
+    class EventSocket {
+      handlers: Record<string, Array<(data: unknown) => void>>
+      sent: unknown[]
+      constructor() { this.handlers = {}; this.sent = []; sockets.push(this) }
+      addEventListener(type, fn) { (this.handlers[type] ??= []).push(fn) }
+      send(payload) { this.sent.push(JSON.parse(payload)) }
+      close() {}
+      emit(type, data) { for (const fn of this.handlers[type] ?? []) fn(data) }
+    }
+    const got = []
+    const t = createSlackTransport({
+      cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, replyMode: mode },
+      log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'token-for-test', onHealth: () => {},
+      WebSocketImpl: EventSocket,
+    })
+    await t.connect({ onMessage: (m) => got.push(m) })
+    await t.identity()   // as the core does at start: the bot's own id, which a mention is told by
+    const send = (id, event) => sockets[0].emit('message', { data: JSON.stringify({ envelope_id: id, type: 'events_api', payload: { event_id: id, event } }) })
+    send('Ev1', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.1', thread_ts: '5.0', text: '내일 같이 보자' })
+    send('Ev2', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '6.0', text: 'top of the channel' })
+    send('Ev3', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.2', thread_ts: '5.0', text: '<@U1> 봐줘' })
+    send('Ev4', { type: 'app_mention', channel: 'C1', user: 'U7', ts: '5.2', thread_ts: '5.0', text: '<@U1> 봐줘' })
+    // The bot's own reply, another bot's, an edit; a file shared with words, a reply also sent to the channel.
+    send('Ev5', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '5.3', thread_ts: '5.0', text: '내가 한 말' })
+    send('Ev6', { type: 'message', channel: 'C1', channel_type: 'channel', bot_id: 'B9', user: 'U8', ts: '5.4', thread_ts: '5.0', text: '다른 봇' })
+    send('Ev7', { type: 'message', subtype: 'message_changed', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.5', thread_ts: '5.0', text: '고침' })
+    send('Ev8', { type: 'message', subtype: 'file_share', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.6', thread_ts: '5.0', text: '이 로그 봐줘', files: [] })
+    send('Ev9', { type: 'message', subtype: 'thread_broadcast', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.7', thread_ts: '5.0', text: '채널에도 보냄' })
+    // In a DM, a file shared with words: a turn in every mode (it was dropped, the subtype read as not a person's).
+    send('Ev10', { type: 'message', subtype: 'file_share', channel: 'D1', channel_type: 'im', user: 'U7', ts: '7.1', text: '이 파일 봐줘', files: [] })
+    await t.close()
+    received[mode] = got
+  }
+  api.restore()
+  const thread = received.thread ?? []
+  check('thread: a message in a thread comes in without a mention, not addressed', thread.some((m) => m.ts === '5.1' && m.addressed === false && m.target.threadTs === '5.0'), JSON.stringify(thread.map((m) => [m.ts, m.addressed])))
+  check('thread: one at the top of a channel does not', !thread.some((m) => m.ts === '6.0'))
+  check('thread: a mention comes once, as its app_mention, addressed', thread.filter((m) => m.ts === '5.2').length === 1 && thread.find((m) => m.ts === '5.2')?.addressed === true, JSON.stringify(thread.map((m) => [m.ts, m.addressed])))
+  check('thread: its own reply, another bot\'s and an edit do not come in', !thread.some((m) => ['5.3', '5.4', '5.5'].includes(m.ts)), JSON.stringify(thread.map((m) => m.ts)))
+  check('thread: a file shared with words, or a reply also sent to the channel, does', thread.some((m) => m.ts === '5.6' && m.addressed === false) && thread.some((m) => m.ts === '5.7'), JSON.stringify(thread.map((m) => m.ts)))
+  check('every mode: a file shared with words in a DM comes in, addressed', ['thread', 'mention', 'all'].every((mode) => (received[mode] ?? []).some((m) => m.ts === '7.1' && m.addressed === true)), JSON.stringify(Object.fromEntries(Object.entries(received).map(([k, v]) => [k, v.map((m) => m.ts)]))))
+  const all = received.all ?? []
+  check('all: a mention comes once too (the manifest now sends the channel\'s messages as well)', all.filter((m) => m.ts === '5.2').length === 1 && all.some((m) => m.ts === '5.1' && m.addressed === true), JSON.stringify(all.map((m) => [m.ts, m.addressed])))
+  check('mention: a message in a thread without a mention does not come in', !(received.mention ?? []).some((m) => m.ts === '5.1') && (received.mention ?? []).some((m) => m.ts === '5.2'), JSON.stringify((received.mention ?? []).map((m) => m.ts)))
+}
+
+// A long thread's history from what was seen last: without `oldest`, conversations.replies gave its oldest page, and
+// in a thread past the limit the new lines never arrived.
+{
+  const api = stubSlack()
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 20 },
+    log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+  })
+  await t.authenticate()
+  await t.fetchHistory({ channel: 'C1', threadTs: '5.0' }, { currentTs: '5.9', sinceTs: '5.3', limit: 20, maxChars: 4000 })
+  await t.fetchHistory({ channel: 'C1', threadTs: '5.0' }, { currentTs: '5.9', sinceTs: null, limit: 20, maxChars: 4000 })
+  api.restore()
+  const replies = api.calls.filter((c) => c.method.startsWith('conversations.replies')).map((c) => c.method)
+  check('history: a thread is read from the last message seen, and whole the first time', replies.length === 2 && /[?&]oldest=5\.3(&|$)/.test(replies[0]) && !/oldest=/.test(replies[1]), JSON.stringify(replies))
+}
+
+// The history keeps a message shared with a file: it is a person's words too.
+{
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (url) => {
+    const u = String(url)
+    const body = u.includes('conversations.replies')
+      ? { ok: true, messages: [{ ts: '5.1', user: 'U7', subtype: 'file_share', text: '이 로그 봐줘', files: [] }, { ts: '5.2', user: 'U7', subtype: 'channel_join', text: 'joined' }] }
+      : { ok: true, members: [], response_metadata: { next_cursor: '' } }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+  }) as typeof fetch
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 20 },
+    log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+  })
+  await t.authenticate()
+  const h = await t.fetchHistory({ channel: 'C1', threadTs: '5.0' }, { currentTs: '5.9', sinceTs: null, limit: 20, maxChars: 4000 })
+  globalThis.fetch = realFetch
+  check('history: a message shared with a file is kept; a join is not', h.text.includes('이 로그 봐줘') && !h.text.includes('joined'), JSON.stringify(h.text))
+}
+
+// A long thread: of what is new since the pointer, the newest `historyLimit` lines, not its oldest page.
+{
+  const realFetch = globalThis.fetch
+  const asked = []
+  globalThis.fetch = (async (url) => {
+    const u = String(url)
+    if (u.includes('conversations.replies')) asked.push(u)
+    const body = u.includes('conversations.replies')
+      ? { ok: true, messages: Array.from({ length: 30 }, (_, i) => ({ ts: `6.${String(i + 1).padStart(2, '0')}`, user: 'U7', text: `line ${i + 1}` })) }
+      : { ok: true, members: [], response_metadata: { next_cursor: '' } }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+  }) as typeof fetch
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 5, historyMaxChars: 4000 },
+    log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+  })
+  await t.authenticate()
+  const h = await t.fetchHistory({ channel: 'C1', threadTs: '6.00' }, { currentTs: '6.31', sinceTs: '6.00', limit: 5, maxChars: 4000 })
+  globalThis.fetch = realFetch
+  const shown = [...h.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
+  check('history: a long thread gives its newest lines', JSON.stringify(shown) === '[26,27,28,29,30]' && h.lastTs === '6.30' && /[?&]limit=200(&|$)/.test(asked[0] ?? ''), `${JSON.stringify(shown)} last ${h.lastTs} ${asked[0]}`)
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

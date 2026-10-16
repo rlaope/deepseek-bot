@@ -113,7 +113,8 @@ export function slackManifest(): Record<string, unknown> {
     },
     oauth_config: { scopes: { bot: SLACK_BOT_SCOPES } },
     settings: {
-      event_subscriptions: { bot_events: ['app_mention', 'message.im'] },
+      // The channel events let replyMode 'thread' hear a thread's messages without a mention; with 'mention' they are dropped.
+      event_subscriptions: { bot_events: ['app_mention', 'message.im', 'message.channels', 'message.groups'] },
       interactivity: { is_enabled: true },
       org_deploy_enabled: false,
       socket_mode_enabled: true,

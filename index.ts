@@ -57,7 +57,7 @@ import { createDiscordTransport } from './transports/discord.js'
 import { createLocalTransport, LOCAL_CHANNEL } from './transports/local.js'
 import { createCompositeTransport } from './transports/composite.js'
 import { createProgressTracker } from './progress.js'
-import { languageOf } from './i18n.js'
+import { LANGUAGES, languageOf } from './i18n.js'
 import { defaultWords, messages } from './messages.js'
 import { markInstructionRoot, mkdirInside, resolvesInside, writeInside } from './safeWrite.js'
 import { createUsageTracker, emptyUsageStore } from './usage.js'
@@ -281,6 +281,25 @@ const DEFAULTS = {
   autoIndex: true,
 }
 
+/**
+ * Told to a turn for a message that did not mention the bot, in a thread it takes part in (replyMode 'thread'):
+ * people there also talk to each other. An answer of NO_REPLY posts nothing.
+ */
+const NOT_ADDRESSED = [
+  '[not addressed]',
+  'This message in the thread did not mention you, and people here also talk to each other.',
+  'Answer only if it is meant for you: a question or a request to you, or a reply to what you said.',
+  'Otherwise answer with exactly [no reply] and nothing else; nothing is posted then.',
+].join('\n')
+// The marker alone, or in brackets on the answer's first or last line (an explanation with it is not for the thread
+// either). Any script's letters around it are words, not punctuation: "아직 no reply야" is an answer.
+const NO_REPLY = /^[\s\p{P}\p{S}]*(\[no[\s_-]?reply\]|no[\s_-]?reply[\s\p{P}\p{S}]*$)|(^|\n)[ \t]*\[no[\s_-]?reply\][\s\p{P}\p{S}]*$/iu
+/** The approval buttons' own words, in every language: the only ones a requester's answer without a mention may be. */
+const BUTTON_ALLOW = LANGUAGES.map((l) => messages(l).allow)
+const BUTTON_DENY = LANGUAGES.map((l) => messages(l).deny)
+/** How long after it was last mentioned in a thread, or last spoke there, the bot keeps listening without a mention. */
+const THREAD_LISTEN_MS = 24 * 3600_000
+
 /** What a person puts after a one-word message: "stop.", "그만~", "停止。". */
 const TRAILING = /[.!?~,\s。！？，～、]+$/u
 
@@ -292,7 +311,7 @@ export function apply(ctx, config) {
   if (!Array.isArray(cfg.targetChannels) || cfg.targetChannels.filter((c) => typeof c === 'string' && c.trim()).length === 0) {
     problems.push('targetChannels: at least one channel ID is required (this guard prevents answering everywhere)')
   }
-  if (!['mention', 'all'].includes(cfg.replyMode)) problems.push(`replyMode: must be 'mention' or 'all' (got: ${String(cfg.replyMode)})`)
+  if (!['mention', 'thread', 'all'].includes(cfg.replyMode)) problems.push(`replyMode: must be 'mention', 'thread' or 'all' (got: ${String(cfg.replyMode)})`)
   // Unset or empty (`language:` with nothing after it) is the default; anything else must be one of the three.
   if (cfg.language != null && String(cfg.language).trim() !== '' && languageOf(cfg.language) === 'en' && !/^(en|eng|english)(?:$|[-_.@])/i.test(String(cfg.language).trim())) {
     problems.push(`language: must be 'en', 'ko' or 'zh' (got: ${String(cfg.language)})`)
@@ -870,7 +889,8 @@ export function apply(ctx, config) {
     if (typeof historyText === 'string' && historyText !== '') parts.push(defuse(historyText))
     // Dynamic, never standing: the standing block is digest-gated for prompt-cache safety, so
     // a per-turn block there would invalidate the cache on every turn.
-    if (typeof prompt === 'string' && prompt !== '') {
+    // Not for a message that did not mention it: chatter would bring the past into every line of a thread.
+    if (typeof prompt === 'string' && prompt !== '' && origin?.quiet !== true) {
       // The conversation's own workspace's index: a tenant's conversations recall the tenant's past,
       // not the home's (every terminal conversation shares the channel 'tui', so the channel filter
       // alone would let the home's through).
@@ -1017,13 +1037,24 @@ export function apply(ctx, config) {
    * message's place. Cleared when the conversation has nothing running and nothing waiting. Written at
    * once, not on the debounced save: a process that dies within half a second would lose it.
    */
-  function recordInflight(key: string, target: Origin): void {
-    if (state.inflight?.[key] !== undefined) return
-    state.inflight = { ...(state.inflight ?? {}), [key]: { channel: target.channel, threadTs: target.threadTs, since: Date.now() } }
+  function recordInflight(key: string, target: Origin, quiet = false): void {
+    const held = state.inflight?.[key]
+    // Turns for messages that did not mention it only: a restart that loses them says nothing. One that did upgrades it.
+    if (held !== undefined) {
+      if (held.quiet === true && !quiet) { delete held.quiet; saveStateNow() }
+      return
+    }
+    state.inflight = { ...(state.inflight ?? {}), [key]: { channel: target.channel, threadTs: target.threadTs, since: Date.now(), ...(quiet ? { quiet: true } : {}) } }
     saveStateNow()
   }
   function settleInflight(key: string): void {
-    if (waiting.has(key) || runningTurns.has(key) || state.inflight?.[key] === undefined) return
+    const record = state.inflight?.[key]
+    if (record === undefined) return
+    if (waiting.has(key) || runningTurns.has(key)) {
+      // What remains is only messages that did not mention it: a restart that loses them says nothing.
+      if (!runningTurns.has(key) && record.quiet !== true && [...(waiting.get(key) ?? [])].every((t) => t.quiet === true)) { record.quiet = true; saveStateNow() }
+      return
+    }
     delete state.inflight[key]
     saveStateNow()
   }
@@ -1032,7 +1063,7 @@ export function apply(ctx, config) {
     // a new turn never meets one). Each stays in the state until its own notice is out, so a restart
     // during the notices loses none; one being reported is skipped by a second run (a retried start);
     // and a platform still down keeps its records for the retry that connects it.
-    type Lost = { channel: string; threadTs: string | null; placeholder?: string; since?: number }
+    type Lost = { channel: string; threadTs: string | null; placeholder?: string; since?: number; quiet?: boolean }
     const up = (record: Lost) => typeof transport.connectedFor !== 'function' || transport.connectedFor({ channel: record.channel, threadTs: record.threadTs }) === true
     const lost = (Object.entries(state.restartLost ?? {}) as Array<[string, Lost]>).filter(([key, record]) => up(record) && !reporting.has(key))
     for (const [key] of lost) reporting.add(key)
@@ -1042,6 +1073,7 @@ export function apply(ctx, config) {
     }
     for (const [key, record] of lost) {
       if (Date.now() - Number(record.since ?? 0) > 24 * 3600_000) { log(`inflight ${key}: older than a day, dropped without a notice`); forget(key); continue }
+      if (record.quiet === true) { log(`inflight ${key}: only messages that did not mention it, dropped without a notice`); forget(key); continue }
       const target = { channel: record.channel, threadTs: record.threadTs }
       // The platform's status may still say "작업 중" from the process that died: raise and lower it.
       try { via(target).startTyping?.(target, () => {})?.() } catch { /* best effort */ }
@@ -1356,7 +1388,8 @@ export function apply(ctx, config) {
           const streams = live !== undefined && typeof via(live).stream === 'function'
           if (streams) via(live).stream(live, toolStep(event.data, liveSessionId))
           const liveKey = streams ? undefined : Object.keys(state.sessions).find((k) => state.sessions[k] === liveSessionId)
-          if (liveKey !== undefined) {
+          // Nothing is shown for a message that did not mention it: the turn may well say nothing.
+          if (liveKey !== undefined && live?.quiet !== true) {
             const startedAt = turnStartedAt.get(liveKey)
             if (startedAt !== undefined && (progress.has(liveKey) || Date.now() - startedAt >= cfg.progressAfterMs)) {
               const name = event.data?.name ?? event.data?.toolName ?? event.data?.call?.name
@@ -2115,7 +2148,7 @@ export function apply(ctx, config) {
     const startedAt = Date.now()
     turnStartedAt.set(turnKey, startedAt)
     // A platform that streams shows the turn as it happens; a progress message would say it twice.
-    const progressTimer = cfg.progressAfterMs > 0 && turnKey !== '' && typeof via(progressTarget).stream !== 'function'
+    const progressTimer = cfg.progressAfterMs > 0 && turnKey !== '' && typeof via(progressTarget).stream !== 'function' && origin?.quiet !== true
       ? setTimeout(() => {
           void progress.force(turnKey, progressTarget)
             .then(() => log(progress.has(turnKey)
@@ -2148,7 +2181,9 @@ export function apply(ctx, config) {
       const route = `${agentOptions.provider}/${agentOptions.model}`
       const ranOn = sessionKey === null || existingSessionId === undefined ? undefined : state.routes?.[sessionKey]
       const switched = ranOn !== undefined && ranOn !== route ? `[model changed] The turns above were answered by ${defuse(ranOn)}; this one is answered by ${defuse(route)}.\n` : ''
-      const body = preamble === '' && speaker === '' && switched === '' ? prompt : `${switched}${preamble}${speaker}[user message]\n${prompt}`
+      // Told before the speaker, outside the preamble: a deployment that sends no instructions still gets it.
+      const unaddressed = origin?.quiet === true ? `${NOT_ADDRESSED}\n` : ''
+      const body = preamble === '' && speaker === '' && switched === '' && unaddressed === '' ? prompt : `${switched}${preamble}${unaddressed}${speaker}[user message]\n${prompt}`
       const refs = await admitImages(images)
       if (turnState.cause !== null) {
         log(`turn in ${turnKey} was stopped before its message went (${turnState.cause})`)
@@ -2623,7 +2658,7 @@ export function apply(ctx, config) {
    * ticket just before its turn begins. Without this the bot said it had stopped and then started
    * on the next message in the queue.
    */
-  type Ticket = { withdrawn: boolean; stopWorking: () => void; clientId?: string }
+  type Ticket = { withdrawn: boolean; stopWorking: () => void; clientId?: string; quiet?: boolean }
   const waiting = new Map<string, Set<Ticket>>()
   function withdrawWaiting(key: string, target: Target): number {
     const tickets = waiting.get(key)
@@ -2661,7 +2696,15 @@ export function apply(ctx, config) {
     const channel = target.channel
     // Outside the allowlist, do nothing. '*' means every invited channel.
     if (!allChannels && !targetChannels.includes(channel)) return
-    if (!message.addressed) return
+    // Not addressed: in mode 'thread', a message in a thread it takes part in — one with its session, or its first turn
+    // still running or waiting — within a day of its last mention or reply there, is a turn it may keep quiet in.
+    // Anything else unaddressed is not for it.
+    const quiet = !message.addressed
+    if (quiet) {
+      const at = `${channel}:${target.threadTs}`
+      const takesPart = state.sessions?.[at] !== undefined || runningTurns.has(at) || waiting.has(at)
+      if (!(cfg.replyMode === 'thread' && target.threadTs !== null && takesPart && Date.now() - Number(state.touched?.[at] ?? 0) < THREAD_LISTEN_MS)) return
+    }
     // Nor for anyone outside allowedUsers — and no reply, which would be a way to make it post.
     if (!mayTalk(message.user, channel)) { log(`ignored: ${message.user} is not in allowedUsers (channel=${channel})`); return }
     if (alreadySeen(message.eventId)) { log(`duplicate event ignored event_id=${message.eventId}`); return }
@@ -2676,14 +2719,18 @@ export function apply(ctx, config) {
       // a turn — an expensive way to answer nothing, and a question the model can only guess at.
       if (message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === '') return
     const prompt = message.text.slice(0, cfg.maxPromptChars)
-      state.touched[key] = Date.now()
+    // Chatter does not keep it listening: a mention does, and a reply of its own (below).
+    if (!quiet) state.touched[key] = Date.now()
     bindTenant(key)
     if (!prompt) return
 
     // A pending approval turns the next message into a decision, so it is consumed
     // here rather than starting a turn the human did not ask for.
+    // The words below are commands only to the bot: "그만" or "응" said to someone else in the thread is not one. Only
+    // an approval's answer may come without a mention: from the person it asks, in the buttons' own words.
     const pending = pendingApprovals.get(key)
-    if (pending !== undefined && (wordIn(prompt, cfg.approveWords) || wordIn(prompt, cfg.denyWords))) {
+    const [yes, no] = quiet ? [BUTTON_ALLOW, BUTTON_DENY] : [cfg.approveWords, cfg.denyWords]
+    if (pending !== undefined && (!quiet || (pending.user !== undefined && pending.user === message.user)) && (wordIn(prompt, yes) || wordIn(prompt, no))) {
         // A thread is shared: the person typing 허용 is not necessarily the person who asked,
         // and approving somebody else's destructive command is not theirs to make.
         if (pending.user !== undefined && cfg.approvalRequireSameUser === true && message.user !== pending.user) {
@@ -2691,7 +2738,7 @@ export function apply(ctx, config) {
           await transport.post({ channel, threadTs }, say.notYours)
           return
         }
-      const allowed = wordIn(prompt, cfg.approveWords)
+      const allowed = wordIn(prompt, yes)
       pendingApprovals.delete(key)
       log(`approval in ${key} answered: ${allowed ? 'allowed-once' : 'rejected'} after ${Math.round((Date.now() - pending.askedAt) / 1000)}s`)
       pending.resolve(allowed ? 'allowed-once' : 'rejected')
@@ -2701,7 +2748,7 @@ export function apply(ctx, config) {
 
     // Asking what this has cost is not a turn either: it is answered from the durable
     // totals, so it costs nothing and works even while the model is busy.
-    if (wordIn(prompt, cfg.usageWords)) {
+    if (!quiet && wordIn(prompt, cfg.usageWords)) {
       log(`usage requested in ${key}`)
       await transport.post({ channel, threadTs }, usageTracker.summary(key, say))
       return
@@ -2710,7 +2757,7 @@ export function apply(ctx, config) {
     // A stop request is not a turn. Answer it directly, and only if something is
     // actually running — otherwise the honest reply is that there is nothing to
     // stop, which is better than starting a turn to say so.
-    if (isCancelRequest(prompt)) {
+    if (!quiet && isCancelRequest(prompt)) {
       // What is waiting goes too: a stop that left it queued would start on it right after.
       const withdrawn = withdrawWaiting(key, { channel, threadTs })
       const stopped = cancelRunning(key, 'user')
@@ -2747,18 +2794,24 @@ export function apply(ctx, config) {
     health.lastEventAt = Date.now()
     writeHealth()
     log(`accepted channel=${channel} thread=${threadTs} session=${state.sessions[key] ?? 'new'}`)
-    recordInflight(key, { channel, threadTs })
-    // Before the queue, so a message waiting behind other turns also shows it was taken.
-    const stopWorking = startWorking(key, { channel, threadTs })
-    const ticket: Ticket = { withdrawn: false, stopWorking, ...(message.clientId !== undefined ? { clientId: message.clientId } : {}) }
+    recordInflight(key, { channel, threadTs }, quiet)
+    // Before the queue, so a message waiting behind other turns also shows it was taken. Not one that did not mention
+    // it: the turn may say nothing, and nothing is to show it was heard.
+    const stopWorking = quiet ? () => {} : startWorking(key, { channel, threadTs })
+    const ticket: Ticket = { withdrawn: false, stopWorking, ...(message.clientId !== undefined ? { clientId: message.clientId } : {}), ...(quiet ? { quiet: true } : {}) }
     if (!waiting.has(key)) waiting.set(key, new Set())
     waiting.get(key)?.add(ticket)
 
     enqueueFor(key, async () => {
       const started = Date.now()
       const replyTarget = { channel, threadTs }
+      let restoreRequester: (() => void) | null = null
       if (ticket.withdrawn) { stopWorking(); log(`withdrawn before it started in ${key}`); settleInflight(key); return }
-      showWorking(key, replyTarget)
+      // A later message waits behind it: one that did not mention it gives way, and comes to that turn as history
+      // (the thread's pointer stops before it). A burst of chatter is one turn, not one each.
+      // Not one with files: they would not be fetched for the later turn.
+      if (quiet && message.files.length === 0 && [...(waiting.get(key) ?? [])].at(-1) !== ticket) { leaveWaiting(key, ticket); log(`quiet: gave way to a later message in ${key}`); settleInflight(key); return }
+      if (!quiet) showWorking(key, replyTarget)
       try {
         let historyText = ''
         let historyLastTs: string | null = null
@@ -2786,6 +2839,11 @@ export function apply(ctx, config) {
         if (!leaveWaiting(key, ticket)) { stopWorking(); log(`withdrawn before it started in ${key}`); settleInflight(key); return }
         // Remembered when this message's turn starts, not when it arrives: the approval listener runs
         // outside the turn, and a message queued behind another would claim that turn's approvals.
+        // A quiet turn's approvals are its author's while it runs; after it, the requester is who it was.
+        if (message.user !== '' && quiet) {
+          const before = requesterOf.get(key)
+          restoreRequester = () => { if (before === undefined) requesterOf.delete(key); else requesterOf.set(key, before) }
+        }
         if (message.user !== '') requesterOf.set(key, message.user)
         let r
         try {
@@ -2794,7 +2852,7 @@ export function apply(ctx, config) {
           // next message — while that agent still holds the session. It is the backstop for a turn
           // that never gets that far.
           const backstopMs = cfg.runTimeoutMs + Math.min(60000, cfg.runTimeoutMs)
-          r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs, user: message.user }, historyText, attachmentText, key, attachmentImages), backstopMs)
+          r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs, user: message.user, ...(quiet ? { quiet: true } : {}) }, historyText, attachmentText, key, attachmentImages), backstopMs)
           // Advance the thread pointer only after the turn succeeded, so a failed
           // turn does not swallow messages it never delivered.
           if (historyLastTs !== null && r.reason?.kind === 'completed') {
@@ -2809,10 +2867,21 @@ export function apply(ctx, config) {
         if (r.sessionId && r.sessionId !== state.sessions[key]) { state.sessions[key] = r.sessionId; saveState() }
         // The answer takes the progress message's place, so a slow turn leaves one
         // message that changed rather than a stale "working on it" plus an answer.
-        await progress.settle(key)
-        const placeholderTs = progress.take(key)?.ts ?? null
+        // A quiet turn puts up no working message: one under the key is a waiting message's, and stays its — unless no
+        // message that mentioned it still waits (a stop withdrew it), which leaves the working message to this turn.
+        const orphaned = quiet && ![...(waiting.get(key) ?? [])].some((t) => t.quiet !== true)
+        if (!quiet || orphaned) await progress.settle(key)
+        const placeholderTs = quiet && !orphaned ? null : progress.take(key)?.ts ?? null
         const ok = r.reason?.kind === 'completed'
-        if (ok && r.text) {
+        // A message that did not mention it gets an answer or nothing: not "[no reply]", and not a failure, a timeout
+        // or an empty answer, in a thread where nobody asked it. A stop said to it with a mention is reported.
+        const answers = ok && r.text !== '' && r.text !== undefined && !(quiet && NO_REPLY.test(r.text.trim()))
+        if (quiet && !answers && !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user')) {
+          log(`kept quiet channel=${channel} ${ok ? 'no reply' : String(r.reason?.kind ?? 'unknown')} ${Date.now() - started}ms`)
+          if (placeholderTs !== null) await via(replyTarget).remove?.(replyTarget, placeholderTs).catch(() => false)
+        } else if (ok && r.text) {
+          // A reply of its own keeps it listening in the thread.
+          if (quiet) { state.touched[key] = Date.now(); saveState() }
           health.answered++
           writeHealth()
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
@@ -2846,10 +2915,12 @@ export function apply(ctx, config) {
         cancelRunning(key, 'timed out')
         stopWorking()
         leaveWaiting(key, ticket)   // a ticket left behind would be "withdrawn" by a later stop
-        await progress.settle(key)
-        const leftover = progress.take(key)?.ts ?? null
-        await replyInPlaceOf(replyTarget, say.runFailed(withoutHome(String(e?.message ?? e)).slice(0, 300)), leftover)
+        if (!quiet) await progress.settle(key)
+        const leftover = quiet ? null : progress.take(key)?.ts ?? null
+        if (!quiet) await replyInPlaceOf(replyTarget, say.runFailed(withoutHome(String(e?.message ?? e)).slice(0, 300)), leftover)
+        else log(`kept quiet channel=${channel} failed`)
       } finally {
+        restoreRequester?.()
         settleInflight(key)
       }
     }, () => ticket.withdrawn)
