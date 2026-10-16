@@ -10,7 +10,7 @@
  */
 import './dist-fresh.ts'   // fails loudly on a stale dist
 
-import { createProgressTracker } from '../dist/progress.js'
+import { createProgressTracker, tenthsOf, typicalTurns } from '../dist/progress.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -129,6 +129,24 @@ function tracker(options = {}) {
   name = '아리'
   await t.force('k', target)
   check('a computed label is read when the message is rendered', posted[0]?.text === '⏳ 아리 작업 중…', posted[0]?.text)
+}
+
+// The reaction on a person's message while their turn runs: a rough share of a typical turn, in tenths, 1 to 9.
+// Never 0 (it is moving) and never 10 (that is the check mark), and it slows as it goes, as a guess should.
+{
+  const t = 30_000
+  check('tenths: at once, 1', tenthsOf(0, t) === 1, String(tenthsOf(0, t)))
+  check('tenths: a typical turn\'s length, 6', tenthsOf(t, t) === 6, String(tenthsOf(t, t)))
+  check('tenths: twice that, 8', tenthsOf(2 * t, t) === 8, String(tenthsOf(2 * t, t)))
+  check('tenths: never past 9', tenthsOf(100 * t, t) === 9, String(tenthsOf(100 * t, t)))
+  const typical = typicalTurns()
+  check('typical: 30 s until any turn is timed', typical.ms() === 30_000, String(typical.ms()))
+  for (const ms of [10_000, 20_000, 30_000, 40_000, 1_000_000]) typical.record(ms)
+  check('typical: the median of what was timed, so one long turn does not stretch it', typical.ms() === 30_000, String(typical.ms()))
+  const recent = typicalTurns()
+  for (let i = 0; i < 30; i++) recent.record(100)
+  for (let i = 0; i < 20; i++) recent.record(5_000)
+  check('typical: the last twenty only', recent.ms() === 5_000, String(recent.ms()))
 }
 
 const failed = results.filter((r) => !r.ok)

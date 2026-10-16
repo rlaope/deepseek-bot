@@ -37,7 +37,7 @@ interface BootOptions {
   config?: { fake?: FakeTransportOptions; [key: string]: unknown }
   agent?: 'throw' | 'ready' | 'answer'
   home?: string | null
-  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean } | null
+  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number } | null
 }
 
 /** Boot the plugin with a fake transport and a state file we control. */
@@ -89,7 +89,8 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
                 events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
               },
               // failFirst: the first turn dies after its prompt was sent — the second wait throws.
-              whenIdle: async () => { if (failThis && events.length > 0) throw new Error('fake: the turn died') },
+              // answer.delayMs: the turn takes that long, so a mark can be watched while it runs.
+              whenIdle: async () => { if (Number(answer?.delayMs) > 0) await sleep(Number(answer.delayMs)); if (failThis && events.length > 0) throw new Error('fake: the turn died') },
               cancel: () => {},
             },
             dispose: async () => {},
@@ -352,6 +353,77 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   let refused = ''
   try { boot({ config: { replyMode: 'threads' } }) } catch (err) { refused = String((err as Error).message) }
   check('replyMode: a mode it does not have is a config error', /replyMode: must be 'mention', 'thread' or 'all' \(got: threads\)/.test(refused), refused.split('\n')[1] ?? refused)
+}
+
+// 3c. Progress on the person's message, where the platform has reactions: taken, then how it ended. A message that
+// did not mention it (replyMode 'thread') gets none: nothing shows it was heard.
+{
+  const a = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-marks-')), config: { fake: { marks: true, typing: true } }, answer: { text: '답이야' } })
+  await sleep(80)
+  a.transport.deliver(a.transport.message({ ts: '1000.7' }))
+  await sleep(400)
+  const kinds = a.transport.marks.map((m) => m.state.kind)
+  check('marks: taken, then done, on the message itself', kinds[0] === 'seen' && kinds.at(-1) === 'done' && a.transport.marks.every((m) => m.ts === '1000.7'), JSON.stringify(a.transport.marks.map((m) => [m.ts, m.state])))
+  a.done()
+  const f = boot({ config: { fake: { marks: true, typing: true } } })
+  await sleep(80)
+  f.transport.deliver(f.transport.message())
+  await sleep(400)
+  check('marks: a turn that fails ends failed', f.transport.marks.at(-1)?.state.kind === 'failed', JSON.stringify(f.transport.marks.map((m) => m.state)))
+  f.done()
+  // A turn that completes with nothing to say ends failed too.
+  const e = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-marks-')), config: { fake: { marks: true, typing: true } }, answer: { text: '' } })
+  await sleep(80)
+  e.transport.deliver(e.transport.message())
+  await sleep(400)
+  check('marks: a turn that ends with nothing to say ends failed', e.transport.marks.at(-1)?.state.kind === 'failed', JSON.stringify(e.transport.marks.map((m) => m.state)))
+  e.done()
+  // The digit is a share of the time a turn usually takes: after three quick turns, a fourth as quick climbs fast;
+  // and once it is answered, no digit comes after the check.
+  const w = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-marks-')), config: { markEveryMs: 5, fake: { marks: true, typing: true } }, answer: { text: '응', delayMs: 120 } })
+  await sleep(80)
+  for (const ts of ['1001.1', '1001.2', '1001.3', '1001.4']) { w.transport.deliver(w.transport.message({ ts, text: `질문 ${ts}` })); await sleep(300) }
+  await sleep(300)
+  const fourth = w.transport.marks.filter((m) => m.ts === '1001.4').map((m) => m.state.kind === 'working' ? m.state.tenths : m.state.kind)
+  check('marks: the guess follows the time turns here take', fourth.some((x) => typeof x === 'number' && x >= 4), JSON.stringify(fourth))
+  check('marks: nothing after the check', fourth.at(-1) === 'done' && w.transport.lateMarks.length === 0, JSON.stringify({ fourth, late: w.transport.lateMarks }))
+  // While the turn waits for a person's approval, the digit holds: the turn is not getting closer to done.
+  w.askApproval(w.read().sessions['C_ALLOWED:t1'])
+  await sleep(50)
+  w.transport.deliver(w.transport.message({ ts: '1001.5', text: '하나 더' }))
+  await sleep(400)
+  const held = w.transport.marks.filter((m) => m.ts === '1001.5').map((m) => m.state.kind === 'working' ? m.state.tenths : 0)
+  check('marks: the digit holds while an approval waits', w.logs.some((l) => /approval requested in C_ALLOWED:t1/.test(l)) && held.every((x) => x <= 1), JSON.stringify(held))
+  w.done()
+  // An answer the platform refused is a cross, not a check.
+  const ref = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-marks-')), config: { fake: { marks: true, typing: true, refuseAnswer: true } }, answer: { text: '답' } })
+  await sleep(80)
+  ref.transport.deliver(ref.transport.message({ ts: '1002.1' }))
+  await sleep(400)
+  check('marks: an answer refused by the platform ends failed, once', JSON.stringify(ref.transport.marks.map((m) => m.state.kind)) === '["seen","failed"]', JSON.stringify(ref.transport.marks.map((m) => m.state)))
+  ref.done()
+  // A usage request and an approval's answer are not turns: no marks.
+  const u = boot({ config: { fake: { marks: true, typing: true } }, state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  u.transport.deliver(u.transport.message({ ts: '1003.1', text: '사용량' }))
+  const asking = u.askApproval()
+  await sleep(100)
+  u.transport.deliver(u.transport.message({ ts: '1003.2', text: '허용' }))
+  await asking
+  await sleep(100)
+  check('marks: none on a usage request or an approval\'s answer', u.transport.marks.length === 0, JSON.stringify(u.transport.marks))
+  u.done()
+  // After a restart, the marks on messages whose turn was lost end with a cross.
+  const lost = boot({ config: { fake: { marks: true, typing: true } }, state: { inflight: { 'C_ALLOWED:t1': { channel: 'C_ALLOWED', threadTs: 't1', since: Date.now() - 5000, marked: ['1004.1', '1004.2'] } } } })
+  await sleep(400)
+  check('marks: a restart ends the lost turns\' marks with a cross', JSON.stringify(lost.transport.marks.map((m) => [m.ts, m.state.kind])) === '[["1004.1","failed"],["1004.2","failed"]]', JSON.stringify(lost.transport.marks))
+  lost.done()
+  const q = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-marks-')), config: { replyMode: 'thread', markEveryMs: 5, fake: { marks: true, typing: true } }, state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, answer: { text: '응 그래', delayMs: 120 } })
+  await sleep(80)
+  q.transport.deliver(q.transport.message({ addressed: false }))
+  await sleep(400)
+  check('marks: none for a message that did not mention it, even when it answers', q.transport.marks.length === 0 && q.transport.posted.length === 1, JSON.stringify(q.transport.marks))
+  q.done()
 }
 
 // 4. The same platform event twice is handled once.

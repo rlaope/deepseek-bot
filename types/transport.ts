@@ -107,6 +107,14 @@ export type StreamFrame =
   /** A call's result, by its call id: whether it failed, and its text (cut). */
   | { kind: 'tool.result'; callId: string; ok: boolean; text: string; lines?: number }
 
+/** A message's progress, shown on the message itself: see `Transport.mark`. */
+export type ProgressMark =
+  | { kind: 'seen' }
+  | { kind: 'working'; tenths: number }
+  | { kind: 'done' }
+  | { kind: 'failed' }
+  | { kind: 'stopped' }
+
 /** A question a turn asks the person (the ask_user_question tool, a plan review). */
 export interface QuestionItem {
   id: string
@@ -169,6 +177,12 @@ export interface Transport {
 
   /** True once the transport knows its indicator will be refused, so the core stops asking. */
   readonly typingUnavailable?: boolean
+
+  /**
+   * Progress on the person's own message, where the platform has reactions: taken, how far along (tenths, a
+   * rough guess from the time a turn usually takes), and how it ended. Each call replaces the last mark.
+   */
+  mark?(target: Target, ts: string, state: ProgressMark): void
 
   /**
    * Delete a message the bot posted, where the platform allows it. With it, the answer arrives as a

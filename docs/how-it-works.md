@@ -18,7 +18,10 @@ its services are named `deepbot`.
 | "make the report a docx" | writes the document and uploads it to the conversation |
 
 While it works, the platform's own indicator shows — Slack's working status under the thread,
-Discord's and Telegram's "typing…" — so the answer is the only notification.
+Discord's and Telegram's "typing…" — so the answer is the only notification. On Slack the message
+that asked also carries a reaction: 👀 when taken, a digit while it runs (a guess from the time a turn
+usually takes, held while an approval waits), then ✅, ❌ or ⏹️ (it needs `reactions:write`, and
+`reactions:read` to tidy them after a restart).
 
 ### Its language
 

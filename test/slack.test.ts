@@ -624,6 +624,183 @@ function transportFor(api) {
   check('history: a long thread gives its newest lines', JSON.stringify(shown) === '[26,27,28,29,30]' && h.lastTs === '6.30' && /[?&]limit=200(&|$)/.test(asked[0] ?? ''), `${JSON.stringify(shown)} last ${h.lastTs} ${asked[0]}`)
 }
 
+// Progress on the person's message, as reactions: eyes when taken, a digit while it runs, a check or a cross at the
+// end. One reaction at a time: the next is added before the last is taken off.
+{
+  const api = stubSlack()
+  const t = transportFor(api)
+  await t.authenticate()
+  const at = { channel: 'C1', threadTs: '5.0' }
+  const pause = () => new Promise((r) => setTimeout(r, 15))
+  t.mark(at, '5.1', { kind: 'seen' }); await pause()
+  t.mark(at, '5.1', { kind: 'working', tenths: 3 }); await pause()
+  t.mark(at, '5.1', { kind: 'working', tenths: 3 }); await pause()
+  t.mark(at, '5.1', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 50))
+  api.restore()
+  const calls = api.calls.filter((c) => c.method.startsWith('reactions.')).map((c) => `${c.method.split('.')[1]} ${c.body?.name}@${c.body?.timestamp}`)
+  check('marks: eyes, then three, then a check, each swapped in, none repeated', JSON.stringify(calls) === JSON.stringify(['add eyes@5.1', 'add three@5.1', 'remove eyes@5.1', 'add white_check_mark@5.1', 'remove three@5.1']), JSON.stringify(calls))
+  for (const [state, name] of [[{ kind: 'failed' }, 'x'], [{ kind: 'stopped' }, 'black_square_for_stop']] as const) {
+    const a2 = stubSlack()
+    const t2 = transportFor(a2)
+    await t2.authenticate()
+    t2.mark(at, '5.2', state)
+    await new Promise((r) => setTimeout(r, 30))
+    a2.restore()
+    check(`marks: ${state.kind} is ${name}`, a2.calls.some((c) => c.method === 'reactions.add' && c.body?.name === name))
+  }
+  // An app without reactions:write is told once; after that nothing is asked.
+  const a3 = stubSlack({ errors: { 'reactions.add': 'missing_scope' } })
+  const t3 = transportFor(a3)
+  await t3.authenticate()
+  t3.mark(at, '5.3', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 30))
+  t3.mark(at, '5.4', { kind: 'seen' })
+  t3.mark(at, '5.4', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 30))
+  a3.restore()
+  check('marks: refused for lack of a scope, it stops asking', a3.calls.filter((c) => c.method.startsWith('reactions.')).length === 1 && t3.logs.some((l) => /reactions:write/.test(l)), JSON.stringify(t3.logs.filter((l) => /reaction/.test(l))))
+  // Already there (a retry, a second process): not a failure, and the swap goes on.
+  const a4 = stubSlack({ errors: { 'reactions.add': 'already_reacted' } })
+  const t4 = transportFor(a4)
+  await t4.authenticate()
+  t4.mark(at, '5.5', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 15))
+  t4.mark(at, '5.5', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 30))
+  a4.restore()
+  check('marks: a reaction already there counts as added', a4.calls.some((c) => c.method === 'reactions.remove' && c.body?.name === 'eyes'), JSON.stringify(a4.calls.map((c) => c.method)))
+}
+
+// Marks that come faster than Slack is asked are merged: only the newest is sent.
+{
+  const api = stubSlack()
+  const t = transportFor(api)
+  await t.authenticate()
+  const at = { channel: 'C1', threadTs: '5.0' }
+  t.mark(at, '5.9', { kind: 'seen' })
+  t.mark(at, '5.9', { kind: 'working', tenths: 2 })
+  t.mark(at, '5.9', { kind: 'working', tenths: 4 })
+  await new Promise((r) => setTimeout(r, 40))
+  api.restore()
+  const asked = api.calls.filter((c) => c.method.startsWith('reactions.')).map((c) => `${c.method.split('.')[1]} ${c.body?.name}`)
+  check('marks: a burst sends the first and the newest, not each between', !asked.includes('add two') && asked.includes('add four'), JSON.stringify(asked))
+}
+
+// Found in review: what is on the message is what Slack holds, not what was asked. A remove that failed is tried
+// again; an end mark that failed is tried again; a refusal is said once; a message gone is let go; and the first
+// mark a process makes on a message that is not "taken" (after a restart) first reads what the bot left there.
+{
+  const scripted = (answer) => {
+    const calls = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url, init = {}) => {
+      const method = String(url).split('/api/')[1]?.split('?')[0] ?? ''
+      const raw = init.body === undefined ? '' : String(init.body)
+      const body = raw.startsWith('{') ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(String(url).split('?')[1] ?? ''))
+      calls.push({ method, body })
+      const json = method === 'auth.test' ? { ok: true, user: 'bot', user_id: 'U1', team: 'T1', url: 'https://example.slack.com/' } : answer(method, body, calls.filter((c) => c.method === method).length)   // may throw: a rejected fetch
+      return { ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json) }
+    }) as typeof fetch
+    return { calls, restore: () => { globalThis.fetch = realFetch } }
+  }
+  const markedTransport = () => {
+    const logs = []
+    const t = createSlackTransport({
+      cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, markRetryMs: 5 },
+      log: (...parts) => logs.push(parts.join(' ')), sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+    })
+    t.logs = logs
+    return t
+  }
+  const at = { channel: 'C1', threadTs: '5.0' }
+  const reactions = (api) => api.calls.filter((c) => c.method.startsWith('reactions.')).map((c) => `${c.method.split('.')[1]} ${c.body?.name ?? ''}`.trim())
+  // A remove refused once (rate limited): the next mark takes the stale one off too.
+  const a = scripted((m, b, n) => m === 'reactions.remove' && n === 1 ? { ok: false, error: 'ratelimited' } : { ok: true })
+  const ta = markedTransport()
+  await ta.authenticate(); await ta.identity()
+  ta.mark(at, '6.1', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 15))
+  ta.mark(at, '6.1', { kind: 'working', tenths: 2 })
+  await new Promise((r) => setTimeout(r, 30))
+  ta.mark(at, '6.1', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 60))
+  a.restore()
+  const ra = reactions(a)
+  check('marks: a remove refused is tried again, and the end leaves only its own mark', ra.filter((x) => x === 'remove eyes').length === 2 && ra.includes('remove two') && ra.at(-1)?.startsWith('remove') && ta.logs.some((l) => /reactions.remove failed/.test(l)), JSON.stringify(ra))
+  // The end mark's add refused once: tried again.
+  const b = scripted((m, body, n) => m === 'reactions.add' && body.name === 'white_check_mark' && n === 2 ? { ok: false, error: 'internal_error' } : { ok: true })
+  const tb = markedTransport()
+  await tb.authenticate(); await tb.identity()
+  tb.mark(at, '6.2', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 15))
+  tb.mark(at, '6.2', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 80))
+  b.restore()
+  check('marks: an end mark that failed is tried again', reactions(b).filter((x) => x === 'add white_check_mark').length === 2 && reactions(b).includes('remove eyes'), JSON.stringify(reactions(b)))
+  // Two refusals in flight at once: said once.
+  const c = scripted((m) => m === 'reactions.add' ? { ok: false, error: 'missing_scope' } : { ok: true })
+  const tc = markedTransport()
+  await tc.authenticate(); await tc.identity()
+  tc.mark(at, '6.3', { kind: 'seen' })
+  tc.mark(at, '6.4', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 40))
+  c.restore()
+  check('marks: two refusals at once are said once', tc.logs.filter((l) => /reactions:write/.test(l)).length === 1, JSON.stringify(tc.logs.filter((l) => /reaction/.test(l))))
+  // The person deleted the message: let go, not asked again for each digit.
+  const d = scripted((m) => m === 'reactions.add' ? { ok: false, error: 'message_not_found' } : { ok: true })
+  const td = markedTransport()
+  await td.authenticate(); await td.identity()
+  td.mark(at, '6.5', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 20))
+  td.mark(at, '6.5', { kind: 'working', tenths: 3 })
+  td.mark(at, '6.5', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 40))
+  d.restore()
+  check('marks: a message that is gone is let go, and forgotten when its turn ends', reactions(d).length === 1 && td.markedMessages === 0, `${JSON.stringify(reactions(d))} held ${td.markedMessages}`)
+  // After a restart: the first mark is an end, so what the bot left is read first and taken off; a person's own stays.
+  const e = scripted((m) => m === 'reactions.get' ? { ok: true, message: { reactions: [{ name: 'four', users: ['U1'] }, { name: 'eyes', users: ['U9'] }, { name: 'tada', users: ['U1', 'U9'] }] } } : { ok: true })
+  const te = markedTransport()
+  await te.authenticate(); await te.identity()
+  te.mark(at, '6.6', { kind: 'failed' })
+  await new Promise((r) => setTimeout(r, 40))
+  e.restore()
+  check('marks: after a restart, its own digit is taken off, a person\'s reaction is not', JSON.stringify(reactions(e)) === JSON.stringify(['get', 'add x', 'remove four']), JSON.stringify(reactions(e)))
+  // Not allowed to read them (no reactions:read): every mark of ours is taken off, whichever is there.
+  const g = scripted((m) => m === 'reactions.get' ? { ok: false, error: 'missing_scope' } : m === 'reactions.remove' ? { ok: false, error: 'no_reaction' } : { ok: true })
+  const tg = markedTransport()
+  await tg.authenticate(); await tg.identity()
+  tg.mark(at, '6.7', { kind: 'failed' })
+  await new Promise((r) => setTimeout(r, 60))
+  g.restore()
+  const removed = reactions(g).filter((x) => x.startsWith('remove')).map((x) => x.slice(7))
+  check('marks: after a restart without reactions:read, the cross goes on and eyes and every digit come off', reactions(g)[1] === 'add x' && removed.length === 10 && ['eyes', 'one', 'four', 'nine'].every((n) => removed.includes(n)) && !removed.includes('x') && tg.logs.some((l) => /reactions.get failed/.test(l)), JSON.stringify(reactions(g)))
+  // A call that throws (the network) is a failure like a refusal: the end mark is tried again.
+  let thrown = 0
+  const h = scripted((m, body) => {
+    if (m === 'reactions.add' && body.name === 'white_check_mark' && thrown === 0) { thrown++; throw new Error('ECONNRESET') }
+    return { ok: true }
+  })
+  const th = markedTransport()
+  await th.authenticate(); await th.identity()
+  th.mark(at, '6.8', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 15))
+  th.mark(at, '6.8', { kind: 'done' })
+  await new Promise((r) => setTimeout(r, 80))
+  h.restore()
+  check('marks: an end mark whose call threw is tried again', reactions(h).filter((x) => x === 'add white_check_mark').length === 2 && reactions(h).includes('remove eyes'), JSON.stringify(reactions(h)))
+  // Too many reactions on the message: ours come off, freeing a slot, before it is let go.
+  const k = scripted((m, body) => m === 'reactions.add' && body.name === 'two' ? { ok: false, error: 'too_many_reactions' } : { ok: true })
+  const tk = markedTransport()
+  await tk.authenticate(); await tk.identity()
+  tk.mark(at, '6.9', { kind: 'seen' })
+  await new Promise((r) => setTimeout(r, 15))
+  tk.mark(at, '6.9', { kind: 'working', tenths: 2 })
+  await new Promise((r) => setTimeout(r, 30))
+  k.restore()
+  check('marks: too many reactions, ours come off before it is let go', JSON.stringify(reactions(k)) === JSON.stringify(['add eyes', 'add two', 'remove eyes']), JSON.stringify(reactions(k)))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

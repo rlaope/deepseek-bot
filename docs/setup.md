@@ -102,7 +102,10 @@ app-level token; generate that under Basic Information → App-Level Tokens. By 
    URL is needed.
 3. **OAuth & Permissions** → bot scopes: `app_mentions:read`, `chat:write`, `channels:read`,
    `channels:history` (plus `groups:history` for private channels and `im:history` for DMs),
-   `users:read`, `files:read` (attachments) and `files:write` (document uploads).
+   `users:read`, `files:read` (attachments), `files:write` (document uploads), and `reactions:write` and
+   `reactions:read` (the progress marks on the person's message: 👀 when taken, a digit while it runs, ✅, ❌
+   or ⏹️ at the end; without the first the bot goes on without them, asking again only after a restart; the
+   second lets a restart take off only the marks it left).
 4. **Event Subscriptions** → subscribe to `app_mention` (and `message.im` for DMs; `message.channels` and
    `message.groups` for `replyMode: thread`, below).
    **Interactivity & Shortcuts** → on (no request URL is needed in Socket Mode), for the approval

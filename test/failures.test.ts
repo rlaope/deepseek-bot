@@ -494,6 +494,47 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   d.done()
 }
 
+// Progress marks through a turn that takes time: a digit while it runs, a cross when it times out, a stop sign when
+// a person stops it, and a stop sign on a message a stop withdrew before it ran.
+{
+  const kinds = (t, ts) => t.transport.marks.filter((m) => m.ts === ts).map((m) => m.state.kind === 'working' ? `w${m.state.tenths}` : m.state.kind)
+  const a = boot({ agent: 'slow', config: { markEveryMs: 20, runTimeoutMs: 400, fake: { marks: true, typing: true } } })
+  await sleep(60)
+  a.transport.deliver(a.transport.message({ ts: '2000.1' }))
+  await sleep(900)
+  const run = kinds(a, '2000.1')
+  check('marks: taken, a digit while it runs (no repeats), a cross when it times out', run[0] === 'seen' && run.includes('w1') && run.at(-1) === 'failed' && run.every((k, i) => i === 0 || k !== run[i - 1]) && a.transport.lateMarks.length === 0, JSON.stringify({ run, late: a.transport.lateMarks }))
+  a.done()
+  // The in-flight record names the marked messages until their marks end: with one turn over and the next running,
+  // only the next.
+  const r = boot({ agent: 'slow', config: { markEveryMs: 20, runTimeoutMs: 400, fake: { marks: true, typing: true } } })
+  await sleep(60)
+  r.transport.deliver(r.transport.message({ ts: '2000.5', text: '하나' }))
+  await sleep(100)
+  r.transport.deliver(r.transport.message({ ts: '2000.6', text: '둘' }))
+  // Read the moment the first one's mark ends (it times out), while the second runs: not after a fixed wait, which a
+  // loaded machine can overshoot.
+  let record = null
+  for (let i = 0; i < 200 && record === null; i++) {
+    await sleep(10)
+    if (r.transport.marks.some((m) => m.ts === '2000.5' && m.state.kind === 'failed')) record = r.read().inflight?.['C_ALLOWED:t1'] ?? {}
+  }
+  check('marks: the in-flight record names the messages whose marks have not ended', JSON.stringify(record?.marked) === '["2000.6"]', JSON.stringify(record))
+  r.done()
+  const b = boot({ agent: 'slow', config: { markEveryMs: 20, fake: { marks: true, typing: true } } })
+  await sleep(60)
+  b.transport.deliver(b.transport.message({ ts: '2000.2', text: '첫째' }))
+  await sleep(200)
+  b.transport.deliver(b.transport.message({ ts: '2000.3', text: '둘째' }))
+  await sleep(50)
+  b.transport.deliver(b.transport.message({ ts: '2000.4', text: '그만' }))
+  await sleep(500)
+  check('marks: a person\'s stop ends the running one stopped', kinds(b, '2000.2').at(-1) === 'stopped', JSON.stringify(kinds(b, '2000.2')))
+  check('marks: and the one it withdrew before it ran, stopped too', JSON.stringify(kinds(b, '2000.3')) === '["seen","stopped"]', JSON.stringify(kinds(b, '2000.3')))
+  check('marks: the stop request itself gets none, and nothing comes after an end', kinds(b, '2000.4').length === 0 && b.transport.lateMarks.length === 0, JSON.stringify({ stop: kinds(b, '2000.4'), late: b.transport.lateMarks }))
+  b.done()
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -23,6 +23,28 @@ export interface ProgressPoster {
   post(target: ProgressTarget, text: string, options?: { replace?: string | null }): Promise<{ ts: string } | null>
 }
 
+/**
+ * How far along a turn is, in tenths, for a mark on the person's message: 1 at once, rising as the turn passes the
+ * time a turn usually takes and slowing as it goes (1 - e^(-t/typical)), never 10 — that is the end's own mark.
+ * A guess: nothing reports how much of a turn is left.
+ */
+export function tenthsOf(elapsedMs: number, typicalMs: number): number {
+  return Math.min(9, Math.max(1, Math.floor(10 * (1 - Math.exp(-elapsedMs / Math.max(1, typicalMs))))))
+}
+
+/** The time a turn usually takes: the median of the last twenty answered, 30 s before any. */
+export function typicalTurns() {
+  const last: number[] = []
+  return {
+    record(ms: number): void { last.push(ms); if (last.length > 20) last.shift() },
+    ms(): number {
+      if (last.length === 0) return 30_000
+      const sorted = [...last].sort((a, b) => a - b)
+      return sorted[Math.floor(sorted.length / 2)]
+    },
+  }
+}
+
 export interface ProgressOptions {
   post: ProgressPoster['post']
   /** Everything but the first update waits at least this long between edits. */

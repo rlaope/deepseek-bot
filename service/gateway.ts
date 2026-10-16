@@ -101,7 +101,7 @@ const PLATFORMS: Record<Platform, PlatformSpec> = {
 const isPlatform = (name: string | undefined): name is Platform => name !== undefined && Object.hasOwn(PLATFORMS, name)
 
 /** The bot scopes docs/setup.md lists, and im:history, which DMs (`message.im`) need. */
-const SLACK_BOT_SCOPES = ['app_mentions:read', 'chat:write', 'channels:read', 'channels:history', 'groups:history', 'im:history', 'users:read', 'files:read', 'files:write']
+const SLACK_BOT_SCOPES = ['app_mentions:read', 'chat:write', 'channels:read', 'channels:history', 'groups:history', 'im:history', 'users:read', 'files:read', 'files:write', 'reactions:read', 'reactions:write']
 
 /** A Slack app manifest with what docs/setup.md asks for: Socket Mode, the scopes, the events, interactivity. */
 export function slackManifest(): Record<string, unknown> {

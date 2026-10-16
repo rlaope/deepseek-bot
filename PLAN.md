@@ -68,6 +68,9 @@ Decided against:
 
 ## Unverified
 
+- Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
+  `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
+  rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.
 - `replyMode: thread` against a real model: that DeepSeek answers exactly `[no reply]` to chatter in a thread and
   answers what is meant for it. The suites drive a fake agent; the scenario runner has no conversation to put a
   message without a mention in. Watch `kept quiet` against `answered` in the gateway log on a deployment that uses it.

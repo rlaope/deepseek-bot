@@ -21,7 +21,7 @@ import type {
   SlackHistoryResponse, SlackMember, SlackMembersResponse, SlackMessage,
   SlackPostResponse, SlackResponse, SlackUserInfoResponse,
 } from '../types/slack.js'
-import type { AttachmentManifest, InboundMessage, PostedMessage, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
+import type { AttachmentManifest, InboundMessage, PostedMessage, ProgressMark, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 
@@ -255,6 +255,8 @@ export interface SlackTransport extends Transport {
   historyRaw(channel: string, limit?: number): Promise<SlackHistoryResponse>
   /** Diagnostic only: threads whose working-status bookkeeping is still held. */
   readonly statusThreads: number
+  /** Diagnostic only: messages whose progress marks are still held. */
+  readonly markedMessages: number
 }
 
 export function createSlackTransport(host: SlackTransportHost): SlackTransport {
@@ -733,6 +735,98 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
   }
 
   /**
+   * Progress on the person's message as its reactions: eyes when taken, a digit (1 to 9, tenths of a guess)
+   * while it runs, a check, a cross or a stop sign at the end. Per message, what Slack holds is kept apart from
+   * what is wanted: the wanted mark is added before the others are taken off, so the message is never bare; a
+   * remove that failed is tried again by the next mark; a burst is merged into its newest mark; and the end,
+   * which has no next mark, is tried again a few times. reactions:write is the app's to have: refused for it, the
+   * refusal is said once and nothing more is asked until the gateway restarts. A message that is gone is let go.
+   */
+  const MARKS = { seen: 'eyes', done: 'white_check_mark', failed: 'x', stopped: 'black_square_for_stop' } as const
+  const DIGITS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
+  const OURS = new Set<string>([...Object.values(MARKS), ...DIGITS])
+  const GONE = new Set(['message_not_found', 'channel_not_found', 'thread_locked', 'is_archived', 'not_in_channel', 'too_many_reactions', 'too_many_emoji'])
+  // Spread over a minute: three tries within one rate window would all be refused together.
+  const END_PAUSES = [1, 5, 15]
+  const retryMs = Number(cfg.markRetryMs) > 0 ? Number(cfg.markRetryMs) : 3000
+  // A call that throws (the network, a page of HTML) is a failure like a refusal, retried the same way.
+  const settled = <T,>(call: Promise<T>) => call.catch((e) => ({ ok: false, error: String((e as Error)?.message ?? e) }) as unknown as T)
+  let reactionsRefused = false
+  type Marked = { shown: Set<string>; want: string; ended: boolean; dead: boolean; running: boolean; read: boolean }
+  const marked = new Map<string, Marked>()
+  function mark(target: Target, ts: string, state: ProgressMark): void {
+    if (reactionsRefused) return
+    const key = `${target.channel}:${ts}`
+    const name = state.kind === 'working' ? DIGITS[Math.min(9, Math.max(1, Math.round(state.tenths))) - 1] : MARKS[state.kind]
+    // The first mark a process makes on a message is "taken" — unless a restart came between: then what this bot
+    // left on it is read first, so a digit from before is taken off.
+    const entry = marked.get(key) ?? { shown: new Set<string>(), want: name, ended: false, dead: false, running: false, read: state.kind === 'seen' }
+    marked.set(key, entry)
+    const end = state.kind !== 'seen' && state.kind !== 'working'
+    // A message that is gone is remembered until its turn ends, so its digits are not asked for one by one.
+    if (entry.dead) { if (end) marked.delete(key); return }
+    if (entry.ended) return
+    entry.want = name
+    entry.ended = end
+    if (!entry.running) void settle(target.channel, ts, key, entry)
+  }
+  async function settle(channel: string, ts: string, key: string, entry: Marked): Promise<void> {
+    entry.running = true
+    try {
+      if (!entry.read) {
+        entry.read = true
+        const held = await settled(api.slackGet<{ ok: boolean; error?: string; message?: { reactions?: Array<{ name: string; users?: string[] }> } }>(requireToken(), 'reactions.get', { channel, timestamp: ts }))
+        if (held.ok) {
+          for (const r of held.message?.reactions ?? []) if (OURS.has(r.name) && botUserId !== null && (r.users ?? []).includes(botUserId)) entry.shown.add(r.name)
+        } else {
+          // Not read (reactions:read missing, say): what a lost turn can have left — eyes or a digit — may be there, so
+          // each is taken off ("no_reaction" is fine). Never the mark wanted now, which must still be added.
+          log(`progress marks: reactions.get failed (${held.error}) — taking off every mark a turn can leave`)
+          for (const name of [MARKS.seen, ...DIGITS]) if (name !== entry.want) entry.shown.add(name)
+        }
+      }
+      for (let tries = 0; ;) {
+        const want = entry.want
+        let failed = false
+        if (!entry.shown.has(want)) {
+          const r = await settled(api.slackPost<{ ok: boolean; error?: string }>(requireToken(), 'reactions.add', { channel, timestamp: ts, name: want }))
+          if (r.ok || r.error === 'already_reacted') entry.shown.add(want)
+          else if (LASTING_REFUSALS.has(String(r.error))) {
+            if (!reactionsRefused) log(`progress marks: reactions.add refused (${r.error}) — the app needs reactions:write; no more marks until the gateway restarts`)
+            reactionsRefused = true
+            marked.clear()
+            return
+          } else if (GONE.has(String(r.error))) {
+            // Too many reactions on it: ours still come off, freeing a slot; otherwise it is gone.
+            if (r.error === 'too_many_reactions' || r.error === 'too_many_emoji') {
+              for (const old of [...entry.shown]) await settled(api.slackPost(requireToken(), 'reactions.remove', { channel, timestamp: ts, name: old }))
+            }
+            entry.dead = true
+            return
+          }
+          else { failed = true; log(`progress marks: reactions.add failed (${r.error})`) }
+        }
+        // Only once the wanted one is on: a newer mark's own pass takes these off.
+        for (const old of failed ? [] : [...entry.shown]) {
+          if (old === want || entry.want !== want) continue
+          const r = await settled(api.slackPost<{ ok: boolean; error?: string }>(requireToken(), 'reactions.remove', { channel, timestamp: ts, name: old }))
+          if (r.ok || r.error === 'no_reaction') entry.shown.delete(old)
+          else { failed = true; log(`progress marks: reactions.remove failed (${r.error})`) }
+        }
+        if (entry.want !== want) continue   // a newer mark came meanwhile
+        // A digit that failed waits for the next digit; the end has none, so it is tried again after a pause.
+        if (!failed || !entry.ended || tries >= END_PAUSES.length) return
+        await new Promise((r) => setTimeout(r, retryMs * END_PAUSES[tries++]).unref?.())
+      }
+    } catch (e) {
+      log(`progress marks: ${String((e as Error)?.message ?? e)}`)
+    } finally {
+      entry.running = false
+      if (entry.ended && marked.get(key) === entry) marked.delete(key)
+    }
+  }
+
+  /**
    * A permalink for a conversation.
    *
    * Slack renders its own `<#C…>` mention, but someone who writes "#random" gets plain text, and a
@@ -754,6 +848,9 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     uploadFile,
     remove,
     startTyping,
+    mark,
+    /** Diagnostic only: messages whose marks are still held. */
+    get markedMessages() { return marked.size },
     get typingUnavailable() { return sessionsStatus === false && assistantStatus === false },
     get statusThreads() { return new Set([...working.keys(), ...threadShows.keys(), ...threadCalls.keys()]).size },
     // Block actions over Socket Mode; the app needs Interactivity turned on. Without it a press does

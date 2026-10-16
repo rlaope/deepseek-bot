@@ -56,7 +56,7 @@ import { createTelegramTransport } from './transports/telegram.js'
 import { createDiscordTransport } from './transports/discord.js'
 import { createLocalTransport, LOCAL_CHANNEL } from './transports/local.js'
 import { createCompositeTransport } from './transports/composite.js'
-import { createProgressTracker } from './progress.js'
+import { createProgressTracker, tenthsOf, typicalTurns } from './progress.js'
 import { LANGUAGES, languageOf } from './i18n.js'
 import { defaultWords, messages } from './messages.js'
 import { markInstructionRoot, mkdirInside, resolvesInside, writeInside } from './safeWrite.js'
@@ -65,7 +65,7 @@ import { createRecallContext, recallIndexPath } from './recallContext.js'
 import { analyzeNotes } from './notes.js'
 import { guardFetchedText } from './injection.js'
 import type { SlackHistoryResponse } from './types/slack.js'
-import type { InboundMessage, StreamFrame, Target } from './types/transport.js'
+import type { InboundMessage, ProgressMark, StreamFrame, Target } from './types/transport.js'
 import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
 import type {
   AgentDefaultModelService, AgentsService, LlmService, AgentPresetsService, AttachmentsService,
@@ -199,6 +199,11 @@ const DEFAULTS = {
   approveWords: defaultWords('approve'),
   denyWords: defaultWords('deny'),
   progressAfterMs: 8000,
+  // How often the mark on the person's message (a platform's reactions) is looked at while a turn runs; it changes
+  // only when its digit does, so a turn makes about as many changes as it has digits, whatever this is.
+  markEveryMs: 5000,
+  // The pause unit between tries of a mark that ended a turn and failed (×1, ×5, ×15).
+  markRetryMs: 3000,
   // `{name}` is the persona's first heading ("아리"), else the bot's own name. Unset, it is the
   // `language`'s own ("⏳ {name} is working…"). A Unicode emoji, not Slack's `:hourglass_flowing_sand:`,
   // which Discord and Telegram print as text.
@@ -1037,14 +1042,26 @@ export function apply(ctx, config) {
    * message's place. Cleared when the conversation has nothing running and nothing waiting. Written at
    * once, not on the debounced save: a process that dies within half a second would lose it.
    */
-  function recordInflight(key: string, target: Origin, quiet = false): void {
+  function recordInflight(key: string, target: Origin, quiet = false, ts?: string): void {
     const held = state.inflight?.[key]
+    // The messages it put a mark on, for a restart to end their marks with a cross.
+    const marked = !quiet && ts !== undefined && typeof via(target).mark === 'function' ? [ts] : []
     // Turns for messages that did not mention it only: a restart that loses them says nothing. One that did upgrades it.
     if (held !== undefined) {
-      if (held.quiet === true && !quiet) { delete held.quiet; saveStateNow() }
+      if ((held.quiet !== true || quiet) && marked.length === 0) return
+      if (held.quiet === true && !quiet) delete held.quiet
+      if (marked.length > 0) held.marked = [...(held.marked ?? []), ...marked]
+      saveStateNow()
       return
     }
-    state.inflight = { ...(state.inflight ?? {}), [key]: { channel: target.channel, threadTs: target.threadTs, since: Date.now(), ...(quiet ? { quiet: true } : {}) } }
+    state.inflight = { ...(state.inflight ?? {}), [key]: { channel: target.channel, threadTs: target.threadTs, since: Date.now(), ...(quiet ? { quiet: true } : {}), ...(marked.length > 0 ? { marked } : {}) } }
+    saveStateNow()
+  }
+  /** A message's mark has ended: a restart has nothing more to end on it. */
+  function unmarkInflight(key: string, ts: string): void {
+    const held = state.inflight?.[key]
+    if (held?.marked === undefined) return
+    held.marked = held.marked.filter((m: string) => m !== ts)
     saveStateNow()
   }
   function settleInflight(key: string): void {
@@ -1063,7 +1080,7 @@ export function apply(ctx, config) {
     // a new turn never meets one). Each stays in the state until its own notice is out, so a restart
     // during the notices loses none; one being reported is skipped by a second run (a retried start);
     // and a platform still down keeps its records for the retry that connects it.
-    type Lost = { channel: string; threadTs: string | null; placeholder?: string; since?: number; quiet?: boolean }
+    type Lost = { channel: string; threadTs: string | null; placeholder?: string; since?: number; quiet?: boolean; marked?: string[] }
     const up = (record: Lost) => typeof transport.connectedFor !== 'function' || transport.connectedFor({ channel: record.channel, threadTs: record.threadTs }) === true
     const lost = (Object.entries(state.restartLost ?? {}) as Array<[string, Lost]>).filter(([key, record]) => up(record) && !reporting.has(key))
     for (const [key] of lost) reporting.add(key)
@@ -1075,6 +1092,8 @@ export function apply(ctx, config) {
       if (Date.now() - Number(record.since ?? 0) > 24 * 3600_000) { log(`inflight ${key}: older than a day, dropped without a notice`); forget(key); continue }
       if (record.quiet === true) { log(`inflight ${key}: only messages that did not mention it, dropped without a notice`); forget(key); continue }
       const target = { channel: record.channel, threadTs: record.threadTs }
+      // Their marks end with a cross: a digit left on a message would say it is still being worked on.
+      for (const ts of record.marked ?? []) markOf(target, ts, { kind: 'failed' })
       // The platform's status may still say "작업 중" from the process that died: raise and lower it.
       try { via(target).startTyping?.(target, () => {})?.() } catch { /* best effort */ }
       await replyInPlaceOf(target, say.restartLost, record.placeholder ?? null)
@@ -1135,20 +1154,21 @@ export function apply(ctx, config) {
    * new message and the working message is removed: an edit raises no notification, so replacing in
    * place had every answer reach a phone as "⏳ 아리 작업 중…". Elsewhere the reply edits it.
    */
-  async function replyInPlaceOf(target: Origin, text: string, placeholderTs: string | null, answer = false): Promise<void> {
+  /** Post `text` in the working message's place. True when it went out. */
+  async function replyInPlaceOf(target: Origin, text: string, placeholderTs: string | null, answer = false): Promise<boolean> {
     const part = via(target)
     // `answer` marks the turn's own reply, so a platform that streamed it can put this in its place.
     const marked = answer ? { answer: true } : {}
     if (placeholderTs === null || typeof part.remove !== 'function') {
-      await transport.post(target, text, { replace: placeholderTs, ...marked })
-      return
+      return (await transport.post(target, text, { replace: placeholderTs, ...marked })) !== null
     }
     const sent = await transport.post(target, text, marked)
     // A reply that did not go out must not take the working message with it: edit instead.
-    if (sent === null) { await transport.post(target, text, { replace: placeholderTs, ...marked }); return }
+    if (sent === null) return (await transport.post(target, text, { replace: placeholderTs, ...marked })) !== null
     // The answer is out by now, so a throw here must not reach the caller's "Execution failed".
     const removed = await part.remove(target, placeholderTs).catch(() => false)
     if (removed !== true) log(`working message ${placeholderTs} left in ${target.channel}: delete refused`)
+    return true
   }
 
   // Token accounting. The store is the state file's `usage` section, so the numbers are
@@ -2658,7 +2678,7 @@ export function apply(ctx, config) {
    * ticket just before its turn begins. Without this the bot said it had stopped and then started
    * on the next message in the queue.
    */
-  type Ticket = { withdrawn: boolean; stopWorking: () => void; clientId?: string; quiet?: boolean }
+  type Ticket = { withdrawn: boolean; stopWorking: () => void; clientId?: string; quiet?: boolean; ts?: string }
   const waiting = new Map<string, Set<Ticket>>()
   function withdrawWaiting(key: string, target: Target): number {
     const tickets = waiting.get(key)
@@ -2670,9 +2690,35 @@ export function apply(ctx, config) {
     if (tickets === undefined) return 0
     // Typing stops now, not when the withdrawn job would have reached a slot — which, behind another
     // conversation's turn, could be minutes of "typing…" under "중단했어".
-    for (const ticket of tickets) { ticket.withdrawn = true; ticket.stopWorking() }
+    for (const ticket of tickets) {
+      ticket.withdrawn = true
+      ticket.stopWorking()
+      if (ticket.ts !== undefined && ticket.quiet !== true) { markOf(target, ticket.ts, { kind: 'stopped' }); unmarkInflight(key, ticket.ts) }
+    }
     waiting.delete(key)
     return tickets.size
+  }
+  /** The time a turn usually takes, for the guess a mark on the person's message shows while one runs. */
+  const typical = typicalTurns()
+  /** Progress on the person's message, where the platform has reactions. Never a reason for a turn to fail. */
+  function markOf(target: Target, ts: string, state: ProgressMark): void {
+    try { via(target).mark?.(target, ts, state) } catch (e) { log(`progress mark failed: ${String((e as Error)?.message ?? e)}`) }
+  }
+  /**
+   * While a turn runs: a digit, a guess at how far along it is, changed only when the digit does. Time spent waiting
+   * for a person's approval does not count: the turn is not getting closer to done.
+   */
+  function tickMarks(target: Target, ts: string, key: string): { stop: () => void; ran: () => number } {
+    let last = Date.now()
+    let ran = 0
+    const count = () => { const now = Date.now(); if (!pendingApprovals.has(key)) ran += now - last; last = now; return ran }
+    if (typeof via(target).mark !== 'function') return { stop: () => {}, ran: count }
+    let shown = 0
+    const timer = setInterval(() => {
+      const tenths = tenthsOf(count(), typical.ms())
+      if (tenths !== shown) { shown = tenths; markOf(target, ts, { kind: 'working', tenths }) }
+    }, cfg.markEveryMs)
+    return { stop: () => clearInterval(timer), ran: count }
   }
   /** Leave the waiting list; false when a stop withdrew this message meanwhile. */
   function leaveWaiting(key: string, ticket: Ticket): boolean {
@@ -2794,11 +2840,13 @@ export function apply(ctx, config) {
     health.lastEventAt = Date.now()
     writeHealth()
     log(`accepted channel=${channel} thread=${threadTs} session=${state.sessions[key] ?? 'new'}`)
-    recordInflight(key, { channel, threadTs }, quiet)
+    recordInflight(key, { channel, threadTs }, quiet, ts)
+    // Taken: the person's message says so (none for one that did not mention it: nothing shows it was heard).
+    if (!quiet) markOf({ channel, threadTs }, ts, { kind: 'seen' })
     // Before the queue, so a message waiting behind other turns also shows it was taken. Not one that did not mention
     // it: the turn may say nothing, and nothing is to show it was heard.
     const stopWorking = quiet ? () => {} : startWorking(key, { channel, threadTs })
-    const ticket: Ticket = { withdrawn: false, stopWorking, ...(message.clientId !== undefined ? { clientId: message.clientId } : {}), ...(quiet ? { quiet: true } : {}) }
+    const ticket: Ticket = { withdrawn: false, stopWorking, ts, ...(message.clientId !== undefined ? { clientId: message.clientId } : {}), ...(quiet ? { quiet: true } : {}) }
     if (!waiting.has(key)) waiting.set(key, new Set())
     waiting.get(key)?.add(ticket)
 
@@ -2806,6 +2854,15 @@ export function apply(ctx, config) {
       const started = Date.now()
       const replyTarget = { channel, threadTs }
       let restoreRequester: (() => void) | null = null
+      let ticking: { stop: () => void; ran: () => number } = { stop: () => {}, ran: () => 0 }
+      // How long the turn ran, waits for an approval left out: what a typical turn is learned from.
+      let ran = 0
+      // How it ended, on the person's message: none for one that did not mention it.
+      const ended = (kind: 'done' | 'failed' | 'stopped') => {
+        if (quiet) return
+        markOf(replyTarget, ts, { kind })
+        unmarkInflight(key, ts)
+      }
       if (ticket.withdrawn) { stopWorking(); log(`withdrawn before it started in ${key}`); settleInflight(key); return }
       // A later message waits behind it: one that did not mention it gives way, and comes to that turn as history
       // (the thread's pointer stops before it). A burst of chatter is one turn, not one each.
@@ -2852,6 +2909,7 @@ export function apply(ctx, config) {
           // next message — while that agent still holds the session. It is the backstop for a turn
           // that never gets that far.
           const backstopMs = cfg.runTimeoutMs + Math.min(60000, cfg.runTimeoutMs)
+          if (!quiet) ticking = tickMarks(replyTarget, ts, key)
           r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs, user: message.user, ...(quiet ? { quiet: true } : {}) }, historyText, attachmentText, key, attachmentImages), backstopMs)
           // Advance the thread pointer only after the turn succeeded, so a failed
           // turn does not swallow messages it never delivered.
@@ -2863,6 +2921,8 @@ export function apply(ctx, config) {
           // The turn owns its own timers; a timeout or a stop cancels it. Typing ends here, before the
           // reply is posted: a tick landing after the reply would show "typing…" under the answer.
           stopWorking()
+          ticking.stop()
+          ran = ticking.ran()
         }
         if (r.sessionId && r.sessionId !== state.sessions[key]) { state.sessions[key] = r.sessionId; saveState() }
         // The answer takes the progress message's place, so a slow turn leaves one
@@ -2885,10 +2945,15 @@ export function apply(ctx, config) {
           health.answered++
           writeHealth()
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
-          await replyInPlaceOf(replyTarget, r.text, placeholderTs, true)
+          // The check once the answer is out: a refused post is a cross. Only an answer that went out is a typical
+          // turn, timed without the waits for an approval.
+          const out = await replyInPlaceOf(replyTarget, r.text, placeholderTs, true)
+          if (out && !quiet) typical.record(ran)
+          ended(out ? 'done' : 'failed')
           await deliverDocuments(key, replyTarget, r.text, started)
             .catch((e) => log(`documents: delivery failed: ${String((e as Error)?.message ?? e)}`))
         } else if (r.reason?.kind === 'cancelled') {
+          ended(r.reason.cause === 'user' ? 'stopped' : 'failed')
           const why = r.reason.cause === 'timed out' ? say.timedOut : say.stopped
           log(`turn cancelled cause=${String(r.reason.cause ?? '-')}${r.reported === true ? ' (already reported)' : ''}`)
           // The terminal marks a turn the person stopped itself ("⎿ Interrupted"); any other end it is told.
@@ -2903,6 +2968,7 @@ export function apply(ctx, config) {
           }
         } else {
           log(`turn ended abnormally reason=${JSON.stringify(r.reason)}`)
+          ended('failed')
           // In the voice the bot speaks, and with no path on the host: the log is the operator's to read.
           await replyInPlaceOf(replyTarget, say.unfinished(r.reason?.kind ?? say.unknownReason), placeholderTs)
         }
@@ -2914,6 +2980,7 @@ export function apply(ctx, config) {
         // instead, it has already let go and this finds nothing.
         cancelRunning(key, 'timed out')
         stopWorking()
+        ended('failed')
         leaveWaiting(key, ticket)   // a ticket left behind would be "withdrawn" by a later stop
         if (!quiet) await progress.settle(key)
         const leftover = quiet ? null : progress.take(key)?.ts ?? null

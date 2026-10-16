@@ -216,6 +216,15 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **Progress on the person's message, in Slack.** A turn showed only Slack's working status under the thread.
+  The message that asked now carries it as a reaction: 👀 when taken, a digit while the turn runs (1 to 9: a
+  guess at how far along it is, from the time a turn usually takes, changed only when the digit does), and
+  ✅, ❌ or ⏹️ when it is answered, fails or times out, or is stopped (a message a stop withdrew too). None
+  for a message that did not mention it in `replyMode: thread`. It needs the `reactions:write` scope (and
+  `reactions:read`, to tidy a lost turn's mark after a restart), both now in the manifest `dsh gateway setup`
+  makes; an existing app needs them added and reinstalled; without it the first refusal is logged and nothing more is asked
+  until the gateway restarts. A reaction Slack refused to take off is tried again; the end mark is tried a
+  few times; a digit holds while an approval waits; and a restart ends a lost turn's mark with a cross.
 - **`replyMode: thread`: in a thread the bot takes part in, no mention is needed.** In a Slack thread every
   message had to mention the bot. With `thread`, a mention starts it; then, for a day after its last
   mention or reply there, every message in the thread comes to it, told it did not mention it, and the

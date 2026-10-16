@@ -10,7 +10,7 @@
  * Every interaction is recorded so a test can assert on what the core asked for
  * rather than on what a platform happened to reply.
  */
-import type { ActionButton, AttachmentManifest, InboundMessage, Target, Transport } from '../types/transport.ts'
+import type { ActionButton, AttachmentManifest, InboundMessage, ProgressMark, Target, Transport } from '../types/transport.ts'
 
 /** What a suite can ask of the fake; each is off unless given. */
 export interface FakeTransportOptions {
@@ -19,6 +19,10 @@ export interface FakeTransportOptions {
   typingRefusedAfterMs?: number
   upload?: boolean | 'fail'
   remove?: boolean
+  /** Reactions on the person's message, as Slack has them: every mark is recorded. */
+  marks?: boolean
+  /** The platform refuses the turn's answer (`answer: true`): its post returns null. */
+  refuseAnswer?: boolean
   postDelayMs?: number
   history?: { text: string; lastTs: string | null }
   attachments?: AttachmentManifest
@@ -31,6 +35,9 @@ export interface FakeTransport extends Transport {
   attachmentCalls: Array<{ message: InboundMessage; stamp: string }>
   typing: Array<{ target: Target; stopped: boolean }>
   removed: Array<{ target: Target; ts: string }>
+  marks: Array<{ target: Target; ts: string; state: ProgressMark }>
+  /** Marks that came for a message after its end mark: none should. */
+  lateMarks: Array<{ ts: string; state: ProgressMark }>
   uploads: Array<{ target: Target; filePath: string; title?: string; bytes: string | null }>
   readonly closed: number
   deliver(message: InboundMessage): void
@@ -48,6 +55,8 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
   const attachmentCalls: FakeTransport['attachmentCalls'] = []
   const typing: FakeTransport['typing'] = []
   const removed: FakeTransport['removed'] = []
+  const marks: FakeTransport['marks'] = []
+  const lateMarks: FakeTransport['lateMarks'] = []
   const uploads: FakeTransport['uploads'] = []
   let onMessage = null
   let onAction = null
@@ -65,6 +74,8 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
     attachmentCalls,
     typing,
     removed,
+    marks,
+    lateMarks,
     uploads,
     get closed() { return closed },
     /** Push an inbound message as if the platform had delivered it. */
@@ -107,6 +118,12 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
     ...(options.upload === true || options.upload === 'fail' ? {
       async uploadFile(target, filePath, title, bytes) { uploads.push({ target, filePath, title, bytes: bytes === undefined ? null : Buffer.from(bytes).toString('utf8') }); return options.upload === true },
     } : {}),
+    ...(options.marks === true ? {
+      mark(target, ts, state) {
+        if (marks.some((m) => m.ts === ts && !['seen', 'working'].includes(m.state.kind))) lateMarks.push({ ts, state })
+        marks.push({ target, ts, state })
+      },
+    } : {}),
     // Deleting a message, only when asked for, like Slack's chat.delete.
     ...(options.remove === true ? {
       async remove(target, ts) { removed.push({ target, ts }); return true },
@@ -117,6 +134,7 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
       onAction({ id, target: { channel: 'C_ALLOWED', threadTs: 't1' }, user })
     },
     async post(target, text, opts = {}) {
+      if (options.refuseAnswer === true && opts.answer === true) return null
       posted.push({ target, text, replace: opts.replace ?? null, buttons: opts.buttons ?? null })
       const ts = `ts-${posted.length}`
       // A real post takes time, and the races between a working message and its answer only exist
