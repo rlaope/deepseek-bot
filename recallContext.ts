@@ -10,7 +10,8 @@
  * decides is which few passages are worth showing.
  *
  * Range and cost. Ranking is lexical, so a question whose words do not appear in a passage will
- * not find it; the block says so rather than implying semantic search. It is injected into the
+ * not find it; the block says so rather than implying semantic search. The adapter widens it with words a model
+ * relates to the question (synonyms, the other language's words), counted for half. It is injected into the
  * *dynamic* part of the prompt and never into the standing block, whose digest gates it for prompt
  * cache safety — a per-turn block there would invalidate the cache on every turn.
  */
@@ -90,6 +91,8 @@ export function hanRuns(text: string): string[][] {
   return (text.toLowerCase().match(/[\u3400-\u9fff]{2,}/gu) ?? []).map((run) => Array.from({ length: run.length - 1 }, (_, i) => run.slice(i, i + 2)))
 }
 const isHanPair = (w: string) => /^[\u3400-\u9fff]{2}$/u.test(w)
+/** Text as a phrase is matched: lower case, anything but letters and digits one space. */
+const flat = (text: string) => text.toLowerCase().replace(/[^0-9a-z가-힣\u3400-\u9fff]+/gu, ' ').trim()
 
 // Korean particles, longest first. A query word carries its particle ("롤백을") and a passage may not
 // ("롤백"), so the query side is stripped; matching is by substring, so the passage side need not be.
@@ -123,6 +126,17 @@ export function createRecallContext(options: RecallOptions) {
     return rows
   }
 
+  /** The rows this conversation may recall: its channel's, not its own session's. */
+  function candidates(): RecallRow[] {
+    const channel = options.channel ?? null
+    const own = options.sessionId ?? null
+    return load()
+      .filter((row) => channel === null
+        // The adapter's mapping first: a row's own channel was read from text, the mapping was not.
+        || ((row.sessionId !== undefined ? options.sessionChannel?.(row.sessionId) : null) ?? row.channel ?? null) === channel)
+      .filter((row) => own === null || row.sessionId !== own)
+  }
+
   function format(ts: unknown): string {
     const n = Number(ts)
     if (!Number.isFinite(n) || n <= 0) return ''
@@ -138,29 +152,39 @@ export function createRecallContext(options: RecallOptions) {
       return triggers.some((word) => lower.includes(word.toLowerCase()))
     },
 
+    /** Whether there is anything this conversation could recall: asking the model for related words is not free. */
+    hasRows(): boolean {
+      try { return candidates().length > 0 } catch { return false }
+    },
+
     /**
      * The block to inject, or '' when there is nothing to say. Never throws: a recall that fails
      * must not cost a turn.
      */
-    block(prompt: string): string {
+    block(prompt: string, related: readonly string[] = []): string {
       try {
         const query = [...new Set(words(prompt).map(stem))]
-        if (query.length === 0) return ''
+        // The model's related words: each line matched whole (a phrase split into its words brought in "the" and
+        // "back"), a single word by its stem; never a number, one character (it is inside every word that has it), a
+        // Latin word of two letters, or a line of more than three words, which is a sentence, not a term.
+        const extra = [...new Set(related.filter((line) => flat(line).split(' ').length <= 3).map((line) => {
+          const ws = words(line)
+          return ws.length === 1 ? stem(ws[0]) : flat(line)
+        }))].filter((w) => w.length >= 2 && !query.includes(w) && !/^\d+$/.test(w) && !/^[0-9a-z]{1,2}$/.test(w))
+        if (query.length === 0 && extra.length === 0) return ''
         const runs = hanRuns(prompt)
-        const channel = options.channel ?? null
-        const own = options.sessionId ?? null
-        const rows = load()
-          .filter((row) => channel === null
-            // The adapter's mapping first: a row's own channel was read from text, the mapping was not.
-            || ((row.sessionId !== undefined ? options.sessionChannel?.(row.sessionId) : null) ?? row.channel ?? null) === channel)
-          .filter((row) => own === null || row.sessionId !== own)
+        const rows = candidates()
         if (rows.length === 0) return ''
         const texts = rows.map((row) => String(row.text).toLowerCase())
+        const flats = rows.map((row) => flat(String(row.text)))
         // Inverse document frequency: a word in every passage says nothing about which one is meant.
         const df = new Map(query.map((w) => [w, texts.reduce((n, text) => n + (text.includes(w) ? 1 : 0), 0)]))
+        for (const w of extra) df.set(w, flats.reduce((n, text) => n + (text.includes(w) ? 1 : 0), 0))
         const idf = (w: string) => Math.log(1 + rows.length / Math.max(1, df.get(w) ?? 0))
         // A word few passages share; two of them in one passage is very likely the same subject.
         const rare = Math.max(2, Math.ceil(rows.length * 0.02))
+        // A related word many passages share widens the search to all of them: only a rare one is kept.
+        const widening = extra.filter((w) => (df.get(w) ?? 0) <= rare)
         const ranked = rows
           .map((row, i) => {
             const matched = query.filter((w) => texts[i].includes(w))
@@ -184,7 +208,9 @@ export function createRecallContext(options: RecallOptions) {
               close()
             }
             const others = matched.filter((w) => !isHanPair(w) && isRare(w)).length
-            return { row, score: matched.reduce((n, w) => n + idf(w), 0), distinctive: others + spans }
+            // Only the best related word counts, and for half: three of them must not outweigh one of the person's own.
+            const widened = widening.filter((w) => flats[i].includes(w)).reduce((best, w) => Math.max(best, idf(w) / 2), 0)
+            return { row, score: matched.reduce((n, w) => n + idf(w), 0) + widened, distinctive: others + spans, widened: widened > 0 }
           })
           .filter((hit) => hit.score > 0)
           .sort((a, b) => b.score - a.score || Number(b.row.ts ?? 0) - Number(a.row.ts ?? 0))
@@ -200,7 +226,9 @@ export function createRecallContext(options: RecallOptions) {
         })
         const body = [
           '[earlier conversations, and what they imply]',
-          'Passages from past sessions that share words with this message — matched lexically, so',
+          ranked.some((hit) => hit.widened)
+            ? 'Passages from past sessions that share words with this message or words related to it — matched by words, so'
+            : 'Passages from past sessions that share words with this message — matched lexically, so',
           'this is not a semantic search and may miss a differently-worded question.',
           ...lines,
           'Use them to decide the next step, and say the step. Do not summarise the passages back.',

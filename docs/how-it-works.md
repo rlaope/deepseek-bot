@@ -114,7 +114,7 @@ suites on Node 22 with `pnpm run typecheck` in front of them.
 | Read confinement | implemented; a **policy** boundary, not a kernel one |
 | Watches, reminders, health probe | verified unit; health restart verified against an injected failure |
 | Streaming tokens into Slack | implemented: the turn's text streams into the thread (chat.startStream / appendStream), and the answer is posted new while the streamed message is deleted; unit-checked against a stubbed Web API, its calls shaped by a live probe; a refusal falls back to the answer arriving whole |
-| Semantic/vector recall | **not implemented** — ranking is lexical, so a paraphrase can miss |
+| Semantic/vector recall | **not implemented** — ranking is by words; a message that points at the past also ranks by words the conversation's model relates to it (synonyms, the other language), at the cost of a model call, so a paraphrase is found more often, not always |
 | Browser automation | **not implemented** — link reading is an HTTP fetch |
 | Per-tenant *permission* preset | **not supported** — `permission` is read and never applied (`TODO` in `test/core.test.ts`) |
 
@@ -240,7 +240,11 @@ wires up what it does not turn on by default, and adds the consumer the agent pl
   leaves out the conversation being answered. A message that points at the past ("지난번…", "before")
   gets the best matches; one that does not gets them only when a passage shares at least two rare
   words with it — so "did anyone say 테스트-1234?" is answered, and an ordinary message is not
-  interrupted. Lexical still: a paraphrase with no word in common is missed.
+  interrupted. Lexical still, with one widening: a message that points at the past, when its channel has
+  anything to recall, asks the conversation's own model (reasoning off where it can be, and then a short answer) for
+  related words. Each line of the answer is matched whole, a common one or a number is dropped, and only the
+  best match counts, for half a word of the person's own. The turn waits for it at most `recallExpandMs`
+  (4 s); a failure or a timeout is logged and recall goes on by the message's words alone.
   `test/recall.test.ts`, `test/recall-context.test.ts` 25/25, `test/core.test.ts`.
 
 ## Memory: the layers, and who writes what
@@ -830,6 +834,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 |---|---|
 | `recall.json` | a fact stated in one conversation is recalled in another, with its date; a fact never stated is not invented |
 | `recall-immediate.json` | the index already holds a fact from a turn that just happened, and holds the user's words — not the adapter's injected preamble |
+| `recall-paraphrase.json` | a past said in other words is found: the question shares no word with it, only with the words the model relates to the question; no note is written and none read, so only recall answers |
 | `recall-decision.json` | recall ends in a decision ("here is what happened, therefore this") rather than a dump of passages |
 | `restart-1.json` + `restart-2.json` | a second process resumes the first's session and still knows what was said (`pnpm test:restart`) |
 | `notes-hygiene.json` | the consolidation advice reaches the prompt when `MEMORY.md` is over budget |

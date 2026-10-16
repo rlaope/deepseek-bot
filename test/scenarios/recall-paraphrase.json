@@ -1,0 +1,43 @@
+{
+  "_comment": "A past said in other words: session A says 'rollback', session B asks about '되돌리기' with no word of A's. Ranking by the message's own words cannot find it; the words the model relates to B's question (recallExpandMs) can. The number is marked 'do not save', and step 1 must use no file tool to write and step 3 none to read, so only recall can answer it. Without the related words this fails at step 3 (checked by running it with recallExpandMs 0 on the test profile's route).",
+  "seed": {
+    "MEMORY.md": "# Memory\n"
+  },
+  "steps": [
+    {
+      "session": "A",
+      "say": "production 이 깨져서 이전 이미지로 rollback 했어. 그 rollback 은 OPS-7731 로 기록해 뒀어. 확인용이니까 memory/ 에는 저장하지 마.",
+      "expectNoToolUse": [
+        "write",
+        "edit",
+        "str_replace_editor"
+      ],
+      "_why_no_tools": "a note holding the number would answer step 3 without recall: MEMORY.md is sent whole and each memory/ note's first line too, with no read tool. bash is allowed (a run failed only because the agent listed memory/ with it), so the next step checks MEMORY.md itself; a note under memory/ is not checked, since the runner cannot list a directory"
+    },
+    {
+      "expectFile": {
+        "path": "MEMORY.md",
+        "notContains": "OPS-7731"
+      },
+      "_why": "the number reached no note the prompt carries"
+    },
+    {
+      "waitSeconds": 3,
+      "_why": "the index refresh after a turn is asynchronous"
+    },
+    {
+      "session": "B",
+      "say": "지난번 되돌리기 작업의 식별자가 뭐였지? 모르면 '없음'이라고만 답해.",
+      "expectContains": "OPS-7731",
+      "expectNoToolUse": [
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "fs_read",
+        "fs_grep"
+      ],
+      "_why_no_tools": "the passage arrives in the injected block; reading the notes or the session store would answer it another way"
+    }
+  ]
+}

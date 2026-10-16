@@ -170,6 +170,12 @@ export interface LlmService {
   listModels(provider: string): Promise<Array<{ provider: string; id: string; name: string; description?: string }>>
   /** One exact model's metadata, with the reasoning efforts it takes when it has any. */
   resolveModelInfo(provider: string, model: string): Promise<{ reasoning?: { efforts: Array<{ id: string; name: string }>; defaultEffort?: string } }>
+  /**
+   * One model call, as raw chunks: `text-delta` chunks carry its text, `finish` ends it — with `reason.kind` 'error'
+   * and its failure when the call failed, which is not thrown (verified against the bundled dsh-llm's `stream(options)`
+   * and `adapterFailureChunk`). `reasoningEffort` and `maxTokens` are the call's controls. `signal` aborts it.
+   */
+  stream?(options: { provider: string; model: string; messages: unknown[]; reasoningEffort?: string; maxTokens?: number; signal?: AbortSignal }): AsyncIterable<{ type?: string; text?: string; reason?: { kind?: string; failure?: { code?: string; message?: string } } }>
   /** Every provider a configuration can address, with where its settings sit: `settingsPath` inside namespace `settingsNs`. */
   listConfigurableProviders?(): Array<{ provider: string; displayName: string; settingsNs: string; settingsPath: string[] }>
 }

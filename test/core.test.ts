@@ -38,10 +38,12 @@ interface BootOptions {
   agent?: 'throw' | 'ready' | 'answer'
   home?: string | null
   answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number } | null
+  /** The harness's model-call service (`llm`), when a test gives one: its `stream`. */
+  llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
 }
 
 /** Boot the plugin with a fake transport and a state file we control. */
-function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false }: BootOptions & { workspace?: boolean } = {}) {
+function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null }: BootOptions & { workspace?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-core-'))
   writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({
     sessions: {}, seen: {}, standing: {}, history: {}, ...state,
@@ -115,6 +117,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
     },
     sessions: { flush: async () => {} },
     agentDefaultModel: { currentSelection: () => ({ provider: 'fake', model: 'fake' }) },
+    ...(llm !== null ? { llm } : {}),
     agentPresets: {
       resolve: async (id) => { if (!['standard', 'read-only'].includes(id)) throw new Error('unknown preset ' + id); return { id } },
       acquireScope: () => ({ key: {}, [Symbol.asyncDispose]: async () => {} }),
@@ -1273,6 +1276,93 @@ for (const remove of [false, true]) {
   if (previousDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousDsh
   for (const dir of [home, dshHome]) rmSync(dir, { recursive: true, force: true })
   t.done()
+}
+
+// 34b. A message that points at the past asks the conversation's model for words related to it — synonyms, the
+// other language's words — and recall ranks by those too: a past said in other words was missed. Only for such a
+// message, with something to recall; a call that fails is said and the turn goes on, and a slow one costs it
+// recallExpandMs at most.
+{
+  const recallFor = async (llm, text, config = {}, { rows = null, state = {} } = {}) => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'))
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-'))
+    const previousDsh = process.env.DSH_HOME
+    process.env.DSH_HOME = dshHome
+    const index = recallIndexPath(home)
+    mkdirSync(dirname(index), { recursive: true })
+    writeFileSync(index, (rows ?? [{ ts: 1, role: 'assistant', sessionId: 'z', channel: 'C_ALLOWED', text: 'production rollback 절차 rb-5e1' }]).map((r) => JSON.stringify(r)).join('\n'))
+    const t = boot({ agent: 'ready', home, llm, config, state })
+    await sleep(80)
+    const started = Date.now()
+    t.transport.deliver(t.transport.message({ text }))
+    for (let i = 0; i < 100 && t.followups.length === 0; i++) await sleep(10)
+    const took = Date.now() - started
+    const sent = t.followups.map(textOf).join('\n')
+    if (previousDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousDsh
+    for (const dir of [home, dshHome]) rmSync(dir, { recursive: true, force: true })
+    t.done()
+    return { sent, took, logs: t.logs }
+  }
+  const asked = []
+  const related = { stream: async function* (options) { asked.push(options); yield { type: 'text-delta', text: '- rollback\n- 롤백' }; yield { type: 'finish' } } }
+  const found = await recallFor(related, '지난번 배포 되감기 어떻게 했지')
+  check('related: a past said in other words is found through the words the model related', found.sent.includes('rb-5e1'), found.sent.slice(0, 80) || '(no followup)')
+  check('related: asked once, of the conversation\'s model, with the message', asked.length === 1 && asked[0].provider === 'fake' && asked[0].model === 'fake' && JSON.stringify(asked[0].messages).includes('되감기'), JSON.stringify(asked.map((o) => [o.provider, o.model])))
+  check('related: a model whose reasoning cannot be read is sent no control (a cap would be spent reasoning)', asked[0].maxTokens === undefined && asked[0].reasoningEffort === undefined, JSON.stringify([asked[0].maxTokens, asked[0].reasoningEffort]))
+  check('related: the instruction and the message go as one message', asked[0].messages.length === 1 && /Do not answer the message/.test(JSON.stringify(asked[0].messages)), JSON.stringify(asked[0].messages).slice(0, 80))
+  // A conversation on its own route (/model, a tenant's) is asked there, as its turn is: not on the deployment's.
+  asked.length = 0
+  await recallFor(related, '지난번 배포 되감기 어떻게 했지', {}, { state: { models: { 'C_ALLOWED:t1': { provider: 'other', model: 'm2' } } } })
+  check('related: asked on the conversation\'s own route', asked.length === 1 && asked[0].provider === 'other' && asked[0].model === 'm2', JSON.stringify(asked.map((o) => [o.provider, o.model])))
+  // Reasoning off where the model has it off, with a short answer; else the least it has, uncapped (a cap would be
+  // spent on the reasoning).
+  asked.length = 0
+  const efforts = (ids) => ({ ...related, resolveModelInfo: async () => ({ reasoning: { efforts: ids.map((id) => ({ id, name: id })), defaultEffort: 'high' } }) })
+  await recallFor(efforts(['off', 'high']), '지난번 배포 되감기 어떻게 했지')
+  await recallFor(efforts(['low', 'high']), '지난번 배포 되감기 어떻게 했지')
+  check('related: reasoning off and a short answer, or the least reasoning and no cap', asked[0]?.reasoningEffort === 'off' && asked[0]?.maxTokens === 300 && asked[1]?.reasoningEffort === 'low' && asked[1]?.maxTokens === undefined, JSON.stringify(asked.map((o) => [o.reasoningEffort, o.maxTokens])))
+  // A failed call ends the stream with its failure (the harness throws none): said, and recall goes on without it.
+  const refusing = { stream: async function* () { yield { type: 'finish', reason: { kind: 'error', failure: { code: 'INVALID_CREDENTIAL', message: 'bad key' } } } } }
+  const refused = await recallFor(refusing, '지난번 배포 되감기 어떻게 했지')
+  check('related: a failed call is said, and recall goes on without it', refused.sent !== '' && !refused.sent.includes('rb-5e1') && refused.logs.some((l) => /related words not had.*INVALID_CREDENTIAL/.test(l)), refused.logs.filter((l) => /recall/.test(l)).join(' | '))
+  // A translation in brackets or after a slash is a term of its own.
+  const bracketed = { stream: async function* () { yield { type: 'text-delta', text: '롤백 (rollback)/revert' }; yield { type: 'finish' } } }
+  const coloned = { stream: async function* () { yield { type: 'text-delta', text: '롤백: rollback' }; yield { type: 'finish' } } }
+  const split = await recallFor(bracketed, '지난번 배포 되감기 어떻게 했지')
+  check('related: a term in brackets or after a slash is matched on its own', split.sent.includes('rb-5e1'), split.sent.slice(0, 80))
+  const colon = await recallFor(coloned, '지난번 배포 되감기 어떻게 했지')
+  check('related: a term after a colon is matched on its own', colon.sent.includes('rb-5e1'), colon.sent.slice(0, 80))
+  // A list numbered past nine: "11." is the list's, not a word, or the word after it would never be matched.
+  const listed = { stream: async function* () { yield { type: 'text-delta', text: Array.from({ length: 10 }, (_, i) => `${i + 1}. 무관${i}`).join('\n') + '\n11. 되돌림 작업' }; yield { type: 'finish' } } }
+  const numbered = await recallFor(listed, '지난번 배포 되감기 어떻게 했지', {}, { rows: [{ ts: 1, role: 'assistant', sessionId: 'z', channel: 'C_ALLOWED', text: '어제 되돌림 작업 번호 rb-5e1' }] })
+  check('related: a numbered line is matched without its number', numbered.sent.includes('rb-5e1'), numbered.sent.slice(0, 80))
+  asked.length = 0
+  const plain = await recallFor(related, '배포 되감기 규칙 정리해줘')
+  check('related: not asked for a message that does not point at the past', asked.length === 0 && plain.sent !== '' && !plain.sent.includes('rb-5e1'), String(asked.length))
+  // Nothing in this channel to recall: not asked.
+  await recallFor(related, '지난번 배포 되감기 어떻게 했지', {}, { rows: [{ ts: 1, role: 'assistant', sessionId: 'z', channel: 'C_ELSEWHERE', text: 'production rollback 절차 rb-5e1' }] })
+  check('related: not asked when there is nothing to recall', asked.length === 0, String(asked.length))
+  const broken = await recallFor({ stream: async function* () { throw new Error('model down') } }, '지난번 배포 되감기 어떻게 했지')
+  check('related: a call that fails costs the turn nothing', broken.sent !== '' && !broken.sent.includes('rb-5e1'), broken.sent.slice(0, 60))
+  // Given up on, the lines that had arrived whole are still used.
+  // A line cut off is not: '점심' would bring in a passage about lunch.
+  const halfway = { stream: async function* () { yield { type: 'text-delta', text: 'rollback\n점심' }; await new Promise(() => {}) } }
+  const partial = await recallFor(halfway, '지난번 배포 되감기 어떻게 했지', { recallExpandMs: 50 }, { rows: [{ ts: 1, role: 'assistant', sessionId: 'z', channel: 'C_ALLOWED', text: 'production rollback 절차 rb-5e1' }, { ts: 2, role: 'user', sessionId: 'y', channel: 'C_ALLOWED', text: '점심 메뉴 정하자' }] })
+  check('related: given up on, the lines already whole are used, and the one cut off is not', partial.sent.includes('rb-5e1') && !partial.sent.includes('점심 메뉴'), partial.sent.slice(0, 160))
+  // The deadline covers the route's lookup too: a slow lookup and a call that ignores the signal still cost no more.
+  const slowLookup = { stream: async function* () { await new Promise(() => {}) }, resolveModelInfo: () => new Promise((resolve) => setTimeout(() => resolve({}), 150)) }
+  const looked = await recallFor(slowLookup, '지난번 배포 되감기 어떻게 했지', { recallExpandMs: 50 })
+  check('related: a slow route lookup is under the same deadline', looked.sent !== '' && looked.took < 800 && looked.logs.some((l) => /related words given up after 50 ms/.test(l)), `${looked.took} ms`)
+  // A long message is sent cut, never between the two halves of a character.
+  asked.length = 0
+  await recallFor(related, '지난번 ' + 'x'.repeat(1995) + '😀 되감기')
+  check('related: a long message is cut, never inside a character', asked.length === 1 && !JSON.stringify(asked[0].messages).includes('\\ud83d'), String(asked.length))
+  // A call that never answers and ignores the signal: given up on in time all the same, and said.
+  const stuck = await recallFor({ stream: async function* () { await new Promise(() => {}); yield { type: 'finish' } } }, '지난번 배포 되감기 어떻게 했지', { recallExpandMs: 50 })
+  check('related: a slow call is given up on in time, and said', stuck.sent !== '' && stuck.took < 800 && stuck.logs.some((l) => /related words given up after 50 ms/.test(l)), `${stuck.took} ms`)
+  asked.length = 0
+  const off = await recallFor(related, '지난번 배포 되감기 어떻게 했지', { recallExpandMs: 0 })
+  check('related: recallExpandMs 0 turns it off', asked.length === 0 && off.sent !== '' && !off.sent.includes('rb-5e1'), off.sent.slice(0, 60))
 }
 
 // 35. A document the turn wrote, and named in its answer, reaches the thread as a file.

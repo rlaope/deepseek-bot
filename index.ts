@@ -204,6 +204,9 @@ const DEFAULTS = {
   streamFlushMs: 1500,
   streamIdleMs: 120_000,
   streamRetryMs: 2000,
+  // How long a message that points at the past waits for the model's related words before recall goes without
+  // them; 0 asks for none.
+  recallExpandMs: 4000,
   // How often the mark on the person's message (a platform's reactions) is looked at while a turn runs; it changes
   // only when its digit does, so a turn makes about as many changes as it has digits, whatever this is.
   markEveryMs: 5000,
@@ -917,7 +920,9 @@ export function apply(ctx, config) {
           return key === undefined ? null : key.split(':')[0]
         },
       })
-      const past = recallContext.block(prompt)
+      const related = recallContext.triggered(prompt) && recallContext.hasRows() ? await relatedWords(prompt, sessionKey ?? '') : []
+      if (related.length > 0) log(`recall: ${related.length} related word(s) from the model`)
+      const past = recallContext.block(prompt, related)
       if (past !== '') {
         parts.push(defuse(past))
         // A deterministic signal that the decision block reached the prompt, so a scenario can
@@ -935,6 +940,82 @@ export function apply(ctx, config) {
       instructions: includeStanding ? standingText.length : 0,
       memory: 0,
       standingIncluded: includeStanding,
+    }
+  }
+
+  /**
+   * Words related to a message that points at the past — synonyms, the other language's words — asked of the
+   * conversation's own model, for recall to rank by as well: ranking by the message's own words missed a past said in
+   * other words. It costs a model call, and the turn waits for it, `recallExpandMs` at most; on any failure there are
+   * none, and the turn goes on.
+   */
+  async function relatedWords(prompt: string, key: string): Promise<string[]> {
+    const service = llm()
+    if (!(cfg.recallExpandMs > 0) || typeof service?.stream !== 'function') return []
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), cfg.recallExpandMs)
+    // Learned against a model with reasoning off: asked for "the same thing as the message" it rephrased the question,
+    // which matches no passage; asked for "what it refers to" it named what was asked ("Undo ID", "Undo token") and
+    // not the subject; and it took an instruction sent as a system message for nothing and answered the message. So
+    // the instruction and the message go as one, with an example from another subject.
+    const ask = [
+      'The message below asks about something said or done before. Name that thing or action (not what is asked about',
+      'it) in the other words someone might have used for it then: synonyms, related technical terms, and their Korean',
+      'and English equivalents. Do not answer the message. One term per line, one or two words, at most twelve; only',
+      'terms, nothing else.',
+      'Example. Message: "저번에 고른 점심 식당 이름이 뭐였지?" Terms:',
+      '점심', 'lunch', '식당', 'restaurant', '맛집', '가게',
+    ].join('\n')
+    // The deadline covers all of it, the route's lookup included: the race below starts with the timer.
+    const aborted = new Promise<'aborted'>((resolve) => controller.signal.addEventListener('abort', () => resolve('aborted')))
+    let text = ''
+    let failure: string | null = null
+    let where = 'its route'
+    try {
+      const work = (async () => {
+        // The conversation's route, as its turn takes (its /model, its tenant's): the message goes to no model its
+        // turn would not.
+        const route = await turnModel(key)
+        if (!route.provider || !route.model) return 'none' as const
+        where = `${route.provider}/${route.model}`
+        // A list of words needs no reasoning: off, or the least the model has. A cap on the answer only with
+        // reasoning off: a model that reasons unseen (its efforts unknown) spent a cap of 300 thinking and answered
+        // nothing.
+        const { efforts } = await modelInfo(route.provider, route.model)
+        const least = ['off', 'minimal', 'low'].find((e) => efforts.includes(e))
+        const controls = { ...(least !== undefined ? { reasoningEffort: least } : {}), ...(least === 'off' ? { maxTokens: 300 } : {}) }
+        if (controller.signal.aborted) return 'done' as const
+        // Never half a character: a cut between the two halves of one outside the BMP.
+        const end = prompt.length > 2000 && /[\ud800-\udbff]/.test(prompt[1999]) ? 1999 : 2000
+        const call = service.stream({ provider: route.provider, model: route.model, ...controls, messages: [userMessage(`${ask}\n\nMessage:\n${prompt.slice(0, end)}`)], signal: controller.signal })
+        for await (const chunk of call) {
+          if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+          // The harness does not throw a failed call: it ends the stream with it.
+          if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') failure = String(chunk.reason.failure?.code ?? chunk.reason.failure?.message ?? 'error').slice(0, 80)
+          // Enough: what is cut off at the end is not a term.
+          if (text.length > 600) { text = text.slice(0, text.lastIndexOf('\n') + 1); break }
+        }
+        return 'done' as const
+      })()
+      const outcome = await Promise.race([work, aborted])
+      if (outcome === 'none') return []
+      if (outcome === 'aborted') {
+        log(`recall: related words given up after ${cfg.recallExpandMs} ms (${where})`)
+        // The lines that did arrive whole are still words.
+        text = text.slice(0, text.lastIndexOf('\n') + 1)
+      } else if (failure !== null) {
+        // Said: a bad key or a quota would otherwise fail every such turn unseen.
+        log(`recall: related words not had — ${where} answered ${failure}`)
+        return []
+      }
+      // A term each, without its bullet or number ("11." left "11", which matched every date with an 11 in it); a
+      // translation in brackets, after a slash, a colon or a dash, or in a Chinese list is a term of its own.
+      return text.split(/[\n,;()/|，、；:：]+|\s-\s/u).map((t) => t.replace(/^\s*(?:[-*•·]|\d+[.)])\s*/u, '').trim()).filter((t) => t !== '' && t.length <= 40).slice(0, 24)
+    } catch (e) {
+      log(`recall: related words not asked (${String((e as Error)?.message ?? e).slice(0, 120)})`)
+      return []
+    } finally {
+      clearTimeout(timer)
     }
   }
 

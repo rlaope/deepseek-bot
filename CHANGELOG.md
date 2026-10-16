@@ -216,6 +216,16 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **Recall finds a past said in other words.** Ranking was by the message's own words, so "되돌리기" never found
+  a conversation that said "rollback". A message that points at the past, when this channel has anything to
+  recall, now also asks the conversation's own model (its route, as its turn) for words related to it: synonyms,
+  related terms, Korean and English. Reasoning is turned off where the model can turn it off, and the answer is
+  then capped. Each line is matched whole; a number, a two-letter word, or a line many passages share is not used; and
+  only the best related word counts, for half a word of the person's own. The turn waits for it, at most
+  `recallExpandMs` (4 s); a failure or a timeout is logged and the turn goes on without it; 0 turns it off. A new
+  scenario, `recall-paraphrase`, runs it against a real model daily; its control, with the call off, fails. Verified
+  on an OpenGateway route only (reasoning off, answered in under a second); on DeepSeek's own API, the default, the
+  call is unmeasured (it is sent with reasoning off).
 - **Progress on the person's message, in Slack.** A turn showed only Slack's working status under the thread.
   The message that asked now carries it as a reaction: 👀 when taken, a digit while the turn runs (1 to 9: a
   guess at how far along it is, from the time a turn usually takes, changed only when the digit does), and

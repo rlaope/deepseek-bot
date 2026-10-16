@@ -167,6 +167,74 @@ check('an untriggered block is empty', ctx.block('이거 요약해줘') === '')
 }
 
 rmSync(dir, { recursive: true, force: true })
+// Related words the model suggested widen the search: a past said in other words is found. The person's own words
+// still decide the order: a row with one of them ranks above a row with only a related word.
+{
+  const paraDir = mkdtempSync(join(tmpdir(), 'deepbot-recallpara-'))
+  const paraPath = join(paraDir, 'recall-index.jsonl')
+  writeFileSync(paraPath, [
+    { ts: 1, role: 'assistant', sessionId: 'p', text: 'production rollback 절차: 이전 이미지로 되돌림' },
+    { ts: 2, role: 'user', sessionId: 'q', text: '점심 메뉴 정하자' },
+  ].map((r) => JSON.stringify(r)).join('\n'))
+  const para = createRecallContext({ indexPath: paraPath })
+  const asked = '지난번 배포 되감기 어떻게 했지?'
+  check('related: by its own words alone, a question in other words finds nothing', para.block(asked) === '', para.block(asked).slice(0, 60))
+  const widened = para.block(asked, ['rollback', '롤백', 'revert'])
+  check('related: with the words the model related to it, the passage is found', /rollback 절차/.test(widened) && !/점심/.test(widened), widened.slice(0, 120))
+  check('related: the block says how it matched', /related/i.test(widened), widened.split('\n').slice(0, 3).join(' | '))
+  // One word each, equally rare: counted the same, the newer would come first; the person's own word comes first.
+  writeFileSync(paraPath, [
+    { ts: 2, role: 'user', sessionId: 'r', text: 'rollback 해봤어' },
+    { ts: 1, role: 'user', sessionId: 's', text: '되감기 규칙' },
+  ].map((r) => JSON.stringify(r)).join('\n'))
+  const order = createRecallContext({ indexPath: paraPath }).block(asked, ['rollback'])
+  check('related: the person\'s own words rank above a related word', order.indexOf('되감기 규칙') !== -1 && order.indexOf('rollback 해봤어') !== -1 && order.indexOf('되감기 규칙') < order.indexOf('rollback 해봤어'), order)
+  // Three related words in one passage still do not outweigh one of the person's own: only the best of them counts.
+  writeFileSync(paraPath, [
+    { ts: 2, role: 'user', sessionId: 'r', text: 'rollback revert 롤백 다 해봤어' },
+    { ts: 1, role: 'user', sessionId: 's', text: '되감기 규칙' },
+  ].map((r) => JSON.stringify(r)).join('\n'))
+  const many = createRecallContext({ indexPath: paraPath }).block(asked, ['rollback', 'revert', '롤백'])
+  check('related: many related words do not outweigh one of the person\'s own', many.indexOf('되감기 규칙') !== -1 && many.indexOf('다 해봤어') !== -1 && many.indexOf('되감기 규칙') < many.indexOf('다 해봤어'), many)
+  // The model's phrases are matched whole: their "the" and "back" bring in nothing, and neither does a number.
+  writeFileSync(paraPath, [
+    { ts: 1, role: 'user', sessionId: 'r', text: 'lunch at the cafe on friday' },
+    { ts: 2, role: 'user', sessionId: 's', text: 'the printer on floor 3 is broken, back on monday' },
+    { ts: 3, role: 'user', sessionId: 't', text: '2026-10-11 점심 메뉴 12시 정하자' },
+  ].map((r) => JSON.stringify(r)).join('\n'))
+  const junk = createRecallContext({ indexPath: paraPath }).block('지난번 되돌리기 작업 뭐였지', ['roll back the release', 'undo the deploy', '롤백', 'revert', '11', '2026', 'on'])
+  check('related: words of a phrase, and numbers, bring in nothing', junk === '', junk)
+  writeFileSync(paraPath, [
+    { ts: 1, role: 'user', sessionId: 'r', text: 'lunch at the cafe on friday' },
+    { ts: 2, role: 'user', sessionId: 's', text: 'We did the Release  Roll-back, twice.' },
+  ].map((r) => JSON.stringify(r)).join('\n'))
+  const phrase = createRecallContext({ indexPath: paraPath }).block('지난번 되돌리기 작업 뭐였지', ['release roll back'])
+  // A sentence the model wrote instead of a term is not used: it is the question rephrased, not a word for its subject.
+  const sentence = createRecallContext({ indexPath: paraPath }).block('지난번 되돌리기 작업 뭐였지', ['we did the release roll back twice'])
+  check('related: a phrase is found where it is said, whatever its case, spacing and punctuation', /Release Roll-back/.test(phrase) && !/lunch/.test(phrase), phrase)
+  check('related: a sentence is not a term, and finds nothing', sentence === '', sentence)
+  // A Chinese term is one term however many characters it has; one character is inside every word that has it.
+  writeFileSync(paraPath, [
+    { ts: 1, role: 'user', sessionId: 'r', text: '上周做了数据库回滚' },
+    { ts: 2, role: 'user', sessionId: 's', text: '점심 메뉴 정하자' },
+  ].map((r) => JSON.stringify(r)).join('\n'))
+  const zh = createRecallContext({ indexPath: paraPath }).block('지난번 되돌리기 작업 뭐였지', ['数据库回滚', '점'])
+  check('related: a long Chinese term is a term; one character brings in nothing', /数据库回滚/.test(zh) && !/점심/.test(zh), zh)
+  // A related word many passages share would bring in all of them: only a rare one widens the search.
+  writeFileSync(paraPath, Array.from({ length: 60 }, (_, i) => ({ ts: i, role: 'user', sessionId: `c${i}`, text: i % 6 === 0 ? `deploy 일정 ${i}` : `잡담 ${i}` })).map((r) => JSON.stringify(r)).join('\n'))
+  const common = createRecallContext({ indexPath: paraPath }).block('지난번 되돌리기 작업 뭐였지', ['deploy'])
+  check('related: a related word many passages share brings in none of them', common === '', common.slice(0, 80))
+  // Related words that matched nothing: the block does not say it matched by them.
+  writeFileSync(paraPath, JSON.stringify({ ts: 1, role: 'user', sessionId: 's', text: '되감기 규칙' }))
+  const own = createRecallContext({ indexPath: paraPath }).block(asked, ['rollback'])
+  check('related: the block says "related" only when a related word matched', /되감기 규칙/.test(own) && !/related/i.test(own), own.split('\n').slice(0, 3).join(' | '))
+  // Nothing to recall: the model need not be asked.
+  check('related: rows to recall are seen before asking', createRecallContext({ indexPath: paraPath }).hasRows() === true)
+  check('related: none in this channel, none to ask about', createRecallContext({ indexPath: paraPath, channel: 'C_OTHER' }).hasRows() === false)
+  check('related: no index, none to ask about', createRecallContext({ indexPath: join(paraDir, 'missing.jsonl') }).hasRows() === false)
+  rmSync(paraDir, { recursive: true, force: true })
+}
+
 const failed = results.filter((x) => !x.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

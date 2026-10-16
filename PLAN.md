@@ -71,6 +71,10 @@ Decided against:
 - Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
   `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
   rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.
+- Recall's related words on DeepSeek's own API, the default route: sent with reasoning off and a capped answer,
+  as the harness's DeepSeek adapter takes them (read from its source), but neither its latency nor its answer was
+  measured; the scenario ran on an OpenGateway route. A model that cannot turn reasoning off is sent its least
+  effort, uncapped, and may spend the 4 s thinking.
 - Slack streaming end to end with a real turn: the API's behaviour (recipient required in a channel, no edit or
   delete while streaming, chat.update after stopStream) was probed live in a lab channel; the transport is checked
   against a stubbed Web API. Not yet watched: a long answer past one append's 12 000 characters, the Tier 4 limit
