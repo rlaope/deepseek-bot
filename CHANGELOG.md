@@ -101,6 +101,11 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The docs called the destructive-command gate an open gap.** They said the harness's approval request never
+  reached the adapter, the gate was off in the profiles, and `approval-gate.json` was left failing as the record.
+  The answerer is on the root scope and receives it, the gate is on, and the scenario passes: the answerer cannot
+  reach a platform in a scenario, fails closed, and the file survives. The docs and the scenario's note say so now,
+  and its step 3 no longer accepts any answer with "안 " or "못" in it.
 - **A long answer on Telegram or Discord was refused.** It was cut at the platform's limit and then numbered
   `(1/2)`, so every part but the last was six or more characters over the limit (4096, 2000); the platform
   refused the first, and nothing of the answer arrived. Each part now leaves room for its number, recounted when

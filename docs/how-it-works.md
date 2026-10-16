@@ -72,7 +72,7 @@ Each line is traceable to code and to something that checks it.
 | Reads the **thread it was mentioned in**, as a delta | `transports/slack.ts` | `test/history.test.ts` 9/9 |
 | Sends an attached **image** to the model as an image | `transports/attachments.ts`, `index.ts` | `test/attachments.test.ts` 13/13; `vision.json` needs a model |
 | Produces **documents** (docx, pptx, xlsx) | `profile/cordis.patch.yml` office rows | `test/scenarios/document.json` asserts the artifacts |
-| Asks the user to **approve** a destructive command, in the conversation — with buttons on every platform | `index.ts`, `transports/*.ts` | approval checks in `test/core.test.ts`; `approval-gate.json` records one open gap |
+| Asks the user to **approve** a destructive command, in the conversation — with buttons on every platform | `index.ts`, `transports/*.ts` | approval checks in `test/core.test.ts`; `approval-gate.json` runs the gate against a real model |
 | Confines **reads**, for commands and for the file tools — other agents' homes, the harness home (credentials, sessions and their index, the adapter's state, attachments, reminders; all but its runtimes), the gateway's logs, the user's agent sockets | `service/confined-runner.sh`, `readScope` | `test/confined-runner.test.ts` 100/100; `test/edges.test.ts` 19/19 |
 | Flags **instruction-like text** in fetched material | `injection.ts` | `test/injection.test.ts` 31/31 |
 | **Uploads the documents a turn made** (pdf, docx, xlsx, pptx, csv changed during the turn, whose path the answer names, with one link and inside the home; on Slack it needs `files:write`) | `index.ts`, `transports/*.ts` | `test/core.test.ts` 152/152; `test/slack.test.ts` |
@@ -306,13 +306,14 @@ The answerer, the buttons, the timeout and the same-user rule are unit-verified 
   Measured: with it composed the same scenario hung and was cancelled fifteen minutes later; with
   it disabled the request reached the answerer and the turn completed (`PLAN.md`).
   `pnpm test:profile` checks the pair, because getting one half right is a hang, not a mistake.
-- **The destructive-command gate is open end to end.** The adapter also gates commands the sandbox
+- **The destructive-command gate reaches its answerer.** The adapter also gates commands the sandbox
   permits inside the workspace (`approvalPatterns`, default `['rm ', 'rmdir ', 'sudo ', 'dd if=',
   'mkfs', 'shutdown', 'reboot', 'kill -9']`), because deleting the agent's own notes is legitimate
-  and irreversible. With a real model, the harness dispatches `approval/request` with a scope the
-  adapter's answerer never receives, so the gate fires and the turn then waits until the timeout.
-  `test/scenarios/approval-gate.json` is left failing on its third step **on purpose**: it is the
-  record of that gap. The gate and the answerer themselves are unit-verified.
+  and irreversible. The harness dispatches `approval/request` on the agent's own scope; the adapter's
+  answerer is registered on the root scope, and receives it. `test/scenarios/approval-gate.json`
+  shows it with a real model: the gate asks, the request reaches the answerer, which cannot reach a
+  platform in a scenario, fails closed, and the request is refused at once; the file survives and the
+  turn ends without waiting. Pressing a button in a real conversation is unit-verified only (`PLAN.md`).
 
 ## Read confinement
 
@@ -846,7 +847,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 | `isolation.json` | another instance's home and a retired bot's data stay unreadable |
 | `tenant.json` | one tenant cannot read another's file, by name or by path traversal |
 | `approval.json` | a turn that needs an approval ends instead of hanging |
-| `approval-gate.json` | the destructive-command gate — **left failing on step 3 as the record** of an open gap |
+| `approval-gate.json` | the destructive-command gate: it asks, the request reaches the answerer, which fails closed with no platform to reach, and the file survives |
 | `interrupt.json` | a running turn stopped mid-flight ends as `cancelled` |
 | `reminder.json` | a reminder fires on the wall clock and wakes the agent by itself |
 | `reminder-model.json` | a reminder runs on the effort chosen after it was made, and the conversation's next turn still runs |
