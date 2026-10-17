@@ -165,6 +165,54 @@ asks only for a key its route names that none of those has. To change the route 
 `llm-pi-ai` and `agent-default-model` rows of the profile, and restart the gateway; `/model` in `dsh`
 switches one conversation between the models the routes list.
 
+## MCP servers: tools from other programs
+
+The harness connects to MCP servers itself, with its `@deepseek-ai/dsh-mcp-client` package; deepseek-bot
+adds nothing of its own. A server is one row in the profile's `cordis.patch.yml`, inside the `- insert:`
+list the template already has (the office rows are there), at the same indent. Restart the gateway after
+adding one. The server's tools reach the model as `mcp__<serverName>__<tool>`.
+
+```yaml
+- insert:
+    # ... the rows already there ...
+    - id: mcp-example
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: example                 # [A-Za-z0-9_-], up to 32; the tools' prefix
+        transport: stdio                    # or streamable-http, with url: and headers:
+        command: /absolute/path/to/server   # see PATH below
+        args: ['--some-flag']
+        env:
+          PATH: /opt/homebrew/bin:/usr/bin:/bin
+          SERVICE_TOKEN: !!js process.env.EXAMPLE_TOKEN ?? ''
+```
+
+`test/scenarios/mcp.json` carries a working row of this shape, for `test/fixtures/mcp-fixture.mjs`.
+
+- **PATH.** Under launchd the gateway's PATH is `/usr/bin:/bin:/usr/sbin:/sbin`, so a bare `npx`, `uvx` or
+  `node` is not found. Name the program by its absolute path (`/opt/homebrew/bin` on Apple silicon,
+  `/usr/local/bin` on Intel, elsewhere for nvm or volta), and give the server a PATH in `env:` when it
+  starts others (`npx` runs `node`). A first `npx -y` downloads the package within the 60 s the server
+  has to start.
+- **Credentials go in `~/.dsh/.env`, by name.** The harness reads that file into its environment at
+  start, and `!!js process.env.NAME` hands one value to the server; `?? ''` keeps a missing one from
+  breaking the row. A key the DeepSeek Harness app keeps in its own store (`~/.dsh/.credentials.yaml`) is
+  not in that environment. Never put a credential in the agent home: the agent's commands read it.
+- **A server is trusted code.** A stdio server is the gateway's child, not one of the agent's commands,
+  so the sandbox runner does not confine it. It reads what the gateway reads: the bot's own credential
+  files (`~/.dsh/.env`, the app's store), its sessions and their index, the profiles. It writes what your
+  user may, and reaches the network freely. The harness passes it no variable from its own environment
+  whose name holds KEY, TOKEN, SECRET or PASSWORD unless `env:` names it, but that keeps the values out of
+  its environment, not out of its reach. Add only servers you would run yourself, with tokens of the
+  narrowest scope that does the job.
+- **None of the adapter's gates applies to its tools.** The approval gate reads shell commands
+  (`approvalPatterns`), the read scope the file tools, the fetch allowlist `web_fetch`; a server's tools
+  pass all three. They are shared by every conversation, tenants included. What they return reaches the
+  model unmarked: the warning for instruction-like text covers channel history and attachments only.
+
+`test/scenarios/mcp.json` is the check, in the daily scenario run: it adds the fixture's row to a copy of
+the test profile, and a real model must answer with a code that only the fixture's tool gives.
+
 ## Running it
 
 The installer leaves four launchd jobs; each script also takes `--status` and `--uninstall`.

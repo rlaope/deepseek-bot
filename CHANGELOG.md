@@ -249,6 +249,26 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **MCP servers, documented and checked.** The harness composes MCP servers itself (`dsh-mcp-client`); nothing
+  said how a deepseek-bot profile adds one, where its credentials go, or what such a server may do. docs/setup.md
+  now says so:
+  - a server is one row in the profile's `insert` list;
+  - its command needs an absolute path, because launchd's PATH is `/usr/bin:/bin:/usr/sbin:/sbin`;
+  - its credentials go in `~/.dsh/.env` and reach it by name with `!!js process.env.NAME`, never from the agent
+    home;
+  - it is trusted code: not under the sandbox runner, it can read the bot's own credential files. The harness
+    keeps the gateway's keys and tokens out of its environment unless `env:` names one, not out of its reach;
+  - none of the adapter's gates (approval, read scope, fetch allowlist) applies to its tools, which every
+    conversation shares, and what they return is not marked as instruction-like text.
+
+  The profile template has a commented example. A new scenario, `mcp`, runs in the daily set. A real model answers
+  with a code that only the tool of `test/fixtures/mcp-fixture.mjs` gives. That fixture is a stdio server with no
+  dependency. A scenario can now carry `profileRows`, which the runner adds to a copy of the test profile for that
+  run, so `mcp` needs nothing added to a machine's profile.
+  - Checked live: 1/1 with the fixture's row. The server's environment held the variable named under `env:` and
+    PATH, and no key, token or `DSH_*` name of the gateway's.
+  - The control without the row fails. Its agent found the fixture on disk and ran it by hand, so the scenario
+    requires the tool call as well as the code.
 - **The installer installs DeepSeek Harness when it is missing.** It stopped with "install the app" where the
   harness app was not found. It now offers to download the app from DeepSeek's own server — the build the app's
   updater names for this Mac's architecture (its feed, `nightly-mac.yml` for `mac-arm64` or `mac-x64`), checked

@@ -23,7 +23,7 @@
 import './dist-fresh.ts'   // a scenario must not run a stale build
 
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
@@ -110,13 +110,30 @@ for (const file of ['AGENTS.md', 'CLAUDE.md']) {
 mkdirSync(join(TEST_HOME, 'memory'), { recursive: true })
 rmSync(RESULT, { force: true })
 
-// Paths in a scenario are written as {HOME} and {LIVE_HOME}, so the files name no particular machine;
-// the plugin is handed a copy with them filled in.
+// Paths in a scenario are written as {HOME} and {LIVE_HOME} — and {REPO} (this checkout) and {NODE} (this node) —
+// so the files name no particular machine; the plugin is handed a copy with them filled in.
 const resolvedScenario = join(tmpdir(), `deepbot-scenario-${process.pid}-${basename(scenario)}`)
 // {RECALL_INDEX}: the test home's recall index, which lives under the harness home, not in the agent's.
 const RECALL_INDEX = recallIndexPath(TEST_HOME)
 const resolvedText = readFileSync(scenario, 'utf8').replaceAll('{RECALL_INDEX}', RECALL_INDEX).replaceAll('{LIVE_HOME}', LIVE_HOME).replaceAll('{HOME}', homedir())
+  .replaceAll('{REPO}', REPO).replaceAll('{NODE}', process.execPath)
 writeFileSync(resolvedScenario, resolvedText)
+
+// Rows a scenario needs that the test profile has not (an MCP server): the run uses a copy of the profile with them
+// added at the end, removed at exit. Left to each machine's profile, the scenario failed wherever nobody had added them,
+// and its report could not tell a missing row from a broken feature.
+const profileRows = JSON.parse(resolvedText).profileRows
+const PROFILES = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles')
+const RUN_PROFILE = Array.isArray(profileRows) ? `${PROFILE}-scenario-${process.pid}` : PROFILE
+if (RUN_PROFILE !== PROFILE) {
+  if (!existsSync(join(PROFILES, PROFILE, 'cordis.patch.yml'))) fail(`profile ${PROFILE} not found under ${PROFILES}`)
+  // Removed however this process ends from here on, a failure in the setup below included.
+  process.on('exit', () => rmSync(join(PROFILES, RUN_PROFILE), { recursive: true, force: true }))
+  // As links: the profile's node_modules names the plugin by a relative link, which a copy at the same depth keeps.
+  cpSync(join(PROFILES, PROFILE), join(PROFILES, RUN_PROFILE), { recursive: true, verbatimSymlinks: true })
+  appendFileSync(join(PROFILES, RUN_PROFILE, 'cordis.patch.yml'), `\n# Added for ${basename(scenario)}, removed at exit.\n${profileRows.join('\n')}\n`)
+  console.log(`rows     : ${profileRows.length} added to a copy of ${PROFILE}`)
+}
 
 // Files a scenario needs outside the agent's home — a canary it must not be able to read — made here and
 // removed at exit. A canary that did not exist made an exfiltration check pass without proving anything.
@@ -143,7 +160,7 @@ process.on('exit', () => {
   }
 })
 
-const child = spawn(DSH_BIN, ['--profile', PROFILE, '--port', PORT, '--no-open'], {
+const child = spawn(DSH_BIN, ['--profile', RUN_PROFILE, '--port', PORT, '--no-open'], {
   cwd: TEST_HOME,
   env: {
     ...process.env,

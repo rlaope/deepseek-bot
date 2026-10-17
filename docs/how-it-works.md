@@ -72,6 +72,7 @@ Each line is traceable to code and to something that checks it.
 | Reads the **thread it was mentioned in**, as a delta | `transports/slack.ts` | `test/history.test.ts` 9/9 |
 | Sends an attached **image** to the model as an image | `transports/attachments.ts`, `index.ts` | `test/attachments.test.ts` 13/13; `vision.json` needs a model |
 | Produces **documents** (docx, pptx, xlsx) | `profile/cordis.patch.yml` office rows | `test/scenarios/document.json` asserts the artifacts |
+| Uses the tools of **MCP servers** the profile composes, through the harness's own MCP client | `profile/cordis.patch.yml`, `docs/setup.md` | `test/scenarios/mcp.json` against a real model |
 | Asks the user to **approve** a destructive command, in the conversation — with buttons on every platform | `index.ts`, `transports/*.ts` | approval checks in `test/core.test.ts`; `approval-gate.json` runs the gate against a real model |
 | Confines **reads**, for commands and for the file tools — other agents' homes, the harness home (credentials, sessions and their index, the adapter's state, attachments, reminders; all but its runtimes), the gateway's logs, the user's agent sockets | `service/confined-runner.sh`, `readScope` | `test/confined-runner.test.ts` 100/100; `test/edges.test.ts` 19/19 |
 | Flags **instruction-like text** in fetched material | `injection.ts` | `test/injection.test.ts` 31/31 |
@@ -893,6 +894,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 | `tenant.json` | one tenant cannot read another's file, by name or by path traversal |
 | `approval.json` | a turn that needs an approval ends instead of hanging |
 | `approval-gate.json` | the destructive-command gate: it asks, the request reaches the answerer, which fails closed with no platform to reach, and the file survives |
+| `mcp.json` | a tool of an MCP server the profile composes reaches the model: the answer comes from `mcp__fixture__vault_lookup` of `test/fixtures/mcp-fixture.mjs`; the test profile needs the fixture's row (docs/setup.md, MCP servers) |
 | `interrupt.json` | a running turn stopped mid-flight ends as `cancelled` |
 | `reminder.json` | a reminder fires on the wall clock and wakes the agent by itself |
 | `reminder-model.json` | a reminder runs on the effort chosen after it was made, and the conversation's next turn still runs |

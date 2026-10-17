@@ -1,0 +1,23 @@
+{
+  "_comment": "Does a tool from an MCP server reach the agent? The run adds profileRows to a copy of the test profile: the harness's dsh-mcp-client composing test/fixtures/mcp-fixture.mjs (a stdio server with one tool, vault_lookup), as a deployment composes any MCP server (docs/setup.md, MCP servers). The answer alone proves nothing: without the row, the agent found the fixture on disk, ran it by hand and gave the code. So the step also requires a call of mcp__fixture__vault_lookup, which only the composed server provides.",
+  "profileRows": [
+    "- insert:",
+    "    - id: mcp-fixture",
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    "      config:",
+    "        serverName: fixture",
+    "        transport: stdio",
+    "        command: '{NODE}'",
+    "        args: ['{REPO}/test/fixtures/mcp-fixture.mjs']"
+  ],
+  "steps": [
+    {
+      "session": "M",
+      "say": "deepbot fixture vault 에서 aurora 라는 코드 워드에 저장된 코드를 찾아서 알려줘.",
+      "expectContains": "MCP-5b8e",
+      "expectToolUse": [
+        "mcp__fixture__vault_lookup"
+      ]
+    }
+  ]
+}

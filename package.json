@@ -70,6 +70,7 @@
     "test:scenario:tenant": "node test/run-scenario.ts test/scenarios/tenant.json",
     "test:scenario:browser": "node test/run-scenario.ts test/scenarios/browser.json",
     "test:scenario:browser-js": "node test/run-scenario.ts test/scenarios/browser-js.json",
+    "test:scenario:mcp": "node test/run-scenario.ts test/scenarios/mcp.json",
     "test:profile": "node test/profile.test.ts",
     "test:slack": "node test/slack.test.ts",
     "qa:slack": "node dist/tools/qa-slack.js",

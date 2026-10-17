@@ -78,6 +78,12 @@ Decided against:
 
 ## Unverified
 
+- MCP servers beyond the fixture: no real server (GitHub, mail, calendar) was composed live, and an HTTP
+  (`streamable-http`) server was not tried. A stdio server's reads are confined by the gateway's read isolation by
+  construction (it is the gateway's child); that was not probed. That a server failing to start leaves the bot
+  running without its tools is the harness's documented behaviour, not seen here. A credential handed over from
+  `~/.dsh/.env` by `!!js process.env.NAME` was not seen live either: the live check's value came from the launching
+  shell (the harness's code reads that file into its environment at start, a name already set winning).
 - A DeepSeek Harness the installer placed, never opened as an app: the CLI runs (`--version`, a profile booted
   from the unpacked bundle), but the runtime under `~/.dsh/dsh-runtimes` is unpacked by the app's host process
   at its start, and whether the document skills (their node is there) work before the app has been opened once

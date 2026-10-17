@@ -117,6 +117,27 @@
         # validation at boot, which is how this was found.
         source: !!js process.env.DSH_PRIMARY_RUNTIME ?? '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime'
 
+    # ── MCP servers (optional) ─────────────────────────────────────────────────
+    # The harness's own MCP client puts a server's tools in front of the model as
+    # mcp__<serverName>__<tool>. One row per server, in this insert list. Under
+    # launchd PATH is /usr/bin:/bin:/usr/sbin:/sbin: name the program by absolute
+    # path. Credentials go in ~/.dsh/.env and are handed over by name; never in the
+    # agent home. A server is trusted code: it is not under the sandbox runner, it
+    # can read the bot's own credential files, and none of the adapter's gates
+    # (approval, read scope, fetch allowlist) applies to its tools.
+    # docs/setup.md, MCP servers, has the rest.
+    #
+    # - id: mcp-example
+    #   name: '@deepseek-ai/dsh-mcp-client'
+    #   config:
+    #     serverName: example
+    #     transport: stdio
+    #     command: /absolute/path/to/server
+    #     args: ['--some-flag']
+    #     env:
+    #       PATH: /opt/homebrew/bin:/usr/bin:/bin
+    #       SERVICE_TOKEN: !!js process.env.EXAMPLE_TOKEN ?? ''
+
 # ── 무인 운영용 권한 프리셋 ──────────────────────────────────────
 # 기본값은 workspace-write 모드에서 approval=ask 다. 이 배포에는 승인을 물어볼
 # 사람이 없다. 라이브에서 관측한 결과가 hang 이었다: 샌드박스가 문제를 겪자
