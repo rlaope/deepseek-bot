@@ -97,4 +97,6 @@ jobs:
       - run: node test/tui-render.test.ts
       - run: node test/tui-panel.test.ts
       - run: node test/tui-questions.test.ts
+      - run: node test/net-policy.test.ts
+      - run: node test/browse.test.ts
       - run: node test/secrets.test.ts .

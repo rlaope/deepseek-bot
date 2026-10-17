@@ -1647,11 +1647,15 @@ for (const remove of [false, true]) {
   }
   const script = fileURLToPath(new URL('../dist/tools/browse.js', import.meta.url))
   const on = await offered({})
-  check('browse: offered as a command, with this node and the checkout\'s script', on.includes('[reading a page]') && on.includes(`'${process.execPath}' '${script}' '<url>'`), (on.match(/\[reading a page\][^\n]*\n[^\n]*\n[^\n]*/) ?? ['(none)'])[0].slice(0, 200))
-  // As a shell reads it: the line, with --help for the address, runs the tool.
+  const windows = process.platform === 'win32'
+  check('browse: offered as a command, with this node and the checkout\'s script', on.includes('[reading a page]') && on.includes(`${windows ? '& ' : ''}'${process.execPath}' '${script}' '<url>'`), (on.match(/\[reading a page\][^\n]*\n[^\n]*\n[^\n]*/) ?? ['(none)'])[0].slice(0, 200))
+  // As the agent's shell reads it (PowerShell on Windows, bash elsewhere): the line, with --help for the address, runs
+  // the tool.
   const line = (on.match(/^(.*) '<url>' /m) ?? [])[1] ?? ''
-  const shell = spawnSync('/bin/bash', ['-c', `${line} --help`], { encoding: 'utf8' })
-  check('browse: the offered command runs as a shell reads it', shell.status === 0 && shell.stdout.startsWith('usage: browse'), `${shell.status} ${(shell.stdout + shell.stderr).slice(0, 160)}`)
+  const shell = windows
+    ? spawnSync('pwsh', ['-NoProfile', '-Command', `${line} --help`], { encoding: 'utf8' })
+    : spawnSync('/bin/bash', ['-c', `${line} --help`], { encoding: 'utf8' })
+  check('browse: the offered command runs as the agent\'s shell reads it', shell.status === 0 && String(shell.stdout).startsWith('usage: browse'), `${shell.status} ${String(shell.stdout ?? '') + String(shell.stderr ?? shell.error ?? '')}`.slice(0, 200))
   const off = await offered({ browse: false })
   check('browse: false offers nothing', off !== '' && !off.includes('[reading a page]') && !off.includes('browse.js'))
 }

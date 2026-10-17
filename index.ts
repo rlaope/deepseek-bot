@@ -341,15 +341,17 @@ export function apply(ctx, config) {
   const cfg = { ...DEFAULTS, ...(config ?? {}) }
   /**
    * The browse tool as the agent's shell runs it: this process's node and the checkout's script, by absolute path, each
-   * in single quotes (in double quotes a `$` or a backtick in a path would be expanded). Offered when the script and
-   * playwright-core are both here; a browser it cannot start, the tool says so itself.
+   * in single quotes (in double quotes a `$` or a backtick in a path would be expanded). On Windows the shell is
+   * PowerShell, which reads a quoted first word as a string, not a command: there `&` runs it, and a quote inside is
+   * doubled. Offered when the script and playwright-core are both here; a browser it cannot start, the tool says so.
    */
   const browseCommand = (() => {
     if (cfg.browse !== true) return null
     const script = fileURLToPath(new URL('./tools/browse.js', import.meta.url))
     const dependency = fileURLToPath(new URL('../node_modules/playwright-core/package.json', import.meta.url))
-    const word = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
-    return existsSync(script) && existsSync(dependency) ? `${word(process.execPath)} ${word(script)}` : null
+    const windows = process.platform === 'win32'
+    const word = (s: string) => `'${s.replace(/'/g, windows ? `''` : `'\\''`)}'`
+    return existsSync(script) && existsSync(dependency) ? `${windows ? '& ' : ''}${word(process.execPath)} ${word(script)}` : null
   })()
 
   // ── Config validation: never fail silently ────────────────────────────────
