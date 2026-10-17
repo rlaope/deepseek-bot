@@ -7,6 +7,20 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **The agent's commands read the user's SSH keys and stored tokens.** The sandbox runner refused the ssh-agent
+  socket, but not the key files behind it: `cat ~/.ssh/id_ed25519` worked, and so did the cloud CLIs' tokens, the gh
+  token, the keychain files, `~/.netrc` and git's stored credentials. The runner now refuses `~/.ssh`, `~/.aws`,
+  `~/.gnupg`, the keychain files, `~/.config/gh`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, `~/.netrc` and
+  `~/.git-credentials`, and the file tools refuse the same. Keychain items reach commands through `security(1)` as
+  before (documented). Checked by the runner suite with a home of its own: each
+  was read before, none is now, and an ordinary file there still is. A tool that needs one of them fails; the agent's
+  credentials are its own.
+
+- **The editor tool could write the agent home's `.env`.** The file-tool gate that refuses it checked `write` and
+  `edit` only, so `str_replace_editor`'s create, str_replace and insert passed; the launcher moved such a file aside
+  only at the next start. They are refused now, by the same test of where the write lands. Checked in the core
+  suite (three one-line mutants red); its view is left to the read scope.
+
 - **The fetch gate never ran.** It matched a tool named `fetch`; the harness's tool is `web_fetch`. So
   `fetchAllowedHosts` bounded nothing, nor did the gate's scheme and metadata refusals; the metadata service was
   kept out by the harness itself, which refuses a non-public address (seen live; its handling of other schemes
@@ -256,6 +270,14 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **A file outside the agent's home can be read with the person's consent: `readOutside`.** A file tool's read
+  outside the workspace was refused, and the agent could only ask for the file to be moved or pasted. With `ask`,
+  the default, the read is held and the conversation asked, naming where it lands (a link with its target).
+  Credentials, `DEEPBOT_DENY_READ`'s places, a folder holding one, and a link to any of them are refused, judged
+  where they really are; so are a tenant's turn (its first one included, which also read with the shared home's
+  roots before) and one with nobody to ask; `deny` refuses as before. The editor tool's reads are covered. Checked
+  in the core suite (thirteen one-line mutants red), and live: a read of a file outside was asked for, and in a
+  scenario, with no platform to answer, refused.
 - **Recall: the conversation's model chooses the passages about the message.** Matched by words (and the
   words the model relates to the message), a past put in words the message shares none of was outranked by
   newer passages on the same subject that only shared surface words.

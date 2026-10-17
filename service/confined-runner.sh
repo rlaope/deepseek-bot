@@ -272,6 +272,16 @@ profile() {
       printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"
     fi
   done
+  # The user's credentials, which are not the agent's: SSH keys (the agent socket alone was refused, and the key files
+  # were one cat away), the cloud CLIs' and gh's tokens, the keychains, netrc and git's stored credentials. A tool that
+  # needs one fails; the agent gets a token of its own, in its home, if it needs one. The file tools are held to the
+  # same list (credentialPath in index.ts).
+  for denied in "$HOME/.ssh" "$HOME/.aws" "$HOME/.gnupg" "$HOME/Library/Keychains" "$HOME/.config/gh" "$HOME/.config/gcloud" "$HOME/.azure" "$HOME/.kube" "$HOME/.netrc" "$HOME/.git-credentials"; do
+    [ -e "$denied" ] || [ -L "$denied" ] || continue
+    printf '(deny file-read* (subpath %s))\n' "$(sbpl "$denied")"
+    resolved="$(/bin/realpath "$denied" 2>/dev/null || true)"
+    if [ -n "$resolved" ] && [ "$resolved" != "$denied" ]; then printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"; fi
+  done
   # Other workspaces' temp directories: a tenant's temp files are its own, as its directory is. Its own stays readable.
   if [ -n "$user_temp" ]; then
     for root in "$user_temp" ${user_temp_real:+"$user_temp_real"}; do

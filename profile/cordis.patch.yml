@@ -201,6 +201,8 @@
 #   interface is English; the model's own answers follow the persona in SOUL.md, not this.
 #   askTools (not set here: none): tools asked for on every call, as a destructive command is, such as an MCP
 #   server's that sends mail or changes a calendar; an entry ending in * names the tools that start with it.
+#   readOutside (not set here: ask): a file tool's read outside the agent home is asked for in the
+#   conversation; deny refuses it. Credentials are refused either way.
 #   commandNetwork (not set here: open): where the agent's commands may connect. public or local sends them
 #   through the gateway's proxy and nothing else; docs/setup.md, The agent's network.
 - id: deepbot

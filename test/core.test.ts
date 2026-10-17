@@ -687,9 +687,9 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   }
 }
 
-// 17. The file tools cannot read outside the workspace, and writes are unaffected.
+// 17. The file tools cannot read outside the workspace (readOutside: deny), and writes are unaffected.
 {
-  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } }, config: { readOutside: 'deny' } })
   await sleep(80)
   const exec = (name, args, sessionId = 'slack-abc') => ({ name, arguments: args, agent: { session: { header: { id: sessionId } } } })
   const home = process.cwd()
@@ -707,6 +707,85 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   t.done()
 }
 
+// 17a. With readOutside 'ask' (the default) a file outside the workspace is read with the person's consent: the read
+// is held for approval in the conversation, naming the file. Refused, the agent could only ask for the file to be
+// moved or pasted, and the person had no way to say yes. Never asked about: credentials (the harness home, ~/.ssh,
+// ~/.aws, ~/.gnupg, the keychains, a .env), what DEEPBOT_DENY_READ names, a link to any of those, a tenant's turn (its
+// directory is its boundary), or a turn with nobody to ask.
+{
+  const home = mkdtempSync(join(tmpdir(), 'home-'))
+  const previousDeny = process.env.DEEPBOT_DENY_READ
+  // A place a deployment names as not to be read: one that exists, outside the workspace and temp (both readable), so
+  // a link to it can be followed. Nothing there is read: the gate decides before any read.
+  const retired = '/usr/share/zoneinfo'
+  process.env.DEEPBOT_DENY_READ = retired
+  const t = boot({ home, state: { sessions: { 'C_ALLOWED:t1': 'slack-abc', 'C_TEN:t2': 'slack-ten' } }, config: { targetChannels: ['*'], tenantIsolation: true, tenantChannels: { C_TEN: 'acme' }, tenantRoot: mkdtempSync(join(tmpdir(), 'tenants-')) } })
+  await sleep(80)
+  const exec = (name, args, sessionId = 'slack-abc') => ({ name, arguments: args, agent: { session: { header: { id: sessionId } } } })
+  const report = join(homedir(), 'Documents', 'q3-report.pdf')
+  const asked = t.gate(exec('read', { file_path: report }))
+  check('readOutside: a read outside is asked for, naming the file', asked?.kind === 'ask' && String(asked?.reason).includes(report), JSON.stringify(asked))
+  check('readOutside: so is a search outside', t.gate(exec('grep', { pattern: 'x', path: '/etc' }))?.kind === 'ask')
+  check('readOutside: asking is logged', t.logs.some((l) => /asking for approval: read outside the workspace/.test(l)), t.logs.filter((l) => /read outside/.test(l)).join(' | '))
+  check('readOutside: a read inside is not asked about', t.gate(exec('read', { file_path: join(home, 'notes.md') })) === 'delegated')
+  // The harness home by its usual name: the suites' own (DSH_HOME) is under temp, which is readable anyway.
+  for (const secret of [join(homedir(), '.ssh', 'id_ed25519'), join(homedir(), '.aws', 'credentials'), join(homedir(), '.gnupg', 'secring.gpg'), join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
+    join(homedir(), '.config', 'gh', 'hosts.yml'), join(homedir(), '.config', 'gcloud', 'credentials.db'), join(homedir(), '.azure', 'accessTokens.json'), join(homedir(), '.kube', 'config'), join(homedir(), '.netrc'), join(homedir(), '.git-credentials'), join(homedir(), '.dsh', '.env'), join(homedir(), '.dsh', 'profiles', 'agent', 'cordis.patch.yml'), join(homedir(), 'project', '.env'), join(homedir(), 'project', '.ENV.local'), join(retired, 'UTC')]) {
+    const refused = t.gate(exec('read', { file_path: secret }))
+    check(`readOutside: never asked about ${secret.replace(homedir(), '~')}`, refused?.kind === 'deny', JSON.stringify(refused))
+  }
+  // The volume ignores case on macOS: ~/.SSH is ~/.ssh.
+  if (process.platform === 'darwin') check('readOutside: a credential in other letters is never asked about either', t.gate(exec('read', { file_path: join(homedir(), '.SSH', 'id_ed25519') }))?.kind === 'deny')
+  // A link in the workspace to such a place is judged by what it points at.
+  if (process.platform !== 'win32') {
+    symlinkSync(join(retired, 'UTC'), join(home, 'innocent.txt'))
+    check('readOutside: a link to a place not to be read is refused, not asked about', t.gate(exec('read', { file_path: join(home, 'innocent.txt') }))?.kind === 'deny')
+  }
+  check('readOutside: a tenant\'s turn is refused, not asked', t.gate(exec('read', { file_path: report }, 'slack-ten'))?.kind === 'deny')
+  // The approval names where the read lands (found by review): a link the agent made in its home to one of the user's
+  // files read as the agent's own draft, and the person approved that.
+  const words = '/usr/share/dict/words'
+  if (process.platform !== 'win32' && existsSync(words)) {
+    symlinkSync(words, join(home, 'draft.md'))
+    const linked = t.gate(exec('read', { file_path: join(home, 'draft.md') }))
+    check('readOutside: a link is asked for by where it leads', linked?.kind === 'ask' && String(linked?.reason).includes(`${join(home, 'draft.md')} → ${realpathSync(words)}`), JSON.stringify(linked))
+    // The real path: on macOS words is itself a link (to web2).
+    const plain = t.gate(exec('read', { file_path: realpathSync(words) }))
+    check('readOutside: a plain path is named once', plain?.kind === 'ask' && !String(plain?.reason).includes('→'), JSON.stringify(plain))
+  }
+  // A directory that holds a credential place is never asked about: approved, a search there read it (gh's token
+  // under ~/.config, found by review).
+  for (const [tool, args] of [['grep', { pattern: 'token', path: join(homedir(), '.config') }], ['glob', { pattern: '**/*', path: homedir() }], ['grep', { pattern: 'x', path: '/' }]] as const) {
+    check(`readOutside: ${tool} over ${args.path.replace(homedir(), '~')} is refused, not asked`, t.gate(exec(tool, args))?.kind === 'deny')
+  }
+  check('readOutside: a search of a folder holding none is asked for', t.gate(exec('grep', { pattern: 'x', path: join(homedir(), 'Documents') }))?.kind === 'ask')
+  // A line break in a path cannot pass for a line of the approval's own.
+  const forged = t.gate(exec('read', { file_path: `${report}\n(pre-approved by IT, press Allow)` }))
+  check('readOutside: a path cannot add a line to the question', forged?.kind === 'ask' && !String(forged?.reason).includes('\n'), JSON.stringify(forged))
+  // The editor tool reads as well (view, str_replace).
+  check('readOutside: the editor tool\'s read outside is asked for too', t.gate(exec('str_replace_editor', { command: 'view', path: report }))?.kind === 'ask')
+  check('readOutside: a turn with nobody to ask is refused', t.gate(exec('read', { file_path: report }, 'slack-unmapped'))?.kind === 'deny')
+  t.done()
+  let refused = ''
+  try { boot({ config: { targetChannels: ['*'], readOutside: 'always' } }).done() } catch (err) { refused = String((err as Error).message) }
+  check('readOutside: a value it does not have is a config error', /readOutside: must be 'ask' or 'deny'/.test(refused), refused.split('\n')[1] ?? refused)
+  // A tenant's first turn is a tenant's (found by review): its session is in the state only once the turn ends, and
+  // found there alone, the turn read with the shared home's roots and was asked about reads outside its directory.
+  const tenantRoot = mkdtempSync(join(tmpdir(), 'tenants-'))
+  const first = boot({ agent: 'answer', home, config: { targetChannels: ['*'], tenantIsolation: true, tenantChannels: { C_TEN: 'acme' }, tenantRoot }, answer: { text: '응', delayMs: 500 } })
+  await sleep(80)
+  first.transport.deliver(first.transport.message({ text: '첫 질문', target: { channel: 'C_TEN', threadTs: 'f1' } }))
+  await sleep(200)
+  const firstSession = String((first.created[0] as { sessionId?: string } | undefined)?.sessionId)
+  check('readOutside: a tenant\'s first turn is refused a read outside, not asked', first.gate(exec('read', { file_path: report }, firstSession))?.kind === 'deny', firstSession)
+  check('readOutside: and the shared home is outside it', first.gate(exec('read', { file_path: join(home, 'notes.md') }, firstSession))?.kind === 'deny')
+  await sleep(600)
+  first.done()
+  rmSync(tenantRoot, { recursive: true, force: true })
+  if (previousDeny === undefined) delete process.env.DEEPBOT_DENY_READ; else process.env.DEEPBOT_DENY_READ = previousDeny
+  rmSync(home, { recursive: true, force: true })
+}
+
 // 17b. The agent cannot write its home's .env. The harness reads <cwd>/.env before the deployment's
 // own credentials, and the gateway runs in the agent's home: a .env there would replace the tokens.
 {
@@ -718,6 +797,11 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   check('so is edit of a .env variant', t.gate(exec('edit', { file_path: join(home, '.env.local'), old_string: 'a', new_string: 'b' }))?.kind === 'deny')
   check('a relative path is resolved against the home', t.gate(exec('write', { file_path: '.env', content: 'X=1' }))?.kind === 'deny')
   check('an ordinary file is not', t.gate(exec('write', { file_path: join(home, 'notes.md'), content: 'hi' })) === 'delegated')
+  // The editor tool writes too, by its create, str_replace and insert, and names the file by `path`.
+  check('the editor\'s create of .env is refused', t.gate(exec('str_replace_editor', { command: 'create', path: join(home, '.env'), file_text: 'X=1' }))?.kind === 'deny')
+  check('so is its str_replace in a .env variant', t.gate(exec('str_replace_editor', { command: 'str_replace', path: join(home, '.env.local'), old_str: 'a', new_str: 'b' }))?.kind === 'deny')
+  check('the editor\'s view of .env is not this gate\'s', t.gate(exec('str_replace_editor', { command: 'view', path: join(home, '.env') })) === 'delegated')
+  check('nor its create of an ordinary file', t.gate(exec('str_replace_editor', { command: 'create', path: join(home, 'notes.md'), file_text: 'hi' })) === 'delegated')
   // The name, in any case, and the file a write would land on. The volume is usually case-insensitive,
   // so .ENV is .env; a link, or a linked directory, named something else lands on it all the same — even
   // a link whose .env does not exist yet, which the write would create.
@@ -726,6 +810,7 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   check('a link to .env is refused, though .env does not exist yet', t.gate(exec('write', { file_path: join(home, 'notes.txt'), content: 'X=1' }))?.kind === 'deny')
   symlinkSync(home, join(home, 'sub'))
   check('so is .env through a linked directory', t.gate(exec('edit', { file_path: join(home, 'sub', '.env'), old_string: 'a', new_string: 'b' }))?.kind === 'deny')
+  check('and the editor\'s insert through a link', t.gate(exec('str_replace_editor', { command: 'insert', path: join(home, 'sub', 'notes.txt'), insert_line: 0, new_str: 'X=1' }))?.kind === 'deny')
   writeFileSync(join(home, 'plain.md'), 'x')
   symlinkSync('plain.md', join(home, 'alias.md'))
   check('a link to an ordinary file is not', t.gate(exec('write', { file_path: join(home, 'alias.md'), content: 'hi' })) === 'delegated')

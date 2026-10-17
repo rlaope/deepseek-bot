@@ -78,6 +78,11 @@ Decided against:
 
 ## Unverified
 
+- A read outside the workspace answered with a real button: live, only the refusal path ran (a scenario has no
+  platform). Keychain items through securityd: reachable by commands, not closed (refusing the keychain service
+  may break TLS and git over https; not measured). The commands' new credential refusals were checked with a home of the suite's own; a deployment whose
+  agent used the owner's ssh key or gh token will find that tool failing.
+
 - Recall's choice by the model over a large channel: measured on 24 passages. With hundreds, the latest 40 are
   offered and older ones are matched by words; whether 40 is the right number, and the choice's quality over
   passages cut at 200 characters, are not measured. Measured only on the test profile's route (OpenGateway,

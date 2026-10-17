@@ -193,8 +193,12 @@ const DEFAULTS = {
   // tools are not, because `dsh-fs-sandbox` fences mutation and documents that it does
   // not restrict observation. This closes that half at the tool boundary.
   readScope: true,
-  readScopeTools: ['read', 'read_image', 'grep', 'glob'],
+  readScopeTools: ['read', 'read_image', 'grep', 'glob', 'str_replace_editor'],
   readScopeRoots: [],          // default: the agent home plus temp, see readRoots()
+  // A file tool's read outside those: 'ask' holds it for the person's approval in the conversation, naming the file;
+  // 'deny' refuses it. Credentials, DEEPBOT_DENY_READ's places, a tenant's turn and a turn with nobody to ask are
+  // refused either way.
+  readOutside: 'ask',
   readScopeAllowTemp: true,
   // Tenant isolation: one workspace per conversation group, so a tenant's notes, session
   // files and recall index are its own. Off by default, which keeps the single shared home
@@ -410,6 +414,7 @@ export function apply(ctx, config) {
   }
   // Each passage offered is up to 200 characters sent with every such message: a few hundred is already a page.
   if (!Number.isInteger(cfg.recallPickFrom) || cfg.recallPickFrom < 0 || cfg.recallPickFrom > 200) problems.push(`recallPickFrom: must be a whole number from 0 to 200 (got: ${String(cfg.recallPickFrom)})`)
+  if (!['ask', 'deny'].includes(cfg.readOutside)) problems.push(`readOutside: must be 'ask' or 'deny' (got: ${String(cfg.readOutside)})`)
   if (!['open', 'local', 'public'].includes(cfg.commandNetwork)) problems.push(`commandNetwork: must be 'open', 'local' or 'public' (got: ${String(cfg.commandNetwork)})`)
   if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
     problems.push('fetchAllowedHosts: must be a list of host names (e.g. [example.com])')
@@ -2079,8 +2084,10 @@ export function apply(ctx, config) {
 
   function envFileDecision(exec): { kind: string; reason: string } | null {
     const name = exec?.name ?? exec?.toolName
-    if (name !== 'write' && name !== 'edit') return null
-    const target = exec?.arguments?.file_path
+    // The editor writes by every command but view, and names its file by `path`.
+    const editor = name === 'str_replace_editor' && exec?.arguments?.command !== 'view'
+    if (name !== 'write' && name !== 'edit' && !editor) return null
+    const target = editor ? exec?.arguments?.path : exec?.arguments?.file_path
     if (typeof target !== 'string' || target === '' || resolvedCwd.value === null) return null
     const home = resolve(resolvedCwd.value)
     // A relative path is the session's, as the harness resolves it: a tenant's directory, not the home.
@@ -2118,27 +2125,61 @@ export function apply(ctx, config) {
     if (name === 'glob' && typeof args.pattern === 'string' && isAbsolute(args.pattern)) candidates.push(args.pattern)
     if (candidates.length === 0) return null
     // With isolation on, the readable roots are the *speaking conversation's* directory:
-    // one tenant's turn must not read another's files, and the shared home would allow it.
-    const sessionId = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
-    const sessionKey = typeof sessionId === 'string'
-      ? Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId) ?? null
-      : null
+    // one tenant's turn must not read another's files, and the shared home would allow it. Its first turn too: found
+    // in the state alone (written when the turn ends), it read with the shared home's roots (found by review).
+    const sessionKey = callConversation(exec) ?? null
     const tenant = tenantOf(sessionKey)
     const roots = resolvedCwd.value === null
       ? [] as string[]
       : tenant !== null? [join(typeof cfg.tenantRoot === 'string' && cfg.tenantRoot !== '' ? cfg.tenantRoot : join(resolvedCwd.value, 'tenants'), tenant)]
         : readRootsSync()
     if (roots.length === 0) return null
-    for (const candidate of candidates) {
-      if (!isInside(candidate, roots)) {
-        log(`read outside the sandbox denied: ${name} ${candidate}`)
-        return {
-          kind: 'deny',
-          reason: `reading outside the workspace (${roots[0]}) is not allowed. Ask the user to put the file there, or to paste its contents.`,
-        }
-      }
+    const outside = candidates.filter((candidate) => !isInside(candidate, roots))
+    if (outside.length === 0) return null
+    // With the person's consent, in the conversation: not for a credential, a tenant (its directory is its boundary),
+    // or a turn with nobody to ask.
+    const key = cfg.readOutside === 'ask' && tenant === null && !outside.some(credentialPath) ? callConversation(exec) : undefined
+    if (key !== undefined) {
+      // Where each read lands, as it is judged: a link the agent made in its home to a file of the user's read as the
+      // agent's own draft. On one line each, cut with the cut said: a line break in a path made a line of its own.
+      const where = outside.map((path) => {
+        const given = resolve(path)
+        let real = given
+        try { real = realpathSync(path) } catch { /* not there: as named */ }
+        return (real === given ? real : `${given} → ${real}`).replace(/\r?\n/g, ' ⏎ ')
+      }).join(', ')
+      const shown = where.length > 400 ? `${where.slice(0, 400)}… (+${where.length - 400} characters)` : where
+      log(`asking for approval: read outside the workspace, ${name} ${outside[0]} in ${key}`)
+      return { kind: 'ask', reason: `${name} outside the workspace: ${shown}` }
     }
-    return null
+    log(`read outside the sandbox denied: ${name} ${outside[0]}`)
+    return {
+      kind: 'deny',
+      reason: `reading outside the workspace (${roots[0]}) is not allowed. Ask the user to put the file there, or to paste its contents.`,
+    }
+  }
+
+  /**
+   * Whether a path is a credential's, or in a place the deployment named as not to be read (DEEPBOT_DENY_READ): never
+   * asked about, since a person can approve without reading closely. Judged where it really is, a link followed; the
+   * volume ignores case.
+   */
+  function credentialPath(path: string): boolean {
+    const fold = (p: string) => process.platform === 'linux' ? p : p.toLowerCase()
+    const named = [resolve(path)]
+    try { named.push(realpathSync(path)) } catch { /* not there: as named */ }
+    const home = homedir()
+    // The sandbox runner refuses the same to the agent's commands.
+    const places = [process.env.DSH_HOME || join(home, '.dsh'), join(home, '.dsh'), join(home, '.ssh'), join(home, '.aws'), join(home, '.gnupg'),
+      join(home, 'Library', 'Keychains'), join(home, '.config', 'gh'), join(home, '.config', 'gcloud'), join(home, '.azure'), join(home, '.kube'),
+      join(home, '.netrc'), join(home, '.git-credentials'), ...String(process.env.DEEPBOT_DENY_READ ?? '').split(':').filter((p) => p !== '')]
+    const bases = places.flatMap((place) => { const all = [resolve(place)]; try { all.push(realpathSync(place)) } catch { /* not there */ } return all }).map(fold)
+    // In such a place, or holding one: a search of a directory above ~/.config/gh reads its token (found by review).
+    return named.some((p) => {
+      const at = fold(p)
+      const within = (inner: string, outer: string) => inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : outer + sep)
+      return bases.some((base) => within(at, base) || within(base, at)) || /^\.env(\..*)?$/i.test(basename(p))
+    })
   }
 
   /** Bound a fetch: scheme, metadata service, optional allowlist. Null defers. */

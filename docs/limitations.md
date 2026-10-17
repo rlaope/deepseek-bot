@@ -30,7 +30,13 @@ decision with a cost.
   file tools through a `tools/pre-execute` read scope. It is a policy boundary rather than
   a kernel one: the tool list has to grow with the composition, and a new tool that reads
   files another way would not be covered. A separate OS user per instance remains the
-  stronger answer, and is not built.
+  stronger answer, and is not built. A file tool's read outside the workspace is asked for
+  in the conversation; the agent's commands read an ordinary file outside without asking
+  (they are refused only the user's credentials and what `DEEPBOT_DENY_READ` names), so the
+  consent is the file tools', not a wall around the user's documents. Keychain items in an
+  unlocked login keychain reach commands through `security(1)`; only the keychain files are
+  refused. The `present` tool's nested `files[].path` is not checked by the read scope (it is not
+  composed in a deepbot profile today).
 
 
 ## Design risks

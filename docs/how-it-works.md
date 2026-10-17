@@ -351,8 +351,13 @@ Two surfaces, two mechanisms:
 
 **Commands** run under `service/confined-runner.sh`, which replaces the sandbox runner. It
 implements the harness's own policy arguments (workspace-write keeps the workspace and temp
-writable; read-only denies all writes) and adds read denials for the other instances' homes and for
-retired bot data. Temp is `/tmp` and a directory of the workspace's own inside the user's temp
+writable; read-only denies all writes) and adds read denials for the other instances' homes, for
+retired bot data, and for the user's credentials: `~/.ssh`, `~/.aws`, `~/.gnupg`, the keychain files,
+`~/.config/gh`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, `~/.netrc` and `~/.git-credentials` (the
+ssh-agent socket alone was refused before, and the key files were one `cat` away). A tool that needs
+one of those fails: the agent's credentials are its own, in its home. Keychain items in an unlocked
+login keychain still reach a command through `security` and git's osxkeychain helper, which talk to the
+system's keychain service rather than read the files. Temp is `/tmp` and a directory of the workspace's own inside the user's temp
 (`deepbot-cmd-<hash>`, made by the runner, never a link), where it points `TMPDIR`; the user's temp
 itself stays closed, since unconfined processes keep scripts and sockets there. Another workspace's
 temp directory cannot be read: a tenant's temp files are its own. macOS's `mktemp`
@@ -382,8 +387,18 @@ at `$DEEPBOT_READ_PROFILE`; nothing in this repository generates it.)
     readScopeRoots: []                                     # default: workspace + temp + tooling
 ```
 
-A read outside those roots is denied with a reason the model can act on — "ask the user to put the
-file there, or to paste its contents". Symlinks are resolved when the path exists, so a link
+A read outside those roots is asked for (`readOutside: ask`, the default): the turn holds, and the
+conversation gets an approval request naming where the read lands (a link with its target: a link the
+agent made in its home to one of the user's files read as its own draft, found by review), answered
+with the same buttons as a destructive command. It is refused, with a reason the model can act on
+("ask the user to put the file there, or to paste its contents"), when it is a credential (the list
+above, the harness home, a file named `.env…`), in a place `DEEPBOT_DENY_READ` names, or a folder
+holding one (a search above `~/.config/gh` read its token), judged where it really is; when the turn is
+a tenant's, its first turn included (its directory is its boundary); when no conversation can be
+asked; and always with `readOutside: deny`. The agent's commands read an ordinary file outside without asking, as before:
+the runner refuses the places above, not the user's documents; `DEEPBOT_DENY_READ` adds places.
+Writing outside the workspace is not possible either way: the agent writes in its home, and the
+person copies. Symlinks are resolved when the path exists, so a link
 inside the workspace that points outside it does not count as inside (`test/edges.test.ts` pins
 that with a symlink to `/etc/hosts`), and with tenant isolation on, the readable roots follow the
 **speaking conversation** rather than the shared home.

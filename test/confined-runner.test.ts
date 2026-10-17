@@ -464,6 +464,29 @@ for (const resolved of [false, true]) {
   for (const dir of [dshHome, agentHome]) rmSync(dir, { recursive: true, force: true })
 }
 
+// The user's credentials are not the agent's: its commands read ~/.ssh's private keys, the cloud CLIs' tokens and the
+// gh token, though the ssh-agent socket was already refused. A home of its own, so nothing real is touched.
+{
+  const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), 'user-home-')))
+  const agentHome = join(fakeHome, 'dsh-agent')
+  mkdirSync(agentHome)
+  const places = ['.ssh/id_ed25519', '.aws/credentials', '.gnupg/private-keys-v1.d/k.key', 'Library/Keychains/login.keychain-db', '.config/gh/hosts.yml', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json', '.kube/config', '.netrc', '.git-credentials']
+  for (const place of places) {
+    mkdirSync(dirname(join(fakeHome, place)), { recursive: true })
+    writeFileSync(join(fakeHome, place), 'secret-9f1')
+  }
+  writeFileSync(join(fakeHome, 'notes.txt'), 'ordinary-3c7')
+  const env = { ...process.env, HOME: fakeHome, DEEPBOT_HOME: agentHome }
+  const policy = [...READ_ONLY, '--tmpfs', '/tmp', '--bind', agentHome, agentHome]
+  for (const place of places) {
+    const read = spawnSync(RUNNER, [...policy, '--', '/bin/cat', join(fakeHome, place)], { encoding: 'utf8', env, timeout: 15_000 })
+    check(`credentials: ~/${place} is not read`, !read.stdout.includes('secret-9f1'), `${read.status} ${read.stderr.trim().slice(0, 100)}`)
+  }
+  const ordinary = spawnSync(RUNNER, [...policy, '--', '/bin/cat', join(fakeHome, 'notes.txt')], { encoding: 'utf8', env, timeout: 15_000 })
+  check('credentials: an ordinary file in the user\'s home is still read', ordinary.stdout.includes('ordinary-3c7'), `${ordinary.status} ${ordinary.stderr.trim().slice(0, 100)}`)
+  rmSync(fakeHome, { recursive: true, force: true })
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

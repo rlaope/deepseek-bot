@@ -261,6 +261,23 @@ Set up once, by you:
 
 Not yet run here: no OAuth client was available when this was written (`PLAN.md`).
 
+## Files outside the agent's home
+
+The agent writes only in its home. When it needs a file of yours outside it, a file tool's read
+(`read`, `read_image`, `grep`, `glob`, the editor's view) is held and the conversation is asked, with
+the approval buttons, naming where the read lands (a link is shown with its target);
+`readOutside: deny` in the deepbot row refuses instead. Never asked about, by the file tools:
+`~/.ssh`, `~/.aws`, `~/.gnupg`, the keychain files, `~/.config/gh`, `~/.config/gcloud`, `~/.azure`,
+`~/.kube`, `~/.netrc`, `~/.git-credentials`, the harness home, any `.env`, and a folder that holds
+one of them (a search of your home or of `~/.config` is refused; name a narrower folder). The agent's
+commands are refused the same places, and the harness home's own secrets (its `.env`, the app store,
+sessions, profiles); a `.env` elsewhere is refused to the file tools, not to commands. Keychain items
+are another matter: in an unlocked login keychain, `security` and git's osxkeychain helper still hand
+them out to commands. With `~/.gnupg` refused, a `git commit` the agent makes fails if your git
+config signs commits. Commands read other files outside without asking: to keep a directory from the
+agent altogether, add it to `DEEPBOT_DENY_READ` (absolute paths, colon-separated) before installing
+the services. To give it a file for good, put a copy in its home.
+
 ## The agent's network
 
 The sandbox confines what the agent's commands read and write. Where they connect is `commandNetwork`, in
