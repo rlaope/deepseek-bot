@@ -111,12 +111,12 @@ mkdirSync(join(TEST_HOME, 'memory'), { recursive: true })
 rmSync(RESULT, { force: true })
 
 // Paths in a scenario are written as {HOME} and {LIVE_HOME} — and {REPO} (this checkout) and {NODE} (this node) —
-// so the files name no particular machine; the plugin is handed a copy with them filled in.
+// so the files name no particular machine; the plugin is handed a copy with them filled in. {RUN} names this run.
 const resolvedScenario = join(tmpdir(), `deepbot-scenario-${process.pid}-${basename(scenario)}`)
 // {RECALL_INDEX}: the test home's recall index, which lives under the harness home, not in the agent's.
 const RECALL_INDEX = recallIndexPath(TEST_HOME)
 const resolvedText = readFileSync(scenario, 'utf8').replaceAll('{RECALL_INDEX}', RECALL_INDEX).replaceAll('{LIVE_HOME}', LIVE_HOME).replaceAll('{HOME}', homedir())
-  .replaceAll('{REPO}', REPO).replaceAll('{NODE}', process.execPath)
+  .replaceAll('{REPO}', REPO).replaceAll('{NODE}', process.execPath).replaceAll('{RUN}', basename(TEST_HOME))
 writeFileSync(resolvedScenario, resolvedText)
 
 // Rows a scenario needs that the test profile has not (an MCP server): the run uses a copy of the profile with them

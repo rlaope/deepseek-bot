@@ -315,6 +315,19 @@ The answerer, the buttons, the timeout and the same-user rule are unit-verified 
   shows it with a real model: the gate asks, the request reaches the answerer, which cannot reach a
   platform in a scenario, fails closed, and the request is refused at once; the file survives and the
   turn ends without waiting. Pressing a button in a real conversation is unit-verified only (`PLAN.md`).
+- **A tool named in `askTools` is asked for on every call.** An MCP server's tools pass the patterns above,
+  which read a shell command, and every other gate; a server that sends mail or changes a calendar acted on
+  the model's word alone. `askTools` names such tools (`mcp__google__send_gmail_message`, or
+  `mcp__google__manage_*` for every tool that starts so), and each call goes through the same approval,
+  in the conversation the turn belongs to: found, for a conversation's first turn, by the turn's own origin
+  (the destructive-command gate looked in the saved state alone, so a first turn's command ran unasked).
+  The question shows every argument, the short ones first, each cut at 200 characters with the cut said;
+  arguments too long to show whole, or a turn that belongs to no conversation, are refused, since nothing
+  else confines such a tool. What an approval shows is made inert first: `<` and `>` become `‹` `›` and
+  `@` before a word is broken, so a `<!channel>` or `@everyone` in a call's arguments pings nobody. Empty by
+  default. `test/scenarios/mcp-ask.json` checks it with a real model: the fixture's
+  `vault_store` writes a file only the server can write; with `askTools` naming it the call is refused and
+  the file never appears, and without it (the control, run by hand) the file is written.
 
 ## Read confinement
 
@@ -894,6 +907,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 | `tenant.json` | one tenant cannot read another's file, by name or by path traversal |
 | `approval.json` | a turn that needs an approval ends instead of hanging |
 | `approval-gate.json` | the destructive-command gate: it asks, the request reaches the answerer, which fails closed with no platform to reach, and the file survives |
+| `mcp-ask.json` | a tool `askTools` names is asked for before it runs: the fixture's `vault_store` is refused, and the file only it can write never appears |
 | `mcp.json` | a tool of an MCP server the profile composes reaches the model: the answer comes from `mcp__fixture__vault_lookup` of `test/fixtures/mcp-fixture.mjs`; the test profile needs the fixture's row (docs/setup.md, MCP servers) |
 | `interrupt.json` | a running turn stopped mid-flight ends as `cancelled` |
 | `reminder.json` | a reminder fires on the wall clock and wakes the agent by itself |

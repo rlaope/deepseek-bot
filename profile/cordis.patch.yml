@@ -199,6 +199,8 @@
 #   message in a thread the bot takes part in, and the model keeps quiet when one is not for it.
 #   language: what the bot itself says (approvals, stops, failures): en, ko or zh. The terminal's own
 #   interface is English; the model's own answers follow the persona in SOUL.md, not this.
+#   askTools (not set here: none): tools asked for on every call, as a destructive command is, such as an MCP
+#   server's that sends mail or changes a calendar; an entry ending in * names the tools that start with it.
 - id: deepbot
   config:
     platform: slack

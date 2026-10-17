@@ -49,9 +49,10 @@ decision with a cost.
   Bundles, patch grammar, and service names can change.
 - **An MCP server is outside every gate.** A server added to the profile runs as the
   gateway's child: not under the sandbox runner, able to read the bot's credential
-  files. Its tools pass the approval gate, the read scope and the fetch allowlist,
-  are shared by every conversation (tenants included), and what they return is not
-  marked as instruction-like text. Add only servers you trust (docs/setup.md).
+  files. Its tools pass the approval gate (unless `askTools` names them), the read
+  scope and the fetch allowlist, are shared by every conversation (tenants included),
+  and what they return is not marked as instruction-like text. Add only servers you
+  trust (docs/setup.md).
 - **One FTS index owner per path.** Running two gateways against the same index
   file is a documented constraint of that component, not something this plugin
   guards against.

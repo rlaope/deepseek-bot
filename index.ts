@@ -186,6 +186,9 @@ const DEFAULTS = {
   // workspace asks, because deletion there is irreversible and the sandbox allows it.
   approvalPatterns: ['rm ', 'rmdir ', 'sudo ', 'dd if=', 'mkfs', 'shutdown', 'reboot', 'kill -9'],
   approvalTools: ['bash', 'pwsh'],
+  // Tools asked for on every call, whatever their arguments: an MCP server's that sends, books or deletes. Those pass
+  // every other gate (the patterns above read a shell command). An entry ending in * names the tools that start with it.
+  askTools: [],
   // Read scope for the file tools. Commands are confined by the sandbox runner; the
   // tools are not, because `dsh-fs-sandbox` fences mutation and documents that it does
   // not restrict observation. This closes that half at the tool boundary.
@@ -339,6 +342,14 @@ const TRAILING = /[.!?~,\s。！？，～、]+$/u
 
 export function apply(ctx, config) {
   const cfg = { ...DEFAULTS, ...(config ?? {}) }
+  // A scenario's own settings (its "config"), over the profile's, in scenario mode only: a setting such as askTools is
+  // checked live without a profile of its own. They are validated below like any others; the scenario's author is
+  // trusted as the profile's is, and in this mode the adapter runs the scenario and serves nothing.
+  if (typeof cfg.selfTestScript === 'string' && cfg.selfTestScript.trim() !== '') {
+    let overlay: unknown = null
+    try { overlay = JSON.parse(readFileSync(cfg.selfTestScript, 'utf8'))?.config ?? null } catch { /* runScenario says so */ }
+    if (overlay !== null && typeof overlay === 'object' && !Array.isArray(overlay)) Object.assign(cfg, overlay)
+  }
   /**
    * The browse tool as the agent's shell runs it: this process's node and the checkout's script, by absolute path, each
    * in single quotes (in double quotes a `$` or a backtick in a path would be expanded). On Windows the shell is
@@ -384,6 +395,10 @@ export function apply(ctx, config) {
     problems.push(`platform: one messenger at a time, with 'local' beside it (got: ${messengers.join(', ')}) — keep one in the profile, or run dsh gateway setup <slack|telegram|discord>, which replaces the messenger`)
   }
   // Not a list, or an entry that is not text, would have turned the allowlist off without a word.
+  // A name, or a prefix ending in *. A * elsewhere or a space read as an exact name, matched nothing, and asked nothing.
+  if (cfg.askTools != null && (!Array.isArray(cfg.askTools) || cfg.askTools.some((n: unknown) => typeof n !== 'string' || !/^(?:[^\s*]+\*?|\*)$/.test(n)))) {
+    problems.push('askTools: must be a list of tool names (e.g. [mcp__mail__send_message, mcp__calendar__*])')
+  }
   if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
     problems.push('fetchAllowedHosts: must be a list of host names (e.g. [example.com])')
   }
@@ -1605,7 +1620,10 @@ export function apply(ctx, config) {
         log(`approval requested in ${key} while one is already pending — failing closed`)
         return 'unavailable'
       }
+      // Inert on every platform: what a call carries can be shaped by a message the model read, and Slack reads
+      // <!channel> as a ping to everyone and <url|label> as a link under any label, Discord @everyone as a ping.
       const reason = String(request?.displayReason ?? request?.reason ?? 'a sensitive action')
+        .replace(/</g, '‹').replace(/>/g, '›').replace(/@(?=[A-Za-z])/g, '@\u200b')
       // A transport that can render buttons gets them: the decision is made in place.
       // One that cannot gets the instruction to answer in the thread, which is the same
       // decision by a slower route.
@@ -1838,6 +1856,8 @@ export function apply(ctx, config) {
         if (unfetchable !== null) return unfetchable
         const ask = destructiveDecision(exec)
         if (ask !== null) return ask
+        const named = askToolDecision(exec)
+        if (named !== null) return named
         return next()
       } catch (e) {
         log(`tool policy failed: ${String((e as Error)?.message ?? e)} — deferring`)
@@ -2007,6 +2027,58 @@ export function apply(ctx, config) {
     return null
   }
 
+  /**
+   * The conversation a tool call's turn belongs to, or undefined. A conversation's first turn is written to the state
+   * when it ends, so it is found by its own origin, as the approval answerer finds it: looked up in the state alone, a
+   * first turn's send was refused unasked and its destructive command ran unasked.
+   */
+  function callConversation(exec): string | undefined {
+    const sessionId = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
+    if (typeof sessionId !== 'string') return undefined
+    return Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId) ?? liveKeyOf(sessionId)
+  }
+
+  /**
+   * A tool call's arguments as an approval shows them: every one, the short ones first (recipients before a body), each
+   * value cut at 200 characters with the cut said. Cut as one string at 300, a long body put first hid the recipients
+   * after it. Null when they are too long to show whole: such a call is refused rather than asked about half-seen.
+   */
+  function shownArguments(args: unknown): string | null {
+    const entries = args !== null && typeof args === 'object' && !Array.isArray(args) ? Object.entries(args as Record<string, unknown>) : [['arguments', args]]
+    const lines = entries
+      .map(([k, v]) => [String(k), typeof v === 'string' ? v : (() => { try { return JSON.stringify(v) ?? String(v) } catch { return String(v) } })()] as const)
+      // One line each: a value with a line break in it could pass for another argument ("x\nbcc: …").
+      .map(([k, v]) => [k, v.replace(/\r?\n/g, ' ⏎ ')] as const)
+      .sort((a, b) => a[1].length - b[1].length)
+      .map(([k, v]) => `${k}: ${v.length > 200 ? `${v.slice(0, 200)}… (+${v.length - 200} characters)` : v}`)
+    const text = lines.join('\n')
+    return text.length > 2500 ? null : text
+  }
+
+  /**
+   * Ask before a tool askTools names, on every call: in the conversation its turn belongs to, a reminder's included.
+   * Where the turn belongs to none (a session the adapter does not know) it is refused: a shell command there is left
+   * to the sandbox, but nothing confines a server's tool.
+   */
+  function askToolDecision(exec): { kind: string; reason: string } | null {
+    const names = Array.isArray(cfg.askTools) ? cfg.askTools.filter((n: unknown): n is string => typeof n === 'string' && n !== '') : []
+    if (names.length === 0) return null
+    const name = String(exec?.name ?? exec?.toolName ?? '')
+    if (!names.some((n: string) => n.endsWith('*') ? name.startsWith(n.slice(0, -1)) : name === n)) return null
+    const key = callConversation(exec)
+    if (key === undefined) {
+      log(`${name} refused: askTools names it, and the turn has no conversation to ask in`)
+      return { kind: 'deny', reason: `${name} needs the person's approval (askTools), and there is nobody to ask in this turn` }
+    }
+    const shown = shownArguments(exec?.arguments ?? {})
+    if (shown === null) {
+      log(`${name} refused: its arguments are too long to show for approval`)
+      return { kind: 'deny', reason: `${name} needs the person's approval (askTools), and its arguments are too long to show whole` }
+    }
+    log(`asking for approval: ${name} in ${key}`)
+    return { kind: 'ask', reason: `${name}\n${shown}` }
+  }
+
   /** Ask a human before a destructive command, or null to defer. */
   function destructiveDecision(exec): { kind: string; reason: string } | null {
     const patterns = Array.isArray(cfg.approvalPatterns) ? cfg.approvalPatterns.filter((p: unknown) => typeof p === 'string' && p !== '') : []
@@ -2017,8 +2089,7 @@ export function apply(ctx, config) {
     if (command === '') return null
     const pattern = patterns.find((p: string) => command.includes(p))
     if (pattern === undefined) return null
-    const sessionId = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
-    const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
+    const key = callConversation(exec)
     if (key === undefined) {
       log(`destructive command "${pattern}" with no conversation to ask in — leaving it to the sandbox`)
       return null

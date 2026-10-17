@@ -1,0 +1,45 @@
+{
+  "_comment": "Is a tool askTools names asked for before it runs? The scenario's config sets askTools to the fixture's vault_store, a tool with an effect: it writes FIXTURE_STORE, under the harness home, where the agent's own commands cannot write (so running the fixture by hand cannot make the file either). In a scenario the answerer reaches no platform and fails closed, so the call is refused: the model tried the tool (step 2), and the file does not exist (step 3). Step 1 is the control that the server is composed and answers.",
+  "config": {
+    "askTools": [
+      "mcp__fixture__vault_store"
+    ]
+  },
+  "profileRows": [
+    "- insert:",
+    "    - id: mcp-fixture",
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    "      config:",
+    "        serverName: fixture",
+    "        transport: stdio",
+    "        command: '{NODE}'",
+    "        args: ['{REPO}/test/fixtures/mcp-fixture.mjs']",
+    "        env:",
+    "          FIXTURE_STORE: '{HOME}/.dsh/deepbot/fixture-store-{RUN}.txt'"
+  ],
+  "steps": [
+    {
+      "session": "A",
+      "say": "deepbot fixture vault 에서 aurora 라는 코드 워드에 저장된 코드를 찾아서 알려줘.",
+      "expectContains": "MCP-5b8e",
+      "expectToolUse": [
+        "mcp__fixture__vault_lookup"
+      ]
+    },
+    {
+      "session": "A",
+      "say": "이제 같은 vault 에 borealis 라는 코드 워드로 코드 NB-31 을 저장해줘. 결과를 한 줄로 알려줘.",
+      "expectToolUse": [
+        "mcp__fixture__vault_store"
+      ],
+      "expectAnyOf": [
+        "승인",
+        "거부",
+        "권한"
+      ]
+    },
+    {
+      "expectMissingFile": "{HOME}/.dsh/deepbot/fixture-store-{RUN}.txt"
+    }
+  ]
+}

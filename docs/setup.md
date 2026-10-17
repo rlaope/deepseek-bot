@@ -205,13 +205,61 @@ adding one. The server's tools reach the model as `mcp__<serverName>__<tool>`.
   whose name holds KEY, TOKEN, SECRET or PASSWORD unless `env:` names it, but that keeps the values out of
   its environment, not out of its reach. Add only servers you would run yourself, with tokens of the
   narrowest scope that does the job.
-- **None of the adapter's gates applies to its tools.** The approval gate reads shell commands
-  (`approvalPatterns`), the read scope the file tools, the fetch allowlist `web_fetch`; a server's tools
-  pass all three. They are shared by every conversation, tenants included. What they return reaches the
-  model unmarked: the warning for instruction-like text covers channel history and attachments only.
+- **The adapter's gates do not apply to its tools, unless `askTools` names them.** The approval gate
+  reads shell commands (`approvalPatterns`), the read scope the file tools, the fetch allowlist
+  `web_fetch`; a server's tools pass all three. They are shared by every conversation, tenants included.
+  What they return reaches the model unmarked: the warning for instruction-like text covers channel
+  history and attachments only.
+- **Ask before a tool that acts.** `askTools` in the deepbot row names tools that are asked for on every
+  call, through the same approval as a destructive command: `askTools: ['mcp__google__send_gmail_message',
+  'mcp__google__manage_*']`. An entry ending in `*` names every tool that starts with it. The question
+  goes to the conversation the turn belongs to, a reminder's included, and shows every argument (mail
+  bodies and recipients appear in that conversation), each cut at 200 characters with the cut said. A
+  call whose arguments are too long to show whole, or whose turn belongs to no conversation, is refused.
 
 `test/scenarios/mcp.json` is the check, in the daily scenario run: it adds the fixture's row to a copy of
 the test profile, and a real model must answer with a code that only the fixture's tool gives.
+`test/scenarios/mcp-ask.json` checks `askTools` the same way.
+
+### Mail and calendar (Google)
+
+Google's own MCP servers for Gmail and Calendar are in developer preview and expect the MCP client to run
+an OAuth sign-in. The harness's client sends fixed headers, and a Google access token lasts an hour, so
+those servers are out of reach for now. A local server that does the OAuth itself works with it:
+[`workspace-mcp`](https://github.com/taylorwilsdon/google_workspace_mcp) (Python, run with `uvx`) is one.
+Set up once, by you:
+
+1. In a Google Cloud project, enable the Gmail and Google Calendar APIs and create an OAuth client of
+   type *Desktop app*. Put its id and secret in `~/.dsh/.env` as `GOOGLE_OAUTH_CLIENT_ID` and
+   `GOOGLE_OAUTH_CLIENT_SECRET`.
+2. Add the row. `WORKSPACE_MCP_CREDENTIALS_DIR` keeps the tokens it saves under the harness home, which
+   the agent's commands cannot read; by default it saves them in `~/.google_workspace_mcp/credentials`,
+   which they can. `--read-only` in `args` leaves out every tool that acts.
+
+   ```yaml
+       - id: mcp-google
+         name: '@deepseek-ai/dsh-mcp-client'
+         config:
+           serverName: google
+           transport: stdio
+           command: /opt/homebrew/bin/uvx
+           args: ['workspace-mcp', '--tools', 'gmail', 'calendar']
+           env:
+             PATH: /opt/homebrew/bin:/usr/bin:/bin
+             GOOGLE_OAUTH_CLIENT_ID: !!js process.env.GOOGLE_OAUTH_CLIENT_ID ?? ''
+             GOOGLE_OAUTH_CLIENT_SECRET: !!js process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? ''
+             WORKSPACE_MCP_CREDENTIALS_DIR: !!js dshHomePath('mcp/google')
+   ```
+
+3. Unless it is read-only, ask before what acts. `askTools: ['mcp__google__*']` asks before every call,
+   reads included; the narrower list below covers the tools that act in the current release
+   (`--tools gmail calendar`), but it names what exists today, and a tool a new release adds runs unasked.
+   Pin the release you checked (`'workspace-mcp==<version>'` in `args`) if you use it:
+   `askTools: ['mcp__google__send_*', 'mcp__google__draft_*', 'mcp__google__manage_*', 'mcp__google__modify_*', 'mcp__google__batch_modify_*', 'mcp__google__create_*']`.
+4. Restart the gateway and ask the bot about your mail. The first call that needs Google answers with a
+   sign-in link, and the server opens it in this Mac's browser; sign in once, as yourself.
+
+Not yet run here: no OAuth client was available when this was written (`PLAN.md`).
 
 ## Running it
 

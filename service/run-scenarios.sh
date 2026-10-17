@@ -53,7 +53,7 @@ cd "$REPO" || exit 1
 if [ "$QUICK" = 1 ]; then
   LIST="interrupt approval-gate"
 else
-  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js mcp"
+  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js mcp mcp-ask"
 fi
 
 : > "$REPORT"

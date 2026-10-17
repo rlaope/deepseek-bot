@@ -249,6 +249,25 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **A tool can be asked for on every call: `askTools`.** An MCP server's tools passed every gate. The approval
+  patterns read a shell command, so a server that sends mail or changes a calendar acted on the model's word
+  alone. `askTools` in the deepbot row names such tools (an entry ending in `*` names those that start with it),
+  and each call goes through the same approval as a destructive command, in the conversation the turn belongs
+  to. The question shows every argument, short ones first, each cut at 200 characters with the cut said. A call
+  whose arguments are too long to show whole, or whose turn belongs to no conversation, is refused. Empty by default.
+  - **A first turn's destructive command ran unasked.** The gate found the conversation in the saved state,
+    which a first turn reaches only when it ends; it now also finds a running turn by its origin, as the approval
+    answerer already did.
+  - **What an approval shows is inert.** `<` and `>` become `‹` `›` and an `@` before a word is broken, so a
+    `<!channel>`, a `<url|label>` link or an `@everyone` that a call's arguments carry acts on no platform.
+  - Checked in the core suite; five one-line mutants are red.
+  - A new daily scenario, `mcp-ask`. The fixture's new `vault_store` writes a file under the harness home, which
+    the agent's own commands cannot write. With `askTools` naming it, a real model's call was refused and the
+    file never appeared. The control without `askTools` wrote it.
+  - A scenario can now set the adapter's settings for its run (`config`), and `{RUN}` names the run in its paths.
+
+  docs/setup.md also says how to add Google mail and calendar with a local server that signs in itself
+  (`workspace-mcp`), keeping its tokens under the harness home. Not run here: no OAuth client was available.
 - **MCP servers, documented and checked.** The harness composes MCP servers itself (`dsh-mcp-client`); nothing
   said how a deepseek-bot profile adds one, where its credentials go, or what such a server may do. docs/setup.md
   now says so:

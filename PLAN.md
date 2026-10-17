@@ -78,6 +78,14 @@ Decided against:
 
 ## Unverified
 
+- Google mail and calendar through `workspace-mcp` (docs/setup.md): written from its code and README, not run. It
+  needs the owner's Google OAuth client, which was not available. Also unchecked: the first sign-in from a gateway
+  under launchd (the server opens the browser itself), and the tool names `askTools` should list for it. An
+  `askTools` approval answered with a real button: the scenario covers the refusal path only, as `approval-gate`
+  does. Also unrun: an `askTools` question in a reminder's turn (it goes to the conversation, where nobody may be
+  watching, and times out), and a named tool called from a `run_code` program (the harness gates its sub-calls the
+  same way, by reading; parallel ones would meet the one-pending-approval rule and the second be refused).
+
 - MCP servers beyond the fixture: no real server (GitHub, mail, calendar) was composed live, and an HTTP
   (`streamable-http`) server was not tried. A stdio server's reads are confined by the gateway's read isolation by
   construction (it is the gateway's child); that was not probed. That a server failing to start leaves the bot

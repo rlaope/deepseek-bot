@@ -614,6 +614,75 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   t.done()
 }
 
+// 16c. A tool named in askTools is asked for on every call. An MCP server's tools pass every other gate — the
+// destructive-command patterns read a shell command — so a server that sends mail or changes a calendar ran its
+// tool on the model's word alone. An entry ending in * names the tools that start with it.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } }, config: { targetChannels: ['*'], askTools: ['mcp__mail__send_message', 'mcp__calendar__*'] } })
+  await sleep(60)
+  const exec = (name, args = {}, sessionId = 'slack-abc') => ({ name, arguments: args, agent: { session: { header: { id: sessionId } } } })
+  const sent = t.gate(exec('mcp__mail__send_message', { to: 'team@example.com', subject: 'Release moved' }))
+  check('askTools: a named tool is asked for', sent?.kind === 'ask', JSON.stringify(sent))
+  check('askTools: the question says which tool, with what', /mcp__mail__send_message/.test(String(sent?.reason)) && /team@example\.com/.test(String(sent?.reason)), String(sent?.reason).slice(0, 160))
+  check('askTools: a tool under a prefix entry is asked for', t.gate(exec('mcp__calendar__create_event', { title: 'x' }))?.kind === 'ask')
+  check('askTools: a tool not named is not', t.gate(exec('mcp__mail__search', { query: 'x' })) === 'delegated')
+  check('askTools: a name is not a prefix without its *', t.gate(exec('mcp__mail__send_message_later', {})) === 'delegated')
+  // Every argument is shown, the short ones first, a long one cut with the cut said. Cut as one string at 300 characters,
+  // a long body put first hid the recipients after it.
+  const longBody = 'x'.repeat(500)
+  const shown = String(t.gate(exec('mcp__mail__send_message', { body: longBody, bcc: 'hidden@example.com', to: 'team@example.com' }))?.reason)
+  check('askTools: every argument is shown, the short ones first', /bcc: hidden@example\.com/.test(shown) && shown.indexOf('bcc:') < shown.indexOf('body:') && shown.indexOf('to:') < shown.indexOf('body:'), shown.slice(0, 160))
+  check('askTools: a long one is cut, and the cut is said', /body: x{200}… \(\+300 characters\)/.test(shown), shown.slice(-80))
+  const forged = String(t.gate(exec('mcp__mail__send_message', { subject: 'hi\nbcc: evil@example.com', to: 'team@example.com' }))?.reason)
+  check('askTools: a value with a line break cannot pass for another argument', !/^bcc:/m.test(forged) && /subject: hi ⏎ bcc: evil@example\.com/.test(forged), JSON.stringify(forged))
+  const tooMany = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`field${i}`, 'y'.repeat(150)]))
+  const unshowable = t.gate(exec('mcp__mail__send_message', tooMany))
+  check('askTools: arguments too long to show are refused, not asked about half-seen', unshowable?.kind === 'deny' && /too long to show/.test(String(unshowable?.reason)), JSON.stringify(unshowable).slice(0, 160))
+  // No conversation to ask in (a session the adapter does not know): the tool does not run. A shell command there is
+  // left to the sandbox; nothing confines a server's tool. A reminder's turn is in its conversation, and is asked there.
+  const nobody = t.gate(exec('mcp__mail__send_message', { to: 'x' }, 'slack-unmapped'))
+  check('askTools: with nobody to ask, the call is refused', nobody?.kind === 'deny' && /nobody to ask|no conversation/i.test(String(nobody?.reason)), JSON.stringify(nobody))
+  check('askTools: asking is logged', t.logs.some((l) => /asking for approval: mcp__mail__send_message/.test(l)), t.logs.filter((l) => /asking/.test(l)).join(' | '))
+  t.done()
+  const plain = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  check('askTools: none by default', plain.gate(exec('mcp__mail__send_message', { to: 'x' })) === 'delegated')
+  plain.done()
+  // A conversation's first turn: its session is written to the state when the turn ends, so the turn is found by its own
+  // origin, as the approval answerer finds it. Looked up in the state alone, a first turn's send was refused unasked,
+  // and its destructive command ran unasked.
+  const first = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-ask-')), config: { targetChannels: ['*'], askTools: ['mcp__mail__*'] }, answer: { text: '응', delayMs: 500 } })
+  await sleep(80)
+  first.transport.deliver(first.transport.message({ text: '팀에 메일 보내줘' }))
+  await sleep(200)
+  const firstSession = String((first.created[0] as { sessionId?: string } | undefined)?.sessionId)
+  const during = first.gate(exec('mcp__mail__send_message', { to: 'x' }, firstSession))
+  check('askTools: a first turn is asked, not refused', during?.kind === 'ask' && !Object.values(first.read().sessions).includes(firstSession), `${JSON.stringify(during)} ${firstSession}`)
+  const firstRm = first.gate({ name: 'bash', arguments: { command: 'rm -rf memory' }, agent: { session: { header: { id: firstSession } } } })
+  check('a first turn\'s destructive command is asked for too', firstRm?.kind === 'ask', JSON.stringify(firstRm))
+  await sleep(600)
+  first.done()
+  // What the approval shows is inert on every platform: arguments a server's call carries can be shaped by a message
+  // the model read, and Slack reads <!channel> as a ping to everyone, Discord @everyone.
+  const loud = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  void loud.askApproval('slack-abc', 'mcp__mail__send_message to: <!channel> <https://evil.example|boss@corp.example> @everyone & co')
+  await sleep(100)
+  const posted = String(loud.transport.posted.at(-1)?.text)
+  check('approval text: no mention or link a platform would act on', !/<!channel>|<https:|@everyone/.test(posted) && /channel/.test(posted) && /everyone/.test(posted), posted.slice(0, 200))
+  loud.done()
+  for (const value of ['mcp__mail__send_message', [''], [42], ['mcp__mail__*_message'], [' mcp__mail__send_message']]) {
+    let refused = ''
+    try { boot({ config: { targetChannels: ['*'], askTools: value } }).done() } catch (err) { refused = String((err as Error).message) }
+    check(`askTools: ${JSON.stringify(value)} is a config error`, /askTools: must be a list of tool names/.test(refused), refused.split('\n')[1] ?? refused)
+  }
+  for (const value of [['*'], ['mcp__mail__*', 'mcp__calendar__manage_event']]) {
+    let refused = ''
+    try { boot({ config: { targetChannels: ['*'], askTools: value } }).done() } catch (err) { refused = String((err as Error).message) }
+    check(`askTools: ${JSON.stringify(value)} is accepted`, refused === '', refused.split('\n')[1] ?? refused)
+  }
+}
+
 // 17. The file tools cannot read outside the workspace, and writes are unaffected.
 {
   const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
