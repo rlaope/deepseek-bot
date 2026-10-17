@@ -38,6 +38,9 @@ is built before the thing it stands on. The detailed history of each milestone i
 
 ## Open
 
+- **Workspace temp directories are never removed.** Each workspace (a tenant, a scenario's) leaves a
+  `deepbot-cmd-<hash>` directory in the user's temp; macOS clears it only after days unused. Pruning old ones could
+  join the log rotation job.
 - **The agent's own commands reach the network unbounded.** The fetch gate bounds `web_fetch`; a command the agent
   runs (`curl`) goes out under the sandbox runner, which allows outbound connections, so neither
   `fetchAllowedHosts` nor the metadata refusal applies to it. Seatbelt cannot filter by remote address beyond

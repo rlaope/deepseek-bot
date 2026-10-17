@@ -112,6 +112,15 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A command could not make a temp file.** The sandbox runner meant to let a command write its temp directory,
+  but named it `/var/folders`, and Seatbelt matches the resolved path, `/private/var/folders`: every temp file a
+  command made in its `TMPDIR` was refused (Python's `tempfile`, Node's `os.tmpdir()`, a browser's profile). Seen
+  live, an agent's first run of a headless browser failed on it. Each workspace now gets a directory of its own in
+  the user's temp (`deepbot-cmd-<hash>`), made by the runner as a real directory of its own and never a link left
+  at the name; `TMPDIR` points there and only that is opened, and another workspace's cannot be read. The user's temp itself stays closed: opening it
+  would have let a command rewrite what unconfined processes keep there, `dsh update`'s installer among them (found
+  by review). Where it is comes from `/usr/bin/getconf`, checked, never from `TMPDIR` or `PATH`. macOS's `mktemp`
+  with no template still writes to the closed directory; `mktemp "$TMPDIR/…"` works.
 - **The docs called the destructive-command gate an open gap.** They said the harness's approval request never
   reached the adapter, the gate was off in the profiles, and `approval-gate.json` was left failing as the record.
   The answerer is on the root scope and receives it, the gate is on, and the scenario passes: the answerer cannot

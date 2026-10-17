@@ -10,6 +10,7 @@
  * Run: node test/confined-runner.test.ts
  */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 // The runner this checks is macOS-specific: it implements the bwrap-shaped policy with
 // Seatbelt, and there is nothing to assert on Linux. Say so and stop, rather than failing CI
@@ -357,6 +358,53 @@ for (const resolved of [false, true]) {
   check('nor a .env variant', !existsSync(join(ws, '.env.local')))
   check('and can still write anything else there', existsSync(join(ws, 'notes.md')))
   rmSync(ws, { recursive: true, force: true })
+}
+
+// The command's own temp directory. The rule named /var/folders, which Seatbelt never matches (it matches
+// /private/var/folders), so a command could make no temp file in its TMPDIR: a browser's profile, mktemp, Python's
+// tempfile. Opening the user's temp itself let a command rewrite what unconfined processes keep there (an update's
+// installer, other programs' sockets), so each workspace gets a directory of its own inside it and TMPDIR points there.
+{
+  const userTemp = execFileSync('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf8' }).trim().replace(/\/$/, '')
+  const userCache = execFileSync('/usr/bin/getconf', ['DARWIN_USER_CACHE_DIR'], { encoding: 'utf8' }).trim().replace(/\/$/, '')
+  const ws = mkdtempSync(join(realpathSync(tmpdir()), 'ws-tmp-'))
+  const ws2 = mkdtempSync(join(realpathSync(tmpdir()), 'ws-tmp2-'))
+  // A path's real name, or the path itself when there is nothing there: a check must fail, not stop the suite.
+  const real = (path) => { try { return realpathSync(path) } catch { return path } }
+  const own = (workspace) => join(userTemp, `deepbot-cmd-${createHash('sha256').update(realpathSync(workspace)).digest('hex').slice(0, 16)}`)
+  // Run `script` under the runner for `workspace`; what it prints, or null when it failed.
+  const inside = (workspace, script, env = {}) => {
+    try {
+      return execFileSync(RUNNER, ['--ro-bind', '/', '/', '--die-with-parent', '--tmpfs', '/tmp', '--bind', workspace, workspace, '--', '/bin/sh', '-c', script], { encoding: 'utf8', env: { ...process.env, ...env }, stdio: 'pipe' }).trim()
+    } catch { return null }
+  }
+  // As programs make one: in $TMPDIR (Node's os.tmpdir(), Python's tempfile, `mktemp "$TMPDIR…"`). macOS's mktemp with
+  // no template goes to the system's temp directory instead, which stays closed.
+  const made = inside(ws, 'f=$(mktemp "${TMPDIR}probe.XXXXXX") && echo "$f" && rm -f "$f"')
+  check('a command makes a temp file where its TMPDIR points', made !== null && made !== '', String(made).replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  const byNode = inside(ws, `'${process.execPath}' -e "const fs=require('fs'),os=require('os');const d=fs.mkdtempSync(os.tmpdir()+'/n-');console.log(d);fs.rmSync(d,{recursive:true})"`)
+  check('so does Node, through os.tmpdir() (a browser\'s profile is made this way)', byNode !== null && byNode.startsWith(own(ws)), String(byNode).replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  check('and that is its workspace\'s own directory in the user\'s temp', made !== null && real(dirname(made)) === real(own(ws)), String(made).replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  check('the user\'s temp itself stays closed (an update\'s installer, other programs\' sockets)', inside(ws, `mktemp '${userTemp}/runner-probe.XXXXXX'`) === null)
+  check('and so do their caches', inside(ws, `mktemp '${userCache}/runner-probe.XXXXXX'`) === null)
+  const other = inside(ws2, 'echo "$TMPDIR"')
+  check('another workspace gets another directory', other !== null && real(other) === real(own(ws2)) && own(ws2) !== own(ws), String(other).replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  // One workspace's temp files are its own: another workspace (a tenant) cannot read them; it can read its own.
+  const kept = inside(ws, 'f=$(mktemp "${TMPDIR}kept.XXXXXX") && echo secret-7d2 > "$f" && echo "$f"')
+  check('a workspace reads its own temp files', kept !== null && inside(ws, `cat '${kept}'`) === 'secret-7d2')
+  check('another workspace cannot read them', kept !== null && inside(ws2, `cat '${kept}'`) === null)
+  // TMPDIR is whoever started the command's to set: pointed elsewhere, it opens nothing and is replaced.
+  const elsewhere = mkdtempSync(join(HOME, '.runner-tmp-'))
+  check('a TMPDIR given to the runner is replaced, and opens nothing', inside(ws, 'echo "$TMPDIR"', { TMPDIR: elsewhere }) !== null
+    && real(String(inside(ws, 'echo "$TMPDIR"', { TMPDIR: elsewhere }))) === real(own(ws))
+    && inside(ws, `mktemp '${elsewhere}/runner-probe.XXXXXX'`, { TMPDIR: elsewhere }) === null)
+  // A link left at the directory's name is not taken for it: TMPDIR is not pointed through it.
+  const ws3 = mkdtempSync(join(realpathSync(tmpdir()), 'ws-tmp3-'))
+  rmSync(own(ws3), { recursive: true, force: true })
+  symlinkSync(elsewhere, own(ws3))
+  check('a link left at its name is not used', inside(ws3, `mktemp '${elsewhere}/runner-probe.XXXXXX'`) === null && !String(inside(ws3, 'echo "$TMPDIR"')).startsWith(own(ws3)))
+  rmSync(own(ws3), { force: true })
+  for (const dir of [ws, ws2, ws3, elsewhere, own(ws), own(ws2)]) rmSync(dir, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

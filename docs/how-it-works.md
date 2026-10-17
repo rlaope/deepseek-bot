@@ -326,8 +326,13 @@ Two surfaces, two mechanisms:
 
 **Commands** run under `service/confined-runner.sh`, which replaces the sandbox runner. It
 implements the harness's own policy arguments (workspace-write keeps the workspace and temp
-writable; read-only denies all writes) and adds read denials for the other instances' homes and
-for retired bot data.
+writable; read-only denies all writes) and adds read denials for the other instances' homes and for
+retired bot data. Temp is `/tmp` and a directory of the workspace's own inside the user's temp
+(`deepbot-cmd-<hash>`, made by the runner, never a link), where it points `TMPDIR`; the user's temp
+itself stays closed, since unconfined processes keep scripts and sockets there. Another workspace's
+temp directory cannot be read: a tenant's temp files are its own. macOS's `mktemp`
+with no template writes to that closed directory: a command names `$TMPDIR` (`mktemp
+"$TMPDIR/x.XXXXXX"`), as Node and Python do on their own.
 
 ```yaml
 - id: sandbox

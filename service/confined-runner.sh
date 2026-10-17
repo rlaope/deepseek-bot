@@ -66,6 +66,32 @@ if [ -n "$workspace_root" ]; then
   if [ -n "$workspace_real" ] && [ "$workspace_real" != "$workspace_root" ]; then workspace_names+=("$workspace_real"); fi
 fi
 
+# The command's own temp directory. A command could make no temp file in its TMPDIR (the user's /var/folders/…/T/):
+# the rule named /var/folders, and Seatbelt matches the resolved /private/var/folders. Opening the user's temp itself
+# would let a command rewrite what unconfined processes keep there — an update's installer, other programs' sockets
+# and wrappers (found by review). So each workspace gets a directory of its own inside it, TMPDIR points there, and
+# only that is opened. Where it is comes from the system (getconf, by absolute path, its answer checked), never from
+# TMPDIR or PATH, which whoever starts a command could set.
+cmd_temp=""
+cmd_temp_real=""
+user_temp=""
+user_temp_real=""
+if [ "$mode" = "workspace-write" ] && [ -n "$workspace_root" ]; then
+  user_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+  user_temp="${user_temp%/}"
+  if [[ $user_temp =~ ^(/private)?/var/folders/[^/]+/[^/]+/T$ ]] && [ -d "$user_temp" ] && [ ! -L "$user_temp" ]; then
+    user_temp_real="$(cd "$user_temp" 2>/dev/null && pwd -P || true)"
+    hash="$(printf '%s' "${workspace_real:-$workspace_root}" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-16)"
+    # Without a hash every workspace would share one directory: none, then.
+    if [[ $hash =~ ^[0-9a-f]{16}$ ]]; then
+      cmd_temp="$user_temp/deepbot-cmd-$hash"
+      if [ -n "$user_temp_real" ]; then cmd_temp_real="$user_temp_real/deepbot-cmd-$hash"; fi
+    fi
+  else
+    user_temp=""
+  fi
+fi
+
 # The writable set mirrors the harness's own intent: the workspace, temp, and the
 # null sink. Reads are allowed everywhere except other instances' data.
 profile() {
@@ -76,7 +102,13 @@ profile() {
     for name in ${workspace_names[@]+"${workspace_names[@]}"}; do
       printf '(allow file-write* (subpath %s))\n' "$(sbpl "$name")"
     done
-    printf '(allow file-write* (subpath "/tmp") (subpath "/private/tmp") (subpath "/var/folders"))\n'
+    # Temp: /tmp, and the command's own temp directory (cmd_temp, below), by both names. The first name is inert on
+    # current macOS, where only resolved paths match; it is kept as every rule here is.
+    printf '(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))\n'
+    if [ -n "$cmd_temp" ]; then
+      printf '(allow file-write* (subpath %s))\n' "$(sbpl "$cmd_temp")"
+      if [ -n "$cmd_temp_real" ] && [ "$cmd_temp_real" != "$cmd_temp" ]; then printf '(allow file-write* (subpath %s))\n' "$(sbpl "$cmd_temp_real")"; fi
+    fi
     printf '(allow file-write* (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/dtracehelper"))\n'
     # Except the workspace's .env: the harness's credential chain reads <cwd>/.env before the
     # deployment's own, and the gateway runs in this workspace — a .env here would replace the tokens.
@@ -214,6 +246,15 @@ profile() {
       printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"
     fi
   done
+  # Other workspaces' temp directories: a tenant's temp files are its own, as its directory is. Its own stays readable.
+  if [ -n "$user_temp" ]; then
+    for root in "$user_temp" ${user_temp_real:+"$user_temp_real"}; do
+      printf '(deny file-read* (regex #"^%s/deepbot-cmd-"))\n' "$(printf '%s' "$root" | sed 's/[][\\.*^$+?(){}|"]/\\&/g')"
+    done
+    for own in ${cmd_temp:+"$cmd_temp"} ${cmd_temp_real:+"$cmd_temp_real"}; do
+      printf '(allow file-read* (subpath %s))\n' "$(sbpl "$own")"
+    done
+  fi
   # Unix sockets: no agent of the user's — ssh-agent (measured: `ssh-add -l` inside this runner listed
   # the keys), 1Password's, gpg-agent's, docker's. Name resolution goes through mDNSResponder's socket,
   # without which nothing resolves a host, and a workspace may run a local server it talks to.
@@ -252,5 +293,16 @@ fi
 # The profile goes inline. It used to be a file in TMPDIR — which confined commands may write —
 # read back by path, so one running command could rewrite the profile another invocation was
 # about to apply. Inline there is nothing to rewrite, and no temp-name collisions to get wrong.
+# The command's temp directory is made here, unconfined, as a directory of ours: not a link left at its name (no
+# confined command can write the user's temp, but another process of the same user could). Without one, TMPDIR is
+# left as it was and temp files there are refused, as before.
+if [ -n "$cmd_temp" ]; then
+  /bin/mkdir -p -m 700 "$cmd_temp" 2>/dev/null || true
+  if [ -d "$cmd_temp" ] && [ ! -L "$cmd_temp" ] && [ -O "$cmd_temp" ]; then
+    export TMPDIR="$cmd_temp/"
+  else
+    cmd_temp=""
+  fi
+fi
 sb_profile="$(profile)" || exit 70
 exec /usr/bin/sandbox-exec -p "$sb_profile" "${command[@]}"
