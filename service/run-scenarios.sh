@@ -53,7 +53,7 @@ cd "$REPO" || exit 1
 if [ "$QUICK" = 1 ]; then
   LIST="interrupt approval-gate"
 else
-  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js browser-session mcp mcp-ask"
+  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js browser-session command-network mcp mcp-ask"
 fi
 
 : > "$REPORT"
@@ -68,7 +68,7 @@ for name in $LIST; do
   [ -f "$file" ] || { echo "  $name: no such scenario" | tee -a "$REPORT"; failed=$((failed + 1)); continue; }
   # A local page for the browser scenario, started and stopped per run so a leftover server
   # cannot make a later run pass for the wrong reason.
-  if [ "$name" = "browser" ]; then
+  if [ "$name" = "browser" ] || [ "$name" = "command-network" ]; then
     (cd test/fixtures && python3 -m http.server 8899 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > /tmp/deepbot-qa-server.pid)
     sleep 2
   fi
@@ -79,7 +79,7 @@ for name in $LIST; do
   fi
   out=$("$NODE" test/run-scenario.ts "$file" --timeout "$TIMEOUT" 2>&1)
   status=$?
-  if { [ "$name" = "browser" ] || [ "$name" = "browser-js" ] || [ "$name" = "browser-session" ]; } && [ -f /tmp/deepbot-qa-server.pid ]; then
+  if { [ "$name" = "browser" ] || [ "$name" = "browser-js" ] || [ "$name" = "browser-session" ] || [ "$name" = "command-network" ]; } && [ -f /tmp/deepbot-qa-server.pid ]; then
     kill "$(cat /tmp/deepbot-qa-server.pid)" 2>/dev/null
     rm -f /tmp/deepbot-qa-server.pid
   fi

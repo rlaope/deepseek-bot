@@ -9,7 +9,8 @@
  *
  * Run: node test/confined-runner.test.ts
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 
 // The runner this checks is macOS-specific: it implements the bwrap-shaped policy with
@@ -405,6 +406,62 @@ for (const resolved of [false, true]) {
   check('a link left at its name is not used', inside(ws3, `mktemp '${elsewhere}/runner-probe.XXXXXX'`) === null && !String(inside(ws3, 'echo "$TMPDIR"')).startsWith(own(ws3)))
   rmSync(own(ws3), { force: true })
   for (const dir of [ws, ws2, ws3, elsewhere, own(ws), own(ws2)]) rmSync(dir, { recursive: true, force: true })
+}
+
+// The agent's commands' network (commandNetwork). With the gateway's proxy written for this home, a command connects out
+// only through it: Seatbelt holds outbound connections to this machine, and the proxy's address is in the command's
+// environment. Without the file nothing changes; a file that names no port shuts the network rather than opening it.
+{
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-home-'))
+  const agentHome = mkdtempSync(join(tmpdir(), 'agent-home-'))
+  const key = createHash('sha256').update(realpathSync(agentHome)).digest('hex').slice(0, 16)
+  const file = join(dshHome, 'deepbot', 'command-network', `${key}.json`)
+  const env = { ...process.env, DSH_HOME: dshHome, DEEPBOT_HOME: agentHome }
+  const policy = [...READ_ONLY, '--tmpfs', '/tmp', '--bind', agentHome, agentHome]
+  const printed = () => execFileSync(RUNNER, ['--print-profile', ...policy, '--', 'true'], { encoding: 'utf8', env })
+  check('network: without the gateway\'s proxy, commands connect as before', !/network-outbound \(remote ip/.test(printed()))
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify({ port: 18999, mode: 'public', pid: process.pid }))
+  const bounded = printed()
+  check('network: with it, outbound connections are held to the proxy\'s port, not every port here', bounded.includes('(deny network-outbound (remote ip))') && bounded.includes('(allow network-outbound (remote ip "localhost:18999"))') && !bounded.includes('localhost:*'), bounded.split('\n').filter((l) => l.includes('network')).join(' | '))
+  const seen = execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env })
+  check('network: and the command is told the proxy, with nothing exempt from it', /^https_proxy=http:\/\/127\.0\.0\.1:18999$/m.test(seen) && /^HTTPS_PROXY=http:\/\/127\.0\.0\.1:18999$/m.test(seen) && /^http_proxy=http:\/\/127\.0\.0\.1:18999$/m.test(seen) && /^NODE_USE_ENV_PROXY=1$/m.test(seen) && !/^no_proxy=/im.test(seen), seen.split('\n').filter((l) => /proxy/i.test(l)).join(' | '))
+  // A direct connection elsewhere is refused by the sandbox at once, not left to time out; and so is one to a service on
+  // this machine other than the proxy (seen live: with every port here open, curl reached a local page around it).
+  const connectTo = (host: string, port: number) => spawnSync(RUNNER, [...policy, '--', process.execPath, '-e', `require('net').connect(${port}, '${host}').on('error', (e) => { console.log(e.code); process.exit(0) }).on('connect', () => { console.log('connected'); process.exit(0) })`], { encoding: 'utf8', timeout: 15_000, env: { ...env, NO_PROXY: 'localhost' } })
+  const direct = connectTo('192.0.2.1', 80)
+  check('network: a direct connection elsewhere is refused', /EPERM|EACCES/.test(direct.stdout), `${direct.stdout}${direct.stderr}`.trim().slice(0, 160))
+  const localService = createServer((socket) => socket.end())
+  await new Promise<void>((done) => localService.listen(0, '127.0.0.1', done))
+  const around = connectTo('127.0.0.1', (localService.address() as { port: number }).port)
+  check('network: a service on this machine other than the proxy is refused too', /EPERM|EACCES/.test(around.stdout), `${around.stdout}${around.stderr}`.trim().slice(0, 160))
+  localService.close()
+  const exempt = execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env: { ...env, NO_PROXY: 'localhost', no_proxy: '*' } })
+  check('network: an exemption from the proxy the caller set is dropped', !/^no_proxy=/im.test(exempt), exempt.split('\n').filter((l) => /no_proxy/i.test(l)).join(' | '))
+  // Around the proxy by other means (found by review): a name lookup carries data out through the system's resolver;
+  // another app, started or scripted, fetches outside the sandbox. Bounded, the resolver's socket is not open, nor
+  // LaunchServices, and the tools that drive other apps do not run.
+  check('network: names are not looked up around the proxy', !bounded.includes('mDNSResponder') && /mDNSResponder/.test(execFileSync(RUNNER, ['--print-profile', ...policy, '--', 'true'], { encoding: 'utf8', env: { ...process.env, DEEPBOT_HOME: agentHome, DSH_HOME: join(dshHome, 'none') } })))
+  const lookup = spawnSync(RUNNER, [...policy, '--', process.execPath, '-e', "require('dns').lookup('example.com', (e) => console.log(e ? e.code : 'resolved'))"], { encoding: 'utf8', env, timeout: 15_000 })
+  check('network: a lookup fails', /ENOTFOUND|EAI_|ESERVFAIL/.test(lookup.stdout), `${lookup.stdout}${lookup.stderr}`.trim().slice(0, 120))
+  const scripted = spawnSync(RUNNER, [...policy, '--', '/usr/bin/osascript', '-e', 'return 1'], { encoding: 'utf8', env, timeout: 15_000 })
+  check('network: an app is not scripted', scripted.status !== 0 && !/^1$/m.test(scripted.stdout), `${scripted.status} ${scripted.stderr.trim().slice(0, 100)}`)
+  check('network: nor started, and LaunchServices is closed', /^\(deny process-exec .*\(literal "\/usr\/bin\/open"\)/m.test(bounded) && /launchservicesd/.test(bounded), bounded.split('\n').filter((l) => /process-exec|launchservices/.test(l)).join(' | '))
+  // A file whose gateway has gone (its pid not running): the port may be someone else's by now.
+  writeFileSync(file, JSON.stringify({ port: 18999, mode: 'public', pid: 999_999_9 }))
+  const orphan = execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env })
+  check('network: a gateway that has gone leaves no port to connect to', !printed().includes('localhost:18999') && !/^https_proxy=/m.test(orphan))
+  // A port out of range is no port: the number is checked, not only found.
+  writeFileSync(file, JSON.stringify({ port: 99999, mode: 'public' }))
+  const garbled = printed()
+  const garbledEnv = execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env })
+  check('network: a file that names no port leaves commands no connection, and no proxy', garbled.includes('(deny network-outbound (remote ip))') && !/^https_proxy=/m.test(garbledEnv))
+  rmSync(file)
+  // A link to a file that names a port: followed, it would point commands wherever the link's target says.
+  writeFileSync(join(dshHome, 'elsewhere.json'), JSON.stringify({ port: 18998, mode: 'open' }))
+  symlinkSync(join(dshHome, 'elsewhere.json'), file)
+  check('network: a link at its name is not read', printed().includes('(deny network-outbound (remote ip))') && !/^https_proxy=/m.test(execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env })))
+  for (const dir of [dshHome, agentHome]) rmSync(dir, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

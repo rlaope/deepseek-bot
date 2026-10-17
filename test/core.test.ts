@@ -17,7 +17,9 @@ import './dist-fresh.ts'   // fails loudly on a stale dist
 import './scratch-dsh-home.ts'   // the recall index must not land in the real ~/.dsh
 
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, realpathSync, statSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { createServer, request as httpRequest } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, basename, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -138,9 +140,11 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   // repository and has no persona files, so a test that needs them points the home at its own directory.
   if (home !== null) stubs.fs = { resolve: async () => home, processPath: (path) => path }
   if (workspace) stubs.workspaceRegistry = { create: async (cwd) => ({ path: cwd, attachSession: async (id) => { attached.push(id) } }) }
+  // What the plugin's effects return, run by unload() as the harness runs them when it unloads the plugin.
+  const cleanups: Array<() => void> = []
   const ctx = {
     get: (name) => stubs[name],
-    effect: (fn) => fn(),
+    effect: (fn) => { const cleanup = fn(); if (typeof cleanup === 'function') cleanups.push(cleanup) },
     on: (name, handler) => { (listeners[name] ??= []).push(handler); return () => {} },
     logger: { info: (l) => logs.push(String(l)) },
   }
@@ -164,7 +168,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   /** Fire an approval request the way the harness would, and get the outcome back. */
   const askApproval = (sessionId = 'slack-abc', reason = 'escalate sandbox to danger-full-access') =>
     listeners['approval/request'][0]({ agent: { session: { header: { id: sessionId } } }, reason })
-  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
 /** The text of a user message the core handed to the agent. */
 const textOf = (message) => (message?.content ?? []).map((block) => block?.text ?? '').join('')
@@ -1746,6 +1750,69 @@ for (const remove of [false, true]) {
   const sessionLine = (signed.match(/^Signed-in sessions[^\n]*/m) ?? [''])[0]
   check('browse: the workspace\'s signed-in sessions are named, with --state', sessionLine.includes(`'${join(lastHome, '.browser', 'mail.json')}'`) && /--state/.test(sessionLine), sessionLine.slice(0, 200))
   check('browse: only plain .json file names are listed', !sessionLine.includes('notes.txt') && !sessionLine.includes('[speaker]'), sessionLine.slice(0, 200))
+}
+
+// 40c. The agent's commands' network (commandNetwork). The sandbox confined what commands read and write, not where they
+// connect: a command reached the local network and a cloud metadata service. With 'public' or 'local' the gateway runs a
+// proxy of the browse tool's kind and writes where it listens for the sandbox runner, which then holds commands'
+// outbound connections to this machine and points them at it.
+{
+  const home = mkdtempSync(join(tmpdir(), 'home-'))
+  const key = createHash('sha256').update(realpathSync(home)).digest('hex').slice(0, 16)
+  const file = join(process.env.DSH_HOME as string, 'deepbot', 'command-network', `${key}.json`)
+  const target = createServer((req, res) => { res.end(`served ${req.url}`) })
+  await new Promise<void>((done) => target.listen(0, '127.0.0.1', done))
+  const targetPort = (target.address() as { port: number }).port
+  const viaProxy = (port: number, url: string) => new Promise<number>((done) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: url, headers: { host: new URL(url).host } }, (res) => { res.resume(); res.on('end', () => done(res.statusCode ?? 0)) })
+    req.on('error', () => done(-1))
+    req.end()
+  })
+  const written = async (mode: string) => {
+    const t = boot({ agent: 'ready', home, config: { targetChannels: ['*'], commandNetwork: mode } })
+    await sleep(150)
+    const record = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null
+    return { t, record }
+  }
+  const pub = await written('public')
+  check('commandNetwork public: where its proxy listens is written for the runner, under the harness home, with its pid', pub.record?.mode === 'public' && Number.isInteger(pub.record?.port) && pub.record?.pid === process.pid && (statSync(file).mode & 0o077) === 0, JSON.stringify(pub.record))
+  check('commandNetwork public: its proxy refuses this machine and the local network', await viaProxy(pub.record?.port, `http://127.0.0.1:${targetPort}/a`) === 403)
+  check('commandNetwork public: the refusal is logged', pub.t.logs.some((l) => /command network: blocked "http:\/\/127\.0\.0\.1/.test(l)), pub.t.logs.filter((l) => /command network/.test(l)).join(' | '))
+  // A command that keeps trying fills the log at most so far a minute.
+  for (let i = 0; i < 30; i++) await viaProxy(pub.record?.port, `http://127.0.0.1:${targetPort}/flood-${i}`)
+  const logged = pub.t.logs.filter((l) => /command network: blocked/.test(l)).length
+  check('commandNetwork: refusals logged at most 20 a minute, and the rest said', logged <= 20 && pub.t.logs.some((l) => /command network: more refusals this minute are not logged/.test(l)), `${logged}`)
+  // Unloaded, the file is not removed but closed: removed, the runner would find none and leave commands open.
+  pub.t.unload()
+  const afterStop = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null
+  check('commandNetwork: stopping leaves the network closed, not open', afterStop !== null && afterStop.port === undefined && afterStop.pid === process.pid, JSON.stringify(afterStop))
+  pub.t.done()
+  const local = await written('local')
+  check('commandNetwork local: its proxy reaches the local network', local.record?.mode === 'local' && await viaProxy(local.record?.port, `http://127.0.0.1:${targetPort}/b`) === 200)
+  check('commandNetwork local: and never a cloud metadata service', await viaProxy(local.record?.port, 'http://169.254.169.254/latest/meta-data/') === 403)
+  local.t.done()
+  const open = await written('open')
+  check('commandNetwork open (the default): nothing is written, and one left behind is removed', open.record === null)
+  open.t.done()
+  // Another gateway's file, its process running: not removed by an 'open' one, and taken over, said, by a bounded one.
+  const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' })
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify({ port: 1, mode: 'public', pid: other.pid }))
+  const leaves = await written('open')
+  check('commandNetwork open: another running gateway\'s file is left alone, and said', leaves.record?.pid === other.pid && leaves.t.logs.some((l) => /command network: .*another gateway/.test(l)), JSON.stringify(leaves.record))
+  leaves.t.done()
+  const takes = await written('public')
+  check('commandNetwork public: another running gateway\'s file is taken over, and said', takes.record?.pid === process.pid && takes.t.logs.some((l) => /command network: .*another gateway/.test(l)), JSON.stringify(takes.record))
+  takes.t.done()
+  other.kill()
+  // The runner finds the file by DEEPBOT_HOME (its default ~/dsh-agent): a gateway in another home is said, since
+  // commands would not be held.
+  check('commandNetwork: a home the runner will not look in is said', takes.t.logs.some((l) => /command network: the sandbox runner looks for/.test(l)), takes.t.logs.filter((l) => /command network/.test(l)).join(' | ').slice(0, 300))
+  let refused = ''
+  try { boot({ config: { targetChannels: ['*'], commandNetwork: 'closed' } }).done() } catch (err) { refused = String((err as Error).message) }
+  check('commandNetwork: a mode it does not have is a config error', /commandNetwork: must be 'open', 'local' or 'public'/.test(refused), refused.split('\n')[1] ?? refused)
+  target.close()
+  rmSync(home, { recursive: true, force: true })
 }
 
 // 41. A tenant conversation is told its own directory. Its "[your files]", its notes and their tidy-up

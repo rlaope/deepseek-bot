@@ -104,7 +104,7 @@ export function destinationRefusal(host: string, addresses: readonly string[], a
   for (const address of addresses) {
     const kind = addressKind(address)
     if (kind === 'public' || (kind === 'private' && allowPrivate)) continue
-    const what = kind === 'metadata' ? 'a cloud metadata service, which answers with credentials' : 'a private address, and the page asked for is on the public internet'
+    const what = kind === 'metadata' ? 'a cloud metadata service, which answers with credentials' : 'a private address (this machine or its network), which is not reached from here'
     return address === host ? `${address} is ${what}` : `${host} is ${address}, ${what}`
   }
   return null
@@ -126,12 +126,27 @@ export function createResolver(): (host: string) => Promise<Resolved[]> {
 
 export type PolicyProxy = { port: number; blocked: string[]; close: () => Promise<void> }
 
+export type PolicyProxyOptions = {
+  /** Told each refusal as it is made: a long-lived proxy (the commands') logs them rather than keeping them all. */
+  onBlocked?: (line: string) => void
+}
+
+/** The header this proxy's refusal carries, so a client can tell it from a page's own 403. */
+export const REFUSED_HEADER = 'x-deepbot-refused'
+/** What `blocked` keeps: a page or a command that keeps trying would otherwise grow it without end. */
+const BLOCKED_KEPT = 1000
+
 /**
  * An HTTP proxy on 127.0.0.1 that makes a request only to an address destinationRefusal passes, and connects to the
  * address it checked. What it refused is listed in `blocked`.
  */
-export async function startPolicyProxy(allowPrivate: boolean, resolve = createResolver()): Promise<PolicyProxy> {
+export async function startPolicyProxy(allowPrivate: boolean, resolve = createResolver(), options: PolicyProxyOptions = {}): Promise<PolicyProxy> {
   const blocked: string[] = []
+  const refuse = (label: string, why: string) => {
+    const line = `blocked ${JSON.stringify(label.slice(0, 100))}: ${why}`
+    if (blocked.length < BLOCKED_KEPT) blocked.push(line)
+    options.onBlocked?.(line)
+  }
   // Everything it holds open, so that closing it lets the process end: a request the page left waiting on its server
   // kept the tool running for as long as the server held it.
   const sockets = new Set<Socket>()
@@ -140,7 +155,7 @@ export async function startPolicyProxy(allowPrivate: boolean, resolve = createRe
     const addresses = isMetadataHost(host) ? [] : await resolve(host)
     const why = destinationRefusal(host, addresses.map((a) => a.address), allowPrivate)
     if (why === null) return addresses[0]
-    blocked.push(`blocked ${JSON.stringify(label.slice(0, 100))}: ${why}`)
+    refuse(label, why)
     return null
   }
   const server = createServer(async (req, res) => {
@@ -148,18 +163,18 @@ export async function startPolicyProxy(allowPrivate: boolean, resolve = createRe
     try { url = new URL(req.url ?? '') } catch { res.writeHead(400).end(); return }
     if (url.protocol !== 'http:') { res.writeHead(400).end(); return }
     const to = await admit(url.href, requestHost(url.hostname))
-    if (to === null) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end('refused by the browse tool'); return }
+    if (to === null) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', [REFUSED_HEADER]: '1' }).end('refused by the network policy'); return }
     const headers = { ...req.headers }
     delete headers['proxy-connection']
     delete headers['proxy-authorization']
-    const upstream = httpRequest({ agent, host: to.address, family: to.family, port: Number(url.port || 80), method: req.method, path: url.pathname + url.search, headers, setHost: false }, (up) => {
+    const outbound = httpRequest({ agent, host: to.address, family: to.family, port: Number(url.port || 80), method: req.method, path: url.pathname + url.search, headers, setHost: false }, (up) => {
       res.writeHead(up.statusCode ?? 502, up.statusMessage, up.rawHeaders)
       up.pipe(res)
     })
-    upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end() })
+    outbound.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end() })
     // The page gave up on it (an aborted fetch, a closed frame): so does the proxy.
-    res.on('close', () => { if (!res.writableFinished) upstream.destroy() })
-    req.pipe(upstream)
+    res.on('close', () => { if (!res.writableFinished) outbound.destroy() })
+    req.pipe(outbound)
   })
   // HTTPS and sockets arrive as tunnels: CONNECT host:port.
   server.on('connect', async (req, socket: Socket, head: Buffer) => {
@@ -168,17 +183,22 @@ export async function startPolicyProxy(allowPrivate: boolean, resolve = createRe
     socket.on('error', () => socket.destroy())
     const target = /^(.+):(\d+)$/.exec(req.url ?? '')
     if (target === null) { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); return }
-    const to = await admit(`${target[1]}:${target[2]}`, requestHost(target[1].toLowerCase()))
+    const label = `${target[1]}:${target[2]}`
+    const to = await admit(label, requestHost(target[1].toLowerCase()))
     if (to === null) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return }
-    const upstream = connect({ host: to.address, port: Number(target[2]), family: to.family }, () => {
+    const join = (other: Socket, rest: Buffer) => {
+      sockets.add(other)
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-      if (head.length > 0) upstream.write(head)
-      upstream.pipe(socket)
-      socket.pipe(upstream)
-    })
-    sockets.add(upstream)
-    upstream.on('close', () => { sockets.delete(upstream); socket.destroy() })
-    upstream.on('error', () => socket.destroy())
+      if (rest.length > 0) socket.write(rest)
+      if (head.length > 0) other.write(head)
+      other.pipe(socket)
+      socket.pipe(other)
+      other.on('close', () => { sockets.delete(other); socket.destroy() })
+      other.on('error', () => socket.destroy())
+    }
+    const direct = connect({ host: to.address, port: Number(target[2]), family: to.family }, () => join(direct, Buffer.alloc(0)))
+    sockets.add(direct)
+    direct.on('error', () => socket.destroy())
   })
   server.on('clientError', (_e, socket) => socket.destroy())
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))

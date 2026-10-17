@@ -46,10 +46,10 @@
 
 import { execFile, execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, constants as fsConstants, createReadStream, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, constants as fsConstants, createReadStream, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createSlackTransport } from './transports/slack.js'
 import { createTelegramTransport } from './transports/telegram.js'
@@ -64,7 +64,7 @@ import { createUsageTracker, emptyUsageStore } from './usage.js'
 import { createRecallContext, recallIndexPath } from './recallContext.js'
 import { analyzeNotes } from './notes.js'
 import { guardFetchedText } from './injection.js'
-import { isMetadataHost, requestHost } from './netPolicy.js'
+import { createResolver, isMetadataHost, requestHost, startPolicyProxy, type PolicyProxy } from './netPolicy.js'
 import type { SlackHistoryResponse } from './types/slack.js'
 import type { InboundMessage, ProgressMark, StreamFrame, Target } from './types/transport.js'
 import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
@@ -213,6 +213,11 @@ const DEFAULTS = {
   // metadata service, and an optional allowlist. The agent's own commands are not bounded by it.
   fetchPolicy: true,
   fetchAllowedHosts: [],       // empty means any host web_fetch opens (the harness opens public ones only)
+  // Where the agent's commands may connect. 'open': where the user's machine can, as before. 'public': public
+  // addresses only. 'local': those and this machine's network (a dev server, an intranet), never a cloud metadata
+  // service. With 'public' or 'local' the gateway runs a proxy with that rule, and the sandbox runner holds commands'
+  // outbound connections to this machine and points them at it: a command that ignores a proxy reaches nothing.
+  commandNetwork: 'open',
   // The browse tool (dist/tools/browse.js): offered to the agent, as a command its shell runs, when the script and
   // playwright-core are in this checkout. false offers nothing.
   browse: true,
@@ -399,6 +404,7 @@ export function apply(ctx, config) {
   if (cfg.askTools != null && (!Array.isArray(cfg.askTools) || cfg.askTools.some((n: unknown) => typeof n !== 'string' || !/^(?:[^\s*]+\*?|\*)$/.test(n)))) {
     problems.push('askTools: must be a list of tool names (e.g. [mcp__mail__send_message, mcp__calendar__*])')
   }
+  if (!['open', 'local', 'public'].includes(cfg.commandNetwork)) problems.push(`commandNetwork: must be 'open', 'local' or 'public' (got: ${String(cfg.commandNetwork)})`)
   if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
     problems.push('fetchAllowedHosts: must be a list of host names (e.g. [example.com])')
   }
@@ -813,6 +819,78 @@ export function apply(ctx, config) {
       })()
     }
     return cwdPromise
+  }
+
+  // ── The agent's commands' network ─────────────────────────────────────────
+  /**
+   * The sandbox runner confined what commands read and write, not where they connect: a command reached the local
+   * network and, on a cloud host, the metadata service. With commandNetwork 'public' or 'local' this runs a proxy of
+   * the browse tool's kind (netPolicy) and writes where it listens, under the harness home, by a key of the agent
+   * home's real path: the runner reads it, holds commands' outbound connections to this machine, and points them at
+   * it. With 'open' a file left behind is removed. A file whose proxy has gone (the gateway stopped) leaves commands
+   * no way out until the next start writes it again: closed, not open.
+   */
+  let commandProxy: PolicyProxy | null = null
+  let commandNetworkFile: string | null = null
+  /** Whether process `pid` is running: a file whose gateway has gone is nobody's. */
+  const processRunning = (pid: unknown) => {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false
+    try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'EPERM' }
+  }
+  /** The file, whole or not at all: the runner reads it at every command. */
+  const writeNetworkFile = (file: string, record: object) => {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+    const temp = `${file}.${process.pid}.tmp`
+    writeFileSync(temp, JSON.stringify(record), { mode: 0o600 })
+    renameSync(temp, file)
+  }
+  const ownerOf = (file: string): number | null => {
+    try { const pid = JSON.parse(readFileSync(file, 'utf8'))?.pid; return typeof pid === 'number' ? pid : null } catch { return null }
+  }
+  // At most so many refusals a minute reach the log: a command that keeps trying would fill it.
+  let refusalsMinute = 0
+  let refusalsLogged = 0
+  const logRefusal = (line: string) => {
+    const minute = Math.floor(Date.now() / 60_000)
+    if (minute !== refusalsMinute) { refusalsMinute = minute; refusalsLogged = 0 }
+    refusalsLogged++
+    if (refusalsLogged <= 20) log(`command network: ${line}`)
+    else if (refusalsLogged === 21) log('command network: more refusals this minute are not logged')
+  }
+  async function startCommandNetwork() {
+    const home = await sessionCwd()
+    const realOf = (path: string) => { try { return realpathSync(path) } catch { return path } }
+    const real = realOf(home)
+    const dir = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'deepbot', 'command-network')
+    const file = join(dir, `${createHash('sha256').update(real).digest('hex').slice(0, 16)}.json`)
+    const owner = existsSync(file) ? ownerOf(file) : null
+    const another = owner !== null && owner !== process.pid && processRunning(owner)
+    if (cfg.commandNetwork !== 'local' && cfg.commandNetwork !== 'public') {
+      // A file left behind closes commands' network: removed, unless another running gateway holds it.
+      if (another) log(`command network: open here, but another gateway (pid ${owner}) holds ${file}; left as it is`)
+      else rmSync(file, { force: true })
+      return
+    }
+    if (another) log(`command network: another gateway (pid ${owner}) held ${file}; this one takes it over`)
+    // Closed first, until the proxy listens: a file that is not there leaves commands open.
+    writeNetworkFile(file, { mode: cfg.commandNetwork, pid: process.pid })
+    commandNetworkFile = file
+    // The runner finds the file by DEEPBOT_HOME (by default ~/dsh-agent): in another home, commands are not held.
+    const runnerHome = process.env.DEEPBOT_HOME || join(homedir(), 'dsh-agent')
+    if (realOf(runnerHome) !== real) log(`command network: the sandbox runner looks for ${runnerHome}, not this home (${home}); set DEEPBOT_HOME to it, or commands are not held`)
+    const proxy = await startPolicyProxy(cfg.commandNetwork === 'local', createResolver(), { onBlocked: logRefusal })
+    if (stopped) { await proxy.close(); return }
+    commandProxy = proxy
+    writeNetworkFile(file, { port: proxy.port, mode: cfg.commandNetwork, pid: process.pid })
+    log(`command network: ${cfg.commandNetwork}, through 127.0.0.1:${proxy.port}`)
+  }
+  function stopCommandNetwork() {
+    // Closed, not removed: removed, the runner finds no file and leaves commands open. Only a file this one holds.
+    if (commandNetworkFile !== null && ownerOf(commandNetworkFile) === process.pid) {
+      try { writeNetworkFile(commandNetworkFile, { mode: cfg.commandNetwork, pid: process.pid }) } catch { /* the runner keeps the last one */ }
+    }
+    commandNetworkFile = null
+    if (commandProxy !== null) { void commandProxy.close(); commandProxy = null }
   }
 
   // ── Context injection ─────────────────────────────────────────────────────
@@ -3811,6 +3889,7 @@ export function apply(ctx, config) {
     startApprovalAnswerer()
     startQuestionAnswerer()
     startToolPolicy()
+    void startCommandNetwork().catch((e) => log(`command network failed to start: ${String((e as Error)?.message ?? e)} — commands have no way out until it starts`))
     writeHealth()
     if (healthTimer === null) healthTimer = setInterval(writeHealth, cfg.heartbeatMs)
     return () => {
@@ -3818,6 +3897,7 @@ export function apply(ctx, config) {
       // Registered on the root scope, so it does not go with this plugin by itself.
       if (typeof questionListener === 'function') { questionListener(); questionListener = null }
       saveStateNow()                     // a debounced write must not be lost on unload
+      stopCommandNetwork()
       if (healthTimer !== null) clearInterval(healthTimer)
       health.connected = false
       writeHealth()

@@ -103,6 +103,9 @@ If the row count stays flat after conversations, the refresh job is not running:
   list and the session log show it: not for a password. Its proxy carries what the browser sends over
   TCP; WebRTC's UDP does not go through it. `web_fetch` is bounded by the tool
   gate (scheme, metadata service, optional allowlist) and opens public addresses only; the agent's own
-  commands (`curl`) are not bounded by that gate (`PLAN.md`, Open). Its output is not run through the
+  commands (`curl`) are not bounded by that gate, and reach anything unless `commandNetwork` is
+  `public` or `local` (docs/setup.md). Bounded, a command that ignores a proxy (ssh, a raw socket)
+  reaches nothing; a program compiled to send Apple Events to another app is not stopped, and MCP
+  servers and the harness's own tools are not bounded by it. Its output is not run through the
   injection guard — that covers channel history, attachments and material arriving in a
   prompt, not a tool result.

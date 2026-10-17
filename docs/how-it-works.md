@@ -434,13 +434,49 @@ What each way of reaching an address may reach:
 |---|---|---|---|
 | `web_fetch` | yes | no: the harness refuses it | no: the fetch gate refuses it by name (`fetchPolicy`, on by default), and the harness refused it live as a non-public address |
 | the browse tool | yes | only from a page that is itself there (every address its name resolves to is private) | never |
-| the agent's commands (`curl`, a script) | yes | yes | yes: the sandbox does not bound where a command connects |
+| the agent's commands (`curl`, a script), `commandNetwork: open` (the default) | yes | yes | yes |
+| the agent's commands and the browse tool, `commandNetwork: local` | yes, through the gateway's proxy | yes, through it | no (but see Apple Events, below) |
+| the agent's commands and the browse tool, `commandNetwork: public` | yes, through the gateway's proxy | no, this machine's own services included (but see Apple Events, below) | no (but see Apple Events, below) |
 
 The browse tool's rule is the one a page needs: an intranet or dev-server page works, and a public
 page cannot reach into this machine or its network; a name that resolves to any public address counts
-as a public page. The agent's commands reach what the user's machine reaches: the sandbox confines what
-they read and write, not where they connect, so on a cloud host a command could ask the metadata
-service for the host's credentials.
+as a public page. With `commandNetwork` bounded, the browse tool runs as a command like any other: its
+browser goes through the commands' proxy, under that proxy's rule, and the tool runs none of its own (the
+sandbox would not let the browser reach it). So with `public` no page reaches this machine or its
+network, and with `local` any page may, as the agent's commands may.
+
+**The agent's commands' network (`commandNetwork`).** The sandbox runner confines what commands read
+and write; by default it leaves where they connect to the user's machine, so on a cloud host a command
+could ask the metadata service for the host's credentials. With `public` or `local`, the gateway runs a
+proxy of the browse tool's kind (`netPolicy.ts`: each name resolved once, the address it connects to
+checked; metadata never; private addresses only with `local`), logs what it refuses
+(`command network: blocked …`), and writes where it listens to
+`~/.dsh/deepbot/command-network/<the agent home's real path, hashed>.json`, which the agent's commands
+cannot read or write. The runner reads that file at every command: it adds Seatbelt rules that refuse
+every outbound connection but one, to the proxy's port on this machine, and points the command at the
+proxy in every spelling the common tools read (`http_proxy`, `HTTPS_PROXY`, `ALL_PROXY`, and
+`NODE_USE_ENV_PROXY=1` for node), with nothing exempt: a request for this machine goes through the
+proxy as well, which decides by its mode. Not every port here is open: with them open, a command
+reached a local page around the proxy, seen live with `public`. `curl`, `git` over https, `pip`, `npm`
+and node's `fetch` go through it; what ignores a proxy (ssh, a raw socket, UDP, a database client to a
+local server) reaches nothing: Seatbelt refuses it at once (`EPERM`). Two other ways around it are shut
+(found by review): the system resolver's socket, since a name looked up carries data out in its labels,
+and other apps, which run outside the sandbox: LaunchServices is closed and `open`, `osascript`,
+`automator` and `shortcuts` do not run. A program compiled to send Apple Events itself is not stopped.
+The gateway writes the file closed (no port) before its proxy listens and again when it stops, and a
+file whose gateway is no longer running names no port to the runner: a file that is not there leaves
+commands open, so it is never removed while bounded, and a port a crashed gateway left may be another
+program's by then. An `open` gateway removes a file left behind, unless another running gateway holds
+it. The file is keyed by the agent home, so a tenant's commands are held with the home's; MCP servers
+and the harness's own tools are not the agent's commands and are not held.
+`test/confined-runner.test.ts` checks the rules, the environment (an exemption the caller set dropped),
+a refused direct connection elsewhere and to another local service, a lookup and an app script refused,
+a gone gateway's port not used, and a garbled or linked file;
+`test/core.test.ts` checks that each mode's proxy refuses what it should, logs it (at most twenty a
+minute), that stopping leaves the file closed, that `open` removes a file left behind but not another
+running gateway's, and that a home the runner will not look in is said; `test/browse.test.ts` checks that the browser goes through the commands'
+proxy and its refusal is said as the agent's network; `test/scenarios/command-network.json` has a real
+model fetch a page on this machine with `curl` under `public` and never get it.
 
 `web_fetch` is an HTTP fetch — no JavaScript runs, nothing is clicked — so a page that draws its
 content with a script arrived empty. Search is composed separately (`dsh-web-search-deepseek`) and
@@ -525,8 +561,8 @@ harness, which refuses every non-public address it resolves to. An allowlist, wh
 whole web `web_fetch` may open; its entries are compared as hosts are (an IPv6 entry in any
 spelling, a trailing dot), and one that is not a host (a scheme, a port, a path, a wildcard), or a value that is not a list of names, is a
 config error.
-It bounds `web_fetch` only: the agent's own commands (`curl` from its shell) reach the network
-under the sandbox runner, which neither the allowlist nor the metadata refusal covers (`PLAN.md`).
+It bounds `web_fetch` only. The agent's own commands (`curl` from its shell) are bounded by
+`commandNetwork` instead, when it is set (below, and docs/setup.md).
 
 One boundary worth stating: the injection guard covers channel history, attachments and pages that
 arrive as material. The `web_fetch` tool's own output goes straight into the model's context and is
@@ -939,6 +975,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 | `approval.json` | a turn that needs an approval ends instead of hanging |
 | `approval-gate.json` | the destructive-command gate: it asks, the request reaches the answerer, which fails closed with no platform to reach, and the file survives |
 | `browser-session.json` | the agent browses as an account it was signed in to: the kept session in the workspace's `.browser/` is named in the standing block, and only a run with it sees the account's name |
+| `command-network.json` | with `commandNetwork: public`, a command asked to fetch a page on this machine runs and never brings its content back |
 | `mcp-ask.json` | a tool `askTools` names is asked for before it runs: the fixture's `vault_store` is refused, and the file only it can write never appears |
 | `mcp.json` | a tool of an MCP server the profile composes reaches the model: the answer comes from `mcp__fixture__vault_lookup` of `test/fixtures/mcp-fixture.mjs`; the test profile needs the fixture's row (docs/setup.md, MCP servers) |
 | `interrupt.json` | a running turn stopped mid-flight ends as `cancelled` |

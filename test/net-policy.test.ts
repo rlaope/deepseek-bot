@@ -97,6 +97,19 @@ const stillMeta = await viaProxy(open.port, 'http://169.254.169.254/latest/meta-
 check('a metadata service is refused even then', stillMeta.status === 403, JSON.stringify(stillMeta))
 check('nothing allowed is listed as blocked', open.blocked.length === 1, JSON.stringify(open.blocked))
 await open.close()
+
+// A refusal says it is one, so a client can tell it from a page's own 403; and each is told to whoever asked as it is
+// made (the commands' proxy logs them).
+const told: string[] = []
+const telling = await startPolicyProxy(false, createResolver(), { onBlocked: (line) => told.push(line) })
+const marked = await new Promise<string | undefined>((done) => {
+  const req = request({ host: '127.0.0.1', port: telling.port, path: `http://127.0.0.1:${targetPort}/g`, headers: { host: `127.0.0.1:${targetPort}` } }, (res) => { res.resume(); done(res.headers['x-deepbot-refused'] as string | undefined) })
+  req.on('error', () => done(undefined))
+  req.end()
+})
+check('a refusal carries its mark', marked === '1', String(marked))
+check('and is told as it is made', told.length === 1 && told[0].startsWith(`blocked "http://127.0.0.1:${targetPort}/g"`), JSON.stringify(told))
+await telling.close()
 target.close()
 
 const failed = results.filter((r) => !r.ok)

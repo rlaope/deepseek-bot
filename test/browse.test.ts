@@ -15,7 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { keepSession, loadSession, opensPrivate, parseArgs, refusal, shape, signIn } from '../dist/tools/browse.js'
+import { commandProxyFrom, keepSession, loadSession, opensPrivate, parseArgs, refusal, shape, signIn } from '../dist/tools/browse.js'
 import { startPolicyProxy } from '../dist/netPolicy.js'
 
 const results = []
@@ -89,6 +89,11 @@ check('a name with a public address among private ones is a public page', !opens
   inside.close()
 }
 
+// The commands' proxy (commandNetwork), which the tool goes through when the runner names one: on this machine only.
+check('commands\' proxy: the one on this machine is gone through', JSON.stringify(commandProxyFrom({ https_proxy: 'http://127.0.0.1:41000' })) === JSON.stringify({ host: '127.0.0.1', port: 41000 }))
+check('commands\' proxy: none named, none gone through', commandProxyFrom({}) === null)
+check('commands\' proxy: one elsewhere is not it (the tool keeps its own way out)', commandProxyFrom({ https_proxy: 'http://proxy.corp.example:3128' }) === null && commandProxyFrom({ HTTPS_PROXY: 'socks5://127.0.0.1:1080' }) === null)
+
 // Keeping a session, without a browser. Never through a link: the agent can leave one at the file's name, or make its
 // directory one, and --login writes as the person, outside the sandbox (found by review: a link at the name made a run
 // overwrite the file it pointed at). Written whole, mode 600, the one before kept as .prev.
@@ -140,8 +145,8 @@ check('a page with no text says so', shape('T', 'u', '  \n ', 10).endsWith('(the
 
 // The browser itself, where there is one.
 const tool = fileURLToPath(new URL('../dist/tools/browse.js', import.meta.url))
-const run = (args: string[]) => new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
-  const child = spawn(process.execPath, [tool, ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+const run = (args: string[], env: Record<string, string> = {}) => new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+  const child = spawn(process.execPath, [tool, ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
   let out = ''
   let err = ''
   child.stdout.on('data', (d) => { out += d })
@@ -210,6 +215,17 @@ if (ready.code !== 0) {
   check('a window the page opens is held to the same rule', /blocked "http:\/\/169\.254\.169\.254\/latest\/meta-data\/popup"/.test(popup.out), (popup.out + popup.err).slice(0, 300))
   const socket = await run([`${base}/socket`])
   check('a socket the page opens is held to the same rule', socket.out.includes('a socket was opened') && /blocked "169\.254\.169\.254:80"/.test(socket.out), (socket.out + socket.err).slice(0, 300))
+  // With the commands' network bounded, the browser goes through the commands' proxy, the one way out of the sandbox,
+  // and its refusals stand: a page on this machine, which the tool alone opens, is refused by a public-only one, and said
+  // as the agent's network rather than the site's 403; it is opened through a local one.
+  const publicOnly = await startPolicyProxy(false)
+  const throughPublic = await run([`${base}/js`], { https_proxy: `http://127.0.0.1:${publicOnly.port}` })
+  check('commands\' proxy: its refusal stands, and is said as the agent\'s network', throughPublic.code === 4 && /refused by the agent's network \(commandNetwork\)/.test(throughPublic.err) && publicOnly.blocked.some((b) => b.includes(`${base}/js`)), (throughPublic.out + throughPublic.err).slice(0, 240))
+  const localToo = await startPolicyProxy(true)
+  const throughLocal = await run([`${base}/js`], { https_proxy: `http://127.0.0.1:${localToo.port}` })
+  check('commands\' proxy: what it allows is read through it', throughLocal.code === 0 && throughLocal.out.includes('NEBULA-41c7'), (throughLocal.out + throughLocal.err).slice(0, 240))
+  await publicOnly.close()
+  await localToo.close()
   const heldFrom = Date.now()
   const held = await run([`${base}/held`])
   const heldFor = Date.now() - heldFrom

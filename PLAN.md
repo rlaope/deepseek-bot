@@ -41,10 +41,10 @@ is built before the thing it stands on. The detailed history of each milestone i
 - **Workspace temp directories are never removed.** Each workspace (a tenant, a scenario's) leaves a
   `deepbot-cmd-<hash>` directory in the user's temp; macOS clears it only after days unused. Pruning old ones could
   join the log rotation job.
-- **The agent's own commands reach the network unbounded.** The fetch gate bounds `web_fetch`; a command the agent
-  runs (`curl`) goes out under the sandbox runner, which allows outbound connections, so neither
-  `fetchAllowedHosts` nor the metadata refusal applies to it. Seatbelt cannot filter by remote address beyond
-  localhost, so closing it is not a line in the runner.
+- **The agent's own commands reach the network unbounded by default.** `commandNetwork: public` or `local` bounds
+  them (docs/setup.md, The agent's network); the default stays `open`, because a bounded command that ignores a
+  proxy (ssh, `git` over ssh, a raw socket) reaches nothing, which an existing deployment would see as breakage.
+  `fetchAllowedHosts` still bounds `web_fetch` only.
 - **A check-then-write window in `writeInside`.** It checks a directory's real path, then writes by
   path; Node has no `openat` to write relative to a checked directory descriptor. Exploiting it needs
   a process inside the agent's sandbox racing the check. Uploads no longer share the window: the

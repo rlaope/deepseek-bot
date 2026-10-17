@@ -249,6 +249,26 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **The agent's commands' network can be bounded: `commandNetwork`.** The sandbox confined what commands read
+  and write, not where they connect, so a command reached the local network and, on a cloud host, the metadata
+  service.
+  - With `public` (public addresses only) or `local` (those and this machine's network; never metadata), the
+    gateway runs a proxy with the browse tool's rule.
+  - The gateway writes where the proxy listens under the harness home. The sandbox runner reads that file,
+    refuses every outbound connection but to the proxy's port, and points commands at the proxy (`http_proxy` and
+    the rest, `NODE_USE_ENV_PROXY` for node) with nothing exempt. With every local port open, a live run under
+    `public` fetched a local page around the proxy; the runner now opens that one port.
+  - The browse tool's browser goes through it too, under its rule.
+  - A file that names no proxy closes the network rather than opening it. The gateway writes it closed before
+    its proxy listens and when it stops, never removes it while bounded, and a file whose gateway has gone names
+    no port.
+  - Bounded, names are not looked up (a lookup carries data out) and other apps are not started or scripted
+    (they run outside the sandbox). Refusals are logged at most twenty a minute.
+  - `open`, the default, changes nothing. Bounded, a command that ignores a proxy reaches nothing.
+  - Checked: the runner suite (the rules, the environment, a direct connection refused with EPERM elsewhere and to
+    another local service, a garbled or linked file), the core suite (each mode's proxy, its log, `open` removing a
+    file left behind), the browse suite (the browser through the commands' proxy, its refusal said), and a new
+    daily scenario, `command-network`.
 - **A local or intranet page goes to the browse tool, said where the agent reads it.** `web_fetch` refuses
   this machine and the local network, and the agent tried it first and then fell back on whatever came to hand
   (`curl`, seen live). The standing block now says `web_fetch` opens public addresses only and that such a page

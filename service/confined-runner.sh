@@ -92,6 +92,32 @@ if [ "$mode" = "workspace-write" ] && [ -n "$workspace_root" ]; then
   fi
 fi
 
+# The commands' network (the deepbot row's commandNetwork). The gateway, when it runs a proxy for this agent home,
+# writes where it listens to $DSH_HOME/deepbot/command-network/<the home's real path, hashed>.json. A file there holds
+# commands to one connection: the proxy's port on this machine, named in it (a plain file, not a link). Not every port
+# on this machine: with those open, a command reached the local services directly, around the proxy (seen live). A
+# file that names no port, or a proxy that has gone, leaves them no way out: closed, not open. No file, no change.
+# Keyed by the agent home, not the workspace, so a tenant's commands are held with the home's.
+net_file=""
+net_port=""
+home_real="$(/bin/realpath "$HOME_DIR" 2>/dev/null || true)"
+if [ -n "$home_real" ]; then
+  net_key="$(printf '%s' "$home_real" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-16)"
+  if [[ $net_key =~ ^[0-9a-f]{16}$ ]]; then
+    candidate="${DSH_HOME:-$HOME/.dsh}/deepbot/command-network/$net_key.json"
+    if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+      net_file="$candidate"
+      if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+        net_port="$(/usr/bin/sed -n 's/.*"port":\([0-9][0-9]*\).*/\1/p' "$candidate" 2>/dev/null)"
+        if ! [[ $net_port =~ ^[0-9]{1,5}$ ]] || [ "$net_port" -lt 1 ] || [ "$net_port" -gt 65535 ]; then net_port=""; fi
+        # Its gateway still running: after a crash the port may be another program's by now.
+        net_pid="$(/usr/bin/sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$candidate" 2>/dev/null)"
+        if ! [[ $net_pid =~ ^[0-9]{1,10}$ ]] || ! /bin/ps -p "$net_pid" >/dev/null 2>&1; then net_port=""; fi
+      fi
+    fi
+  fi
+fi
+
 # The writable set mirrors the harness's own intent: the workspace, temp, and the
 # null sink. Reads are allowed everywhere except other instances' data.
 profile() {
@@ -259,10 +285,21 @@ profile() {
   # the keys), 1Password's, gpg-agent's, docker's. Name resolution goes through mDNSResponder's socket,
   # without which nothing resolves a host, and a workspace may run a local server it talks to.
   echo '(deny network-outbound (remote unix-socket))'
-  echo '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))'
+  # Bounded, not the system's resolver either: a name looked up carries data out in its labels (found by review). The
+  # proxy resolves what goes through it.
+  if [ -z "$net_file" ]; then echo '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))'; fi
   for name in ${workspace_names[@]+"${workspace_names[@]}"}; do
     printf '(allow network-outbound (remote unix-socket (subpath %s)))\n' "$(sbpl "$name")"
   done
+  # The commands' network, bounded: the gateway's proxy only. Nor another app doing it for them (found by review): an
+  # app LaunchServices starts, or one Apple Events script, runs outside this sandbox. LaunchServices is closed and the
+  # tools that script or start apps do not run; a program compiled to send Apple Events itself is not stopped.
+  if [ -n "$net_file" ]; then
+    echo '(deny network-outbound (remote ip))'
+    if [ -n "$net_port" ]; then printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$net_port"; fi
+    echo '(deny mach-lookup (global-name-regex #"^com\.apple\.coreservices\.launchservicesd") (global-name-regex #"^com\.apple\.lsd\."))'
+    echo '(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/automator") (literal "/usr/bin/shortcuts") (literal "/usr/bin/open"))'
+  fi
 }
 
 sbpl() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
@@ -302,6 +339,19 @@ if [ -n "$cmd_temp" ]; then
     export TMPDIR="$cmd_temp/"
   else
     cmd_temp=""
+  fi
+fi
+# Pointed at the proxy, in every spelling the common tools read; node reads them only when told to. Nothing is exempt
+# (no NO_PROXY): a request for this machine goes through the proxy too, which decides by its mode. Without a port,
+# whatever proxy was set is dropped: there is none to reach.
+if [ -n "$net_file" ]; then
+  unset NO_PROXY no_proxy
+  if [ -n "$net_port" ]; then
+    net_proxy="http://127.0.0.1:$net_port"
+    export http_proxy="$net_proxy" https_proxy="$net_proxy" HTTP_PROXY="$net_proxy" HTTPS_PROXY="$net_proxy" ALL_PROXY="$net_proxy" all_proxy="$net_proxy"
+    export NODE_USE_ENV_PROXY=1
+  else
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
   fi
 fi
 sb_profile="$(profile)" || exit 70

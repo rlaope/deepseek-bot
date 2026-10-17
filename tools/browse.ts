@@ -30,7 +30,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Browser, BrowserContext } from 'playwright-core'
-import { addressKind, createResolver, isMetadataHost, requestHost, startPolicyProxy, type Resolved } from '../netPolicy.js'
+import { addressKind, createResolver, isMetadataHost, REFUSED_HEADER, requestHost, startPolicyProxy, type Resolved } from '../netPolicy.js'
 
 export type Step = { kind: 'click'; selector: string } | { kind: 'type'; selector: string; text: string }
 export type Request = { url: string; steps: Step[]; waitMs: number; screenshot: string | null; max: number; state: string | null; login: boolean }
@@ -169,6 +169,24 @@ export function keepSession(file: string, session: unknown): void {
   }
 }
 
+/**
+ * The agent's commands' proxy (commandNetwork), which the sandbox runner names in the environment when it holds
+ * commands to it: the one connection a command may make. The browser then goes through it, under its rule, and this
+ * tool runs no proxy of its own, which the sandbox would not let the browser reach. Only one on this machine is taken.
+ */
+export function commandProxyFrom(env: Record<string, string | undefined>): { host: string; port: number } | null {
+  const value = env.https_proxy ?? env.HTTPS_PROXY ?? env.http_proxy ?? env.HTTP_PROXY
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    const host = url.hostname.replace(/^\[(.*)\]$/, '$1')
+    if (url.protocol !== 'http:' || url.port === '' || !['127.0.0.1', 'localhost', '::1'].includes(host)) return null
+    return { host: host === 'localhost' ? '127.0.0.1' : host, port: Number(url.port) }
+  } catch {
+    return null
+  }
+}
+
 /** The session a load found, or null. */
 const sessionOf = (loaded: ReturnType<typeof loadSession>) => loaded !== null && 'session' in loaded ? loaded.session : null
 
@@ -245,13 +263,13 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error('browse: playwright-core is not installed in this checkout (pnpm install).')
     return 3
   }
-  const launch = async (proxyPort: number | null, windowed = false) => {
+  const launch = async (proxyServer: string | null, windowed = false) => {
     try {
       return await chromium.launch({
         headless: !windowed, timeout: 20_000,
         // A window's run ends on the person's signals, handled in signIn; Playwright's own closed the browser first.
         ...(windowed ? { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false } : {}),
-        ...(proxyPort === null ? {} : { proxy: { server: `http://127.0.0.1:${proxyPort}` } }),
+        ...(proxyServer === null ? {} : { proxy: { server: proxyServer } }),
       })
     } catch (e) {
       const cli = fileURLToPath(new URL('../../node_modules/playwright-core/cli.js', import.meta.url))
@@ -295,27 +313,37 @@ async function main(argv: readonly string[]): Promise<number> {
       return 4
     }
   }
-  // Resolved once: the proxy keeps the answer for the run, so the page is fetched from the address that was judged.
-  const resolve = createResolver()
-  const pageAddresses = await resolve(requestHost(new URL(request.url).hostname))
-  const proxy = await startPolicyProxy(opensPrivate(pageAddresses), resolve)
+  // With the commands' network bounded, the browser goes through the commands' proxy; otherwise through one of this
+  // tool's own. Resolved once: that proxy keeps the answer for the run, so the page is fetched from the address judged.
+  const commands = commandProxyFrom(process.env)
+  let proxy: Awaited<ReturnType<typeof startPolicyProxy>> | null = null
+  if (commands === null) {
+    const resolve = createResolver()
+    proxy = await startPolicyProxy(opensPrivate(await resolve(requestHost(new URL(request.url).hostname))), resolve)
+  }
+  const proxyServer = commands !== null ? `http://${commands.host}:${commands.port}` : `http://127.0.0.1:${proxy?.port}`
   // Signing in takes the person as long as it takes: no deadline.
   if (request.login) clearTimeout(hardStop)
-  const browser = await launch(proxy.port, request.login)
-  if (browser === null) { await proxy.close(); return 3 }
+  const browser = await launch(proxyServer, request.login)
+  if (browser === null) { await proxy?.close(); return 3 }
   try {
     if (request.login && request.state !== null) {
       const code = await signIn(browser, request.url, request.state)
-      if (proxy.blocked.length > 0) console.error(`browse: blocked during sign-in:\n${proxy.blocked.slice(0, BLOCKED_SHOWN).join('\n')}`)
+      if (proxy !== null && proxy.blocked.length > 0) console.error(`browse: blocked during sign-in:\n${proxy.blocked.slice(0, BLOCKED_SHOWN).join('\n')}`)
       return code
     }
     const context = await openContext(browser, sessionOf(loaded))
     const page = await context.newPage()
     // The status the page's own document came with; the last one, after any redirect.
     let status = 0
+    // Whether that document was the commands' proxy refusing it, rather than the site answering 403.
+    let refusedByCommands = false
     page.on('response', (response) => {
       try {
-        if (response.request().isNavigationRequest() && response.frame() === page.mainFrame()) status = response.status()
+        if (response.request().isNavigationRequest() && response.frame() === page.mainFrame()) {
+          status = response.status()
+          refusedByCommands = commands !== null && response.headers()[REFUSED_HEADER] === '1'
+        }
       } catch { /* a response with no frame */ }
     })
     // Settled: nothing in flight for half a second. Playwright's networkidle is reached once and then answers at
@@ -357,11 +385,12 @@ async function main(argv: readonly string[]): Promise<number> {
       else await page.waitForLoadState('load', { timeout: 5_000 }).catch(() => {})
     }
     const title = await page.title().catch(() => '')
-    if (failed === null && page.url().startsWith('chrome-error:')) failed = 'the page could not be opened'
+    if (failed === null && page.url().startsWith('chrome-error:')) failed = commands === null ? 'the page could not be opened' : 'the page could not be opened (the agent\'s network, commandNetwork, may have refused it)'
+    if (failed === null && refusedByCommands) failed = 'refused by the agent\'s network (commandNetwork)'
     if (failed === null && status >= 400) failed = `the page answered ${status}`
     if (failed !== null) console.error(`browse: ${failed}`)
-    const blocked = proxy.blocked.length <= BLOCKED_SHOWN ? proxy.blocked
-      : [...proxy.blocked.slice(0, BLOCKED_SHOWN), `… and ${proxy.blocked.length - BLOCKED_SHOWN} more blocked`]
+    const all = proxy?.blocked ?? []
+    const blocked = all.length <= BLOCKED_SHOWN ? all : [...all.slice(0, BLOCKED_SHOWN), `… and ${all.length - BLOCKED_SHOWN} more blocked`]
     console.log(shape(title, page.url(), text, request.max) + (blocked.length > 0 ? `\n\n${blocked.join('\n')}` : ''))
     if (request.screenshot !== null) {
       await page.screenshot({ path: request.screenshot, timeout: 5_000 }).then(
@@ -384,7 +413,7 @@ async function main(argv: readonly string[]): Promise<number> {
     return failed === null ? 0 : 4
   } finally {
     await browser.close().catch(() => {})
-    await proxy.close()
+    await proxy?.close()
   }
 }
 

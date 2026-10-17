@@ -261,6 +261,34 @@ Set up once, by you:
 
 Not yet run here: no OAuth client was available when this was written (`PLAN.md`).
 
+## The agent's network
+
+The sandbox confines what the agent's commands read and write. Where they connect is `commandNetwork`, in
+the deepbot row:
+
+| Value | A command may connect to |
+|---|---|
+| `open` (the default) | anything this machine can reach, as before |
+| `local` | public addresses, this machine and the local network (an intranet, a dev server), through the gateway's proxy; never a cloud metadata service |
+| `public` | public addresses only, through the gateway's proxy |
+
+Bounded, a command makes one connection, to the proxy: `curl`, `git` over https, `pip`, `npm` and node's
+`fetch` are pointed at it, and what ignores a proxy (ssh and `git` over ssh, a raw socket, a UDP service,
+a database client to a local server) reaches nothing, this machine's own services included. Names are
+not looked up either (the proxy resolves what goes through it), and a command cannot start or script
+another app (`open`, `osascript`, `automator`, `shortcuts`), which would fetch outside the sandbox. What
+the proxy refuses is in the bot's log as `command network: blocked …`, at most twenty a minute. The browse
+tool goes through the same proxy, under its rule: with `local`, any page it opens may reach the local
+network. If the gateway stops, the agent's commands have no way out until it starts again. Restart the
+gateway after changing the value.
+
+What it does not bound: MCP servers and the harness's own tools (`web_fetch` has its own rule), which
+are not the agent's commands; a program the agent compiles to send Apple Events itself; and anything
+on this machine that finds the proxy's port, which takes no password (it gives no more reach than that
+program already has). `public` bounds addresses, not what is sent to them: data can still leave in a
+request to a public site. The sandbox runner finds the gateway's proxy by `DEEPBOT_HOME`; the bot logs
+a warning when that is not its home.
+
 ## Sites that need a sign-in
 
 The agent's browser (`dist/tools/browse.js`) keeps no sign-in of its own. For a site you want it to read as

@@ -71,6 +71,7 @@
     "test:scenario:browser": "node test/run-scenario.ts test/scenarios/browser.json",
     "test:scenario:browser-js": "node test/run-scenario.ts test/scenarios/browser-js.json",
     "test:scenario:browser-session": "node test/run-scenario.ts test/scenarios/browser-session.json",
+    "test:scenario:command-network": "node test/run-scenario.ts test/scenarios/command-network.json",
     "test:scenario:mcp": "node test/run-scenario.ts test/scenarios/mcp.json",
     "test:scenario:mcp-ask": "node test/run-scenario.ts test/scenarios/mcp-ask.json",
     "test:profile": "node test/profile.test.ts",
