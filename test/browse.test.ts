@@ -97,7 +97,8 @@ check('a name with a public address among private ones is a public page', !opens
   const file = join(dir, '.browser', 'site.json')
   keepSession(file, { cookies: [{ name: 'a' }], origins: [] })
   keepSession(file, { cookies: [{ name: 'b' }], origins: [] })
-  check('keepSession: written mode 600, the one before kept as .prev', (statSync(file).mode & 0o777) === 0o600 && readFileSync(file, 'utf8').includes('"b"') && existsSync(`${file}.prev`) && readFileSync(`${file}.prev`, 'utf8').includes('"a"'), (statSync(file).mode & 0o777).toString(8))
+  // Mode bits are POSIX: Windows reports 666 for any file it can write.
+  check('keepSession: written mode 600, the one before kept as .prev', (process.platform === 'win32' || (statSync(file).mode & 0o777) === 0o600) && readFileSync(file, 'utf8').includes('"b"') && existsSync(`${file}.prev`) && readFileSync(`${file}.prev`, 'utf8').includes('"a"'), (statSync(file).mode & 0o777).toString(8))
   const victim = join(dir, 'victim.txt')
   writeFileSync(victim, 'untouched')
   const linked = join(dir, '.browser', 'linked.json')
@@ -219,12 +220,12 @@ if (ready.code !== 0) {
   const stateFile = join(sessions, '.browser', 'site.json')
   const firstRun = await run([`${base}/set`, '--state', stateFile])
   const kept = existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : ''
-  check('--state: the session is written after the run, for the user alone', firstRun.code === 0 && kept.includes(sid) && (statSync(stateFile).mode & 0o777) === 0o600, `${firstRun.code} ${existsSync(stateFile) ? (statSync(stateFile).mode & 0o777).toString(8) : 'no file'} ${firstRun.err.slice(0, 120)}`)
+  check('--state: the session is written after the run, for the user alone', firstRun.code === 0 && kept.includes(sid) && (process.platform === 'win32' || (statSync(stateFile).mode & 0o777) === 0o600), `${firstRun.code} ${existsSync(stateFile) ? (statSync(stateFile).mode & 0o777).toString(8) : 'no file'} ${firstRun.err.slice(0, 120)}`)
   // A file left readable by others is made the user's alone again when it is written.
   if (existsSync(stateFile)) chmodSync(stateFile, 0o644)
   const again = await run([`${base}/whoami`, '--state', stateFile])
   check('--state: the next run is still signed in', again.code === 0 && again.out.includes(`session: ${sid}`), again.out.slice(0, 200))
-  check('--state: a file others could read is the user\'s alone again', existsSync(stateFile) && (statSync(stateFile).mode & 0o777) === 0o600, existsSync(stateFile) ? (statSync(stateFile).mode & 0o777).toString(8) : 'no file')
+  check('--state: a file others could read is the user\'s alone again', existsSync(stateFile) && (process.platform === 'win32' || (statSync(stateFile).mode & 0o777) === 0o600), existsSync(stateFile) ? (statSync(stateFile).mode & 0o777).toString(8) : 'no file')
   const anonymous = await run([`${base}/whoami`])
   check('without --state a run is signed out', anonymous.code === 0 && anonymous.out.includes('session: none'), anonymous.out.slice(0, 200))
   // A run that failed leaves the kept session as it was: an error page is no reason to replace a good one.
