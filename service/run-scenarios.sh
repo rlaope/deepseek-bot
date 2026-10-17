@@ -53,7 +53,7 @@ cd "$REPO" || exit 1
 if [ "$QUICK" = 1 ]; then
   LIST="interrupt approval-gate"
 else
-  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js mcp mcp-ask"
+  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js browser-session mcp mcp-ask"
 fi
 
 : > "$REPORT"
@@ -73,13 +73,13 @@ for name in $LIST; do
     sleep 2
   fi
   # The script-drawn page's server answers its values only to a browser.
-  if [ "$name" = "browser-js" ]; then
+  if [ "$name" = "browser-js" ] || [ "$name" = "browser-session" ]; then
     ("$NODE" test/fixtures/page-server.mjs 8899 >/dev/null 2>&1 & echo $! > /tmp/deepbot-qa-server.pid)
     sleep 2
   fi
   out=$("$NODE" test/run-scenario.ts "$file" --timeout "$TIMEOUT" 2>&1)
   status=$?
-  if { [ "$name" = "browser" ] || [ "$name" = "browser-js" ]; } && [ -f /tmp/deepbot-qa-server.pid ]; then
+  if { [ "$name" = "browser" ] || [ "$name" = "browser-js" ] || [ "$name" = "browser-session" ]; } && [ -f /tmp/deepbot-qa-server.pid ]; then
     kill "$(cat /tmp/deepbot-qa-server.pid)" 2>/dev/null
     rm -f /tmp/deepbot-qa-server.pid
   fi

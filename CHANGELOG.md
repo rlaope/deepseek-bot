@@ -249,6 +249,28 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **The browser can browse as you, on a site you signed it in to.** `browse.js` kept nothing between runs, so a
+  page behind a sign-in was out of reach.
+  - `--login '<url>' --state <file>`, run by you in your own terminal, opens a window. You sign in, and when you
+    close its last tab (or press ctrl+c) the session is kept in that file, mode 600. The session is the cookies
+    and site storage.
+  - `--state <file>` starts a run from that session. A run that went through writes it back, so renewed cookies
+    are kept, and keeps the one before as `.prev`. A failed run leaves it as it was, and a run that ends signed
+    out says so.
+  - The file is written to a fresh file and renamed over its name. A path that is a link, or in a linked
+    directory, is refused, because the agent can make links and `--login` writes as you. A file that is not a
+    session is refused rather than written over.
+  - The standing block names the session files in the conversation's workspace (`.browser/*.json`, plain names
+    only).
+  - The file is the account, and the agent's commands can read it. docs/setup.md and docs/limitations.md say so.
+  - Checked: the browse suite keeps sessions without a browser (links, `.prev`, a file that is not a session).
+    With a browser, it signs in on a local page, is still signed in on the next run, and is signed out without
+    `--state`. It leaves the session alone after a failed run, says so after a sign-out, and ends a `--login` by
+    closing its last tab. Thirteen one-line mutants are red. `--login` was also run by hand: a window, ctrl+c,
+    and the session kept with mode 600.
+  - A new daily scenario, `browser-session`. With a kept session seeded in the workspace, a real model found it in
+    the standing block, ran `browse.js --state` with it, and read the account's name. The page shows that name only
+    with the session's cookie. The control without the session read "Not signed in".
 - **A tool can be asked for on every call: `askTools`.** An MCP server's tools passed every gate. The approval
   patterns read a shell command, so a server that sends mail or changes a calendar acted on the model's word
   alone. `askTools` in the deepbot row names such tools (an entry ending in `*` names those that start with it),

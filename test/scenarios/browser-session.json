@@ -1,0 +1,16 @@
+{
+  "_comment": "Does the agent browse as an account the person signed it in to? The seed puts a kept session (browse.js --state's file, as --login writes it) in the workspace's .browser/; the standing block names it, and the page server (test/fixtures/page-server.mjs) names the account at /account only to a browser that carries its cookie. Without the session the page says it is not signed in: the control, run by hand, fails.",
+  "seed": {
+    ".browser/account.json": "{\"cookies\": [{\"name\": \"sid\", \"value\": \"scenario-session-7c2\", \"domain\": \"127.0.0.1\", \"path\": \"/\", \"expires\": -1, \"httpOnly\": true, \"secure\": false, \"sameSite\": \"Lax\"}], \"origins\": []}"
+  },
+  "steps": [
+    {
+      "session": "S",
+      "say": "http://127.0.0.1:8899/account 에 로그인된 내 계정 이름이 뭐야?",
+      "expectContains": "ORION-fab",
+      "expectToolUse": [
+        "bash"
+      ]
+    }
+  ]
+}

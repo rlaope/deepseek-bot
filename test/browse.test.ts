@@ -9,13 +9,13 @@
  * Run: node test/browse.test.ts
  */
 import './dist-fresh.ts'   // fails loudly on a stale dist
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createServer, request } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { opensPrivate, parseArgs, refusal, shape } from '../dist/tools/browse.js'
+import { keepSession, loadSession, opensPrivate, parseArgs, refusal, shape, signIn } from '../dist/tools/browse.js'
 import { startPolicyProxy } from '../dist/netPolicy.js'
 
 const results = []
@@ -33,6 +33,14 @@ check('the address and the steps, in order', !('error' in asked) && asked.url ==
 const typedEquals = parseArgs(['https://e.x', '--type', 'input[name=q]', 'a=b'])
 check('a selector and a text with "=" in them are kept whole', !('error' in typedEquals)
   && JSON.stringify(typedEquals.steps) === JSON.stringify([{ kind: 'type', selector: 'input[name=q]', text: 'a=b' }]), JSON.stringify(typedEquals))
+// A signed-in session: kept in a file given with --state, read before the steps and written after. --login opens a
+// window for the person to sign in, and needs the file it is kept in.
+const withState = parseArgs(['https://e.x/inbox', '--state', '/tmp/x/mail.json'])
+check('--state names the file a session is kept in', !('error' in withState) && withState.state === '/tmp/x/mail.json' && withState.login === false, JSON.stringify(withState))
+const loginNoState = parseArgs(['--login', 'https://e.x/'])
+check('--login without --state is refused: the session would go nowhere', 'error' in loginNoState && /--login needs --state/.test(loginNoState.error), JSON.stringify(loginNoState))
+const loginSteps = parseArgs(['--login', 'https://e.x/', '--state', '/tmp/s.json', '--click', '#go'])
+check('--login takes no steps: the person does them', 'error' in loginSteps && /--login takes no steps/.test(loginSteps.error), JSON.stringify(loginSteps))
 check('a long wait is held to 30 s', !('error' in parseArgs(['https://e.x', '--wait', '600000'])) && (parseArgs(['https://e.x', '--wait', '600000']) as { waitMs: number }).waitMs === 30_000)
 for (const [args, why] of [
   [[], 'no address'], [['--click'], 'needs a value'], [['https://e.x', '--type', '#q'], 'needs a value'],
@@ -81,6 +89,47 @@ check('a name with a public address among private ones is a public page', !opens
   inside.close()
 }
 
+// Keeping a session, without a browser. Never through a link: the agent can leave one at the file's name, or make its
+// directory one, and --login writes as the person, outside the sandbox (found by review: a link at the name made a run
+// overwrite the file it pointed at). Written whole, mode 600, the one before kept as .prev.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'browse-keep-'))
+  const file = join(dir, '.browser', 'site.json')
+  keepSession(file, { cookies: [{ name: 'a' }], origins: [] })
+  keepSession(file, { cookies: [{ name: 'b' }], origins: [] })
+  check('keepSession: written mode 600, the one before kept as .prev', (statSync(file).mode & 0o777) === 0o600 && readFileSync(file, 'utf8').includes('"b"') && existsSync(`${file}.prev`) && readFileSync(`${file}.prev`, 'utf8').includes('"a"'), (statSync(file).mode & 0o777).toString(8))
+  const victim = join(dir, 'victim.txt')
+  writeFileSync(victim, 'untouched')
+  const linked = join(dir, '.browser', 'linked.json')
+  symlinkSync(victim, linked)
+  let throughName = ''
+  try { keepSession(linked, { cookies: [], origins: [] }) } catch (e) { throughName = String((e as Error).message) }
+  check('keepSession: a link at the name is refused, and what it points at is untouched', /is a link/.test(throughName) && readFileSync(victim, 'utf8') === 'untouched' && lstatSync(linked).isSymbolicLink(), throughName)
+  const elsewhere = mkdtempSync(join(tmpdir(), 'browse-elsewhere-'))
+  symlinkSync(elsewhere, join(dir, 'linkdir'))
+  let throughDir = ''
+  try { keepSession(join(dir, 'linkdir', 'site.json'), { cookies: [], origins: [] }) } catch (e) { throughDir = String((e as Error).message) }
+  check('keepSession: a directory that is a link is refused', /is a link/.test(throughDir) && !existsSync(join(elsewhere, 'site.json')), throughDir)
+  check('loadSession: none yet is null', loadSession(join(dir, '.browser', 'new.json')) === null)
+  const kept = loadSession(file)
+  check('loadSession: a kept session is read', kept !== null && 'session' in kept && kept.session.cookies.length === 1, JSON.stringify(kept))
+  check('loadSession: a link is refused', JSON.stringify(loadSession(linked)).includes('is a link'))
+  // A pipe at the name: read, it waited for a writer for ever and held the agent's command (or the person's terminal).
+  if (process.platform !== 'win32') {
+    const pipe = join(dir, '.browser', 'pipe.json')
+    execFileSync('mkfifo', [pipe])
+    check('loadSession: something that is not a plain file is refused, not read', JSON.stringify(loadSession(pipe)).includes('is not a plain file'))
+  }
+  for (const [name, body] of [['empty.json', '{}'], ['list.json', '[]'], ['broken.json', 'not json']]) {
+    const bad = join(dir, '.browser', name)
+    writeFileSync(bad, body)
+    const loaded = loadSession(bad)
+    check(`loadSession: ${body} is not a kept session, and the message says what to do`, loaded !== null && 'error' in loaded && /not a kept session: delete it, and sign in again with --login/.test(loaded.error), JSON.stringify(loaded))
+  }
+  rmSync(elsewhere, { recursive: true, force: true })
+  rmSync(dir, { recursive: true, force: true })
+}
+
 // The output: title, address, the text tidied, and a cut that says so.
 const printed = shape('Title', 'https://e.x/', 'one  \n\n\n\ntwo', 100)
 check('the text is tidied under its title and address', printed === 'title: Title\nurl: https://e.x/\n\none\n\ntwo', JSON.stringify(printed))
@@ -118,11 +167,18 @@ if (ready.code !== 0) {
     // A request its server never answers (a long poll): the tool reads the page and ends, not when the server lets go.
     '/held': '<!doctype html><title>Held</title><body><p>still polling</p><script>fetch("/hold")</script></body>',
   }
+  const sid = `sess-${Math.random().toString(36).slice(2, 10)}`
   const server = createServer((req, res) => {
     if (req.url === '/slow') { setTimeout(() => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('arrived-3e8') }, 400); return }
     if (req.url === '/to-metadata') { res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/redirected' }).end(); return }
     if (req.url === '/hop') { res.writeHead(302, { location: '/js' }).end(); return }
     if (req.url === '/hold') return
+    // A site that remembers who signed in by a cookie, as one does.
+    if (req.url === '/set') { res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': `sid=${sid}; HttpOnly; Path=/` }).end('<title>In</title><p>signed in</p>'); return }
+    // A page that fails and changes the session on the way: a failed run must not keep what it did.
+    if (req.url === '/broken') { res.writeHead(500, { 'content-type': 'text/html', 'set-cookie': 'sid=changed-by-error; Path=/' }).end('<title>Error</title><p>server error</p>'); return }
+    if (req.url === '/logout') { res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'sid=; Max-Age=0; Path=/' }).end('<title>Out</title><p>signed out</p>'); return }
+    if (req.url === '/whoami') { res.writeHead(200, { 'content-type': 'text/html' }).end(`<title>Who</title><p>session: ${/sid=([\w-]+)/.exec(req.headers.cookie ?? '')?.[1] ?? 'none'}</p>`); return }
     const body = pages[req.url ?? ''] ?? null
     res.writeHead(body === null ? 404 : 200, { 'content-type': req.url === '/data' ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8' })
     res.end(body ?? 'not here')
@@ -157,6 +213,43 @@ if (ready.code !== 0) {
   const held = await run([`${base}/held`])
   const heldFor = Date.now() - heldFrom
   check('a page that leaves a request waiting is read, and the tool ends', held.code === 0 && held.out.includes('still polling') && heldFor < 30_000, `${held.code} after ${heldFor} ms`)
+  // A session kept between runs: the first signs in and writes the file (only the user may read it); the second reads
+  // it and is still signed in. The control, without --state, is not.
+  const sessions = mkdtempSync(join(tmpdir(), 'browse-state-'))
+  const stateFile = join(sessions, '.browser', 'site.json')
+  const firstRun = await run([`${base}/set`, '--state', stateFile])
+  const kept = existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : ''
+  check('--state: the session is written after the run, for the user alone', firstRun.code === 0 && kept.includes(sid) && (statSync(stateFile).mode & 0o777) === 0o600, `${firstRun.code} ${existsSync(stateFile) ? (statSync(stateFile).mode & 0o777).toString(8) : 'no file'} ${firstRun.err.slice(0, 120)}`)
+  // A file left readable by others is made the user's alone again when it is written.
+  if (existsSync(stateFile)) chmodSync(stateFile, 0o644)
+  const again = await run([`${base}/whoami`, '--state', stateFile])
+  check('--state: the next run is still signed in', again.code === 0 && again.out.includes(`session: ${sid}`), again.out.slice(0, 200))
+  check('--state: a file others could read is the user\'s alone again', existsSync(stateFile) && (statSync(stateFile).mode & 0o777) === 0o600, existsSync(stateFile) ? (statSync(stateFile).mode & 0o777).toString(8) : 'no file')
+  const anonymous = await run([`${base}/whoami`])
+  check('without --state a run is signed out', anonymous.code === 0 && anonymous.out.includes('session: none'), anonymous.out.slice(0, 200))
+  // A run that failed leaves the kept session as it was: an error page is no reason to replace a good one.
+  const beforeFailed = readFileSync(stateFile, 'utf8')
+  const failedRun = await run([`${base}/broken`, '--state', stateFile])
+  check('--state: a failed run leaves the kept session as it was', failedRun.code === 4 && readFileSync(stateFile, 'utf8') === beforeFailed, `${failedRun.code}`)
+  // One that ends signed out is said, with the session before it kept.
+  const out = await run([`${base}/logout`, '--state', stateFile])
+  check('--state: a run that ends signed out says so, and the session before it is in .prev', out.code === 0 && /looks signed out/.test(out.err) && !readFileSync(stateFile, 'utf8').includes(sid) && existsSync(`${stateFile}.prev`) && readFileSync(`${stateFile}.prev`, 'utf8').includes(sid), out.err.slice(0, 200))
+  const corrupt = join(sessions, '.browser', 'corrupt.json')
+  writeFileSync(corrupt, '{}')
+  const refusedRun = await run([`${base}/whoami`, '--state', corrupt])
+  check('--state: a file that is not a kept session is refused before anything opens, and left as it was', refusedRun.code === 4 && /not a kept session/.test(refusedRun.err) && readFileSync(corrupt, 'utf8') === '{}', `${refusedRun.code} ${refusedRun.err.slice(0, 160)}`)
+  // --login's end without a window: the person closing the last tab ends it, and the session it had is kept.
+  const { chromium } = await import('playwright-core')
+  const loginBrowser = await chromium.launch({ headless: true })
+  const loginFile = join(sessions, '.browser', 'login.json')
+  const ending = signIn(loginBrowser, `${base}/set`, loginFile)
+  for (let i = 0; i < 50 && !loginBrowser.contexts().some((c) => c.pages().some((p) => p.url().endsWith('/set'))); i++) await new Promise((r) => setTimeout(r, 100))
+  await new Promise((r) => setTimeout(r, 300))
+  for (const context of loginBrowser.contexts()) for (const page of context.pages()) await page.close()
+  const loginCode = await ending
+  check('--login: closing the last tab keeps the session it had', loginCode === 0 && existsSync(loginFile) && readFileSync(loginFile, 'utf8').includes(sid), `${loginCode}`)
+  await loginBrowser.close()
+  rmSync(sessions, { recursive: true, force: true })
   const gone = await run([`${base}/nothing-here`])
   check('a page that answers with an error status fails, and still shows what it said', gone.code === 4 && gone.out.includes('not here') && /answered 404/.test(gone.err), `${gone.code} ${gone.err.slice(0, 120)}`)
   const file = await run(['file:///etc/hosts'])

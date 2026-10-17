@@ -92,10 +92,13 @@ node test/run-scenario.ts test/scenarios/recall-immediate.json
 If the row count stays flat after conversations, the refresh job is not running:
 `launchctl print gui/$(id -u)/ai.deepbot.recall-index`.
 
-- **A browser without a session.** `web_fetch` runs no JavaScript; for such a page the agent runs
-  `dist/tools/browse.js`, a headless browser that types, clicks and screenshots one page per run. It
-  keeps nothing between runs (no login, no cookies), so a page behind a sign-in stays out of reach,
-  and it needs Chromium's headless shell installed (the installer does it). It prints the page's own
+- **A browser, signed in only where you signed it in.** `web_fetch` runs no JavaScript; for such a page
+  the agent runs `dist/tools/browse.js`, a headless browser that types, clicks and screenshots one page per
+  run. A site that needs a sign-in is reached only through a session you keep for it (`--login`, then
+  `--state`; docs/setup.md), and a site that refuses sign-in in a browser driven by automation stays out of
+  reach. The session file holds the account's cookies, and the agent's commands can read it: whoever can
+  talk to the bot in that workspace can browse as you there. It needs Chromium's headless shell installed
+  (the installer does it), and `--login` a browser with a window. It prints the page's own
   text, not that of frames inside it. Text given to `--type` is on the command line, where the process
   list and the session log show it: not for a password. Its proxy carries what the browser sends over
   TCP; WebRTC's UDP does not go through it. `web_fetch` is bounded by the tool

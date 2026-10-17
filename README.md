@@ -138,7 +138,7 @@ and by scenarios run against a real model.
   Another user can open the pipe read-only: that gets nothing, and gives way to a terminal when the
   places are full.
 - Recall matches words, not meaning. A paraphrase that shares no distinctive word can miss.
-- A page that draws itself with JavaScript is read with a headless browser, one page per run: no login, no session kept.
+- A page that draws itself with JavaScript is read with a headless browser, one page per run; a site that needs a sign-in, through a session you keep for it (`--login`).
 - Slack is used live. Discord and Telegram are tested against mocked APIs, not yet a live server.
 - On Telegram and Discord anyone who finds the bot can message it. List who may:
   `dsh gateway setup telegram --users <your id>` ([who may talk to it](docs/setup.md#connecting-a-messenger-dsh-gateway)).

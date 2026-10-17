@@ -96,8 +96,11 @@ Decided against:
   from the unpacked bundle), but the runtime under `~/.dsh/dsh-runtimes` is unpacked by the app's host process
   at its start, and whether the document skills (their node is there) work before the app has been opened once
   is not known.
-- The browse tool on Linux and Windows: checked on macOS only, under the Seatbelt runner. A page behind a sign-in
-  is out of reach (no session is kept between runs). Not yet used from Slack by a person. A public page kept from a
+- The browse tool on Linux and Windows: checked on macOS only, under the Seatbelt runner. Not yet used from Slack by
+  a person. A kept session (`--state`) against a real site: checked with a local page that sets a cookie; sites
+  that bind a session to more than cookies and site storage (IndexedDB, a device check), or refuse sign-in in a
+  browser driven by automation, were not tried. `--login` was run by hand with ctrl+c; closing its window ends it
+  by the page's close event, not exercised. A public page kept from a
   private address is checked at the proxy and in the decision, not with a live public page (the suite has none).
 - The fetch gate against the harness's tool name: a manual probe (a fetch of the metadata address, refused with the
   gate's reason) is all that ties the gate to `web_fetch`; no daily scenario does, because the harness refuses that

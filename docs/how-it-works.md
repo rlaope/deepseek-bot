@@ -465,6 +465,24 @@ deadline it fetches only when a button is pressed, from a server that answers on
 each step it waits until nothing has been in flight for half a second, so a result that arrives by
 request is read once it has come.
 
+**A site that needs a sign-in** is reached through a session you keep for it. You sign in once, in a window,
+with `browse.js --login '<url>' --state <workspace>/.browser/<name>.json`, run in your own terminal; the tool
+keeps the session (its cookies and site storage) in that file, mode 600, when the last tab is closed or ctrl+c
+is pressed (the window's browser is launched without Playwright's own signal handlers, which closed it before
+the session was read; it is also read as it changes). The standing block names the files in the conversation's
+workspace's `.browser/` (plain `.json` names only), and the agent adds `--state <file>` to browse as that
+account. A run that went through writes the file back, so renewed cookies are kept, the one before as
+`.prev`; a failed run leaves it alone, and a run that ends signed out says so. The file is written to a fresh
+file and renamed over its name, and a path that is a link or in a linked directory is refused: the agent can
+make links in its workspace, and `--login` writes as you (found by review: a link made a run overwrite the
+file it pointed at). A file that is not a session is refused, not read as an empty one and written over. A
+tenant's sessions are in its own directory, and only its own are named to it. `test/browse.test.ts` checks
+the keeping without a browser (links, `.prev`, a file that is not a session), signs in on a local page, reads
+it signed in on the next run and signed out without `--state`, leaves a session alone after a failed run, and
+ends a `--login` by closing its last tab; `--login` was also run once with a window and ctrl+c. The file holds
+the account's cookies and the agent's commands can read it: keep one only for an account you would let the
+bot use.
+
 **It breaks the rule of no runtime dependency, by decision.** `playwright-core` (pinned, about 13 MB)
 is the one package the deployment resolves from `node_modules`, and only this tool loads it; the
 plugin itself still imports nothing. The browser is Chromium's headless shell, about 90 MB in the
@@ -907,6 +925,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 | `tenant.json` | one tenant cannot read another's file, by name or by path traversal |
 | `approval.json` | a turn that needs an approval ends instead of hanging |
 | `approval-gate.json` | the destructive-command gate: it asks, the request reaches the answerer, which fails closed with no platform to reach, and the file survives |
+| `browser-session.json` | the agent browses as an account it was signed in to: the kept session in the workspace's `.browser/` is named in the standing block, and only a run with it sees the account's name |
 | `mcp-ask.json` | a tool `askTools` names is asked for before it runs: the fixture's `vault_store` is refused, and the file only it can write never appears |
 | `mcp.json` | a tool of an MCP server the profile composes reaches the model: the answer comes from `mcp__fixture__vault_lookup` of `test/fixtures/mcp-fixture.mjs`; the test profile needs the fixture's row (docs/setup.md, MCP servers) |
 | `interrupt.json` | a running turn stopped mid-flight ends as `cancelled` |
@@ -949,7 +968,8 @@ Two things worth knowing before editing them:
   point.
 - **Not semantic.** Recall ranking is lexical: it matches shared words, so a differently-worded
   question can miss, and the block says so where the model reads it.
-- **A browser for one page at a time.** `browse.js` keeps nothing between runs: no login, no cookies, no tabs.
+- **A browser for one page at a time.** `browse.js` keeps no tabs between runs, and a sign-in only in a session file
+  you made for it (`--login`, `--state`).
 - **Not multi-tenant by default, and not voice or video.** One instance is one memory unless you
   turn tenant isolation on. Images are supported; audio, video and computer use are not.
 - **Not safe by construction, everywhere.** Read confinement is a policy boundary; the

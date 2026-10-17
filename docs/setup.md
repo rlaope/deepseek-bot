@@ -261,6 +261,30 @@ Set up once, by you:
 
 Not yet run here: no OAuth client was available when this was written (`PLAN.md`).
 
+## Sites that need a sign-in
+
+The agent's browser (`dist/tools/browse.js`) keeps no sign-in of its own. For a site you want it to read as
+you, sign in once in a window, in your own terminal, and keep the session in the agent's workspace:
+
+```bash
+# ~/.deepbot is an install's checkout; use your clone's path if you run from one.
+node ~/.deepbot/node_modules/playwright-core/cli.js install chromium      # once: a browser with a window
+node ~/.deepbot/dist/tools/browse.js --login 'https://intranet.example/' --state ~/dsh-agent/.browser/intranet.json
+```
+
+Sign in in the window, then close it (or press ctrl+c in the terminal): the session, its cookies and site
+storage, is kept in that file with mode 600. The bot names the files in its workspace's `.browser/` to the
+agent, which browses as that account by adding `--state <file>`. A run that went through writes the file
+back, so renewed cookies are kept, and keeps the one before as `<file>.prev`; a run that failed leaves it
+as it was, and one that ends signed out says so. A path that is a link, or in a directory that is one, is
+refused: the agent can make links in its workspace, and `--login` writes as you. With tenant isolation, put
+a tenant's session in that tenant's directory, under its own `.browser/`.
+
+The file is the account: the agent's commands can read it, and whoever can talk to the bot in that
+workspace can browse as you there. Keep one only for an account you would hand the bot, and delete the file
+(and its `.prev`) to sign it out. Some sites refuse sign-in in a browser driven by automation, or tie a
+session to more than cookies; those stay out of reach.
+
 ## Running it
 
 The installer leaves four launchd jobs; each script also takes `--status` and `--uninstall`.

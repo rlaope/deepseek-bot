@@ -14,22 +14,30 @@
  * nothing.
  *
  * Usage: node dist/tools/browse.js <url> [--click <selector>]... [--type <selector> <text>]...
- *        [--wait <ms>] [--screenshot <file.png>] [--max <chars>]
+ *        [--wait <ms>] [--screenshot <file.png>] [--max <chars>] [--state <file.json>]
+ *        node dist/tools/browse.js --login <url> --state <file.json>
  *        node dist/tools/browse.js --check
+ * --state keeps a signed-in session (its cookies and site storage) in a file: read before the steps,
+ * written back after them, readable by the user alone. --login opens a window for a person to sign
+ * in, for as long as they need, and keeps the session in that file when they close it; it is run by
+ * the person, in their own terminal, not by the agent.
  * The steps (--click, --type) run in the order given. A selector is Playwright's: CSS, or
  * text=Sign in, or role=button[name="Next"]. Text given to --type is in the command line, where
  * the process list and the session log show it: not for a password.
  * Exit: 0 read, 2 usage, 3 no browser, 4 the page could not be opened, answered with an error, or a step failed.
  */
-import { realpathSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import type { Browser, BrowserContext } from 'playwright-core'
 import { addressKind, createResolver, isMetadataHost, requestHost, startPolicyProxy, type Resolved } from '../netPolicy.js'
 
 export type Step = { kind: 'click'; selector: string } | { kind: 'type'; selector: string; text: string }
-export type Request = { url: string; steps: Step[]; waitMs: number; screenshot: string | null; max: number }
+export type Request = { url: string; steps: Step[]; waitMs: number; screenshot: string | null; max: number; state: string | null; login: boolean }
 
 export const USAGE = [
-  'usage: browse <url> [--click <selector>]... [--type <selector> <text>]... [--wait <ms>] [--screenshot <file.png>] [--max <chars>]',
+  'usage: browse <url> [--click <selector>]... [--type <selector> <text>]... [--wait <ms>] [--screenshot <file.png>] [--max <chars>] [--state <file.json>]',
+  '       browse --login <url> --state <file.json>     (a person signs in, in a window)',
   '       browse --check',
   'Opens the page in a headless browser, does the steps in order, and prints its title, address and visible text.',
   'A selector is CSS, or text=Sign in, or role=button[name="Next"].',
@@ -51,6 +59,8 @@ export function parseArgs(argv: readonly string[]): Request | { error: string } 
   let waitMs = 0
   let screenshot: string | null = null
   let max = DEFAULT_MAX
+  let state: string | null = null
+  let login = false
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     const value = () => {
@@ -68,6 +78,8 @@ export function parseArgs(argv: readonly string[]): Request | { error: string } 
         if (!Number.isFinite(ms) || ms < 0) return { error: '--wait takes milliseconds' }
         waitMs = Math.min(ms, LONGEST_WAIT)
       } else if (arg === '--screenshot') screenshot = value()
+      else if (arg === '--state') state = value()
+      else if (arg === '--login') login = true
       else if (arg === '--max') {
         const n = Number(value())
         if (!Number.isInteger(n) || n <= 0) return { error: '--max takes a number of characters' }
@@ -80,7 +92,9 @@ export function parseArgs(argv: readonly string[]): Request | { error: string } 
     }
   }
   if (url === null) return { error: 'no address given' }
-  return { url, steps, waitMs, screenshot, max }
+  if (login && state === null) return { error: '--login needs --state <file.json>, where the session is kept' }
+  if (login && steps.length > 0) return { error: '--login takes no steps: the person does them, in the window' }
+  return { url, steps, waitMs, screenshot, max, state, login }
 }
 
 /**
@@ -107,6 +121,108 @@ export function shape(title: string, address: string, text: string, max: number)
 const firstLine = (e: unknown) => String((e as Error)?.message ?? e).split('\n')[0]
 
 /**
+ * Why `file` cannot hold a session, or null. Never through a link: the agent can leave one at the file's name, or make
+ * its directory one, and --login writes as the person, outside the sandbox. Found by review: a link at the name made a
+ * run overwrite the file it pointed at.
+ */
+function sessionPathProblem(file: string): string | null {
+  for (const path of [dirname(file), file]) {
+    try { if (lstatSync(path).isSymbolicLink()) return `${path} is a link, and a session is not read or written through one` } catch { /* not there yet */ }
+  }
+  // A plain file or nothing: reading a pipe left at the name waits for a writer that never comes.
+  try { if (!lstatSync(file).isFile()) return `${file} is not a plain file` } catch { /* not there yet */ }
+  return null
+}
+
+/** The session kept in `file`; null when there is none yet; or what is wrong with it. */
+export function loadSession(file: string): { session: { cookies: unknown[] } } | { error: string } | null {
+  const problem = sessionPathProblem(file)
+  if (problem !== null) return { error: problem }
+  if (!existsSync(file)) return null
+  let parsed: unknown
+  try { parsed = JSON.parse(readFileSync(file, 'utf8')) } catch { parsed = undefined }
+  // Anything else is not taken: read as an empty session, and written back over, it was lost.
+  if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as { cookies?: unknown }).cookies)) {
+    return { error: `${file} is not a kept session: delete it, and sign in again with --login` }
+  }
+  return { session: parsed as { cookies: unknown[] } }
+}
+
+/**
+ * Keep a session in `file`, mode 600 (the agent's commands can read it, as they read anything in its workspace).
+ * Written to a fresh file beside it and renamed over it: never through a link, never half-written. The one it replaces
+ * is kept as <file>.prev.
+ */
+export function keepSession(file: string, session: unknown): void {
+  const dir = dirname(file)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const problem = sessionPathProblem(file)
+  if (problem !== null) throw new Error(problem)
+  const temp = join(dir, `.${basename(file)}.${process.pid}.${Date.now().toString(36)}.tmp`)
+  writeFileSync(temp, JSON.stringify(session), { mode: 0o600, flag: 'wx' })
+  try {
+    if (existsSync(file)) renameSync(file, `${file}.prev`)
+    renameSync(temp, file)
+  } catch (e) {
+    rmSync(temp, { force: true })
+    throw e
+  }
+}
+
+/** The session a load found, or null. */
+const sessionOf = (loaded: ReturnType<typeof loadSession>) => loaded !== null && 'session' in loaded ? loaded.session : null
+
+/** A context that starts from a kept session, when there is one. */
+function openContext(browser: Browser, session: { cookies: unknown[] } | null): Promise<BrowserContext> {
+  return browser.newContext({ acceptDownloads: false, serviceWorkers: 'block', ...(session !== null ? { storageState: session as never } : {}) })
+}
+
+/**
+ * --login: a window for the person to sign in, open as long as they need. It ends when the last tab is closed, the
+ * browser quits, or ctrl+c (the browser is launched without Playwright's own signal handlers, which closed it before the
+ * session was read). The session is read as it changes and every two seconds, since a browser that quit outright has
+ * none left to read, and kept in `state`. Exported so the suite can end it by closing the tab itself.
+ */
+export async function signIn(browser: Browser, url: string, state: string): Promise<number> {
+  const loaded = loadSession(state)
+  if (loaded !== null && 'error' in loaded) { console.error(`browse: ${loaded.error}`); return 4 }
+  const context = await openContext(browser, sessionOf(loaded))
+  let last: unknown = null
+  let reading: ReturnType<typeof setTimeout> | undefined
+  const read = () => context.storageState().then((s) => { last = s }, () => {})
+  const soon = () => { clearTimeout(reading); reading = setTimeout(() => { void read() }, 300) }
+  context.on('response', soon)
+  const tick = setInterval(() => { void read() }, 2_000)
+  let finish: () => void = () => {}
+  const ended = new Promise<void>((done) => { finish = done })
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
+  for (const signal of signals) process.on(signal, finish)
+  context.on('page', (page) => page.on('close', () => { if (context.pages().length === 0) finish() }))
+  browser.on('disconnected', finish)
+  const page = await context.newPage()
+  await page.goto(url, { timeout: 30_000 }).catch((e) => console.error(`browse: ${firstLine(e)}`))
+  await read()
+  console.log(`Sign in in the window that opened, then close it (or press ctrl+c here). The session is kept in ${state}.`)
+  await ended
+  clearInterval(tick)
+  clearTimeout(reading)
+  for (const signal of signals) process.off(signal, finish)
+  const session = await context.storageState().catch(() => last)
+  if (session === null) {
+    console.error('browse: the session could not be read; nothing was kept')
+    return 4
+  }
+  try {
+    keepSession(state, session)
+  } catch (e) {
+    console.error(`browse: the session could not be kept (${firstLine(e)})`)
+    return 4
+  }
+  console.log(`browse: the session is kept in ${state}`)
+  return 0
+}
+
+/**
  * Whether the page asked for is on this machine or its network: every address its name resolved to is private. Then
  * what it loads may be there too (a dev server, an intranet page). A public page's may not, and a name with a public
  * address among private ones is a public page: the page may come from that one, which its owner chose.
@@ -129,12 +245,19 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error('browse: playwright-core is not installed in this checkout (pnpm install).')
     return 3
   }
-  const launch = async (proxyPort: number | null) => {
+  const launch = async (proxyPort: number | null, windowed = false) => {
     try {
-      return await chromium.launch({ headless: true, timeout: 20_000, ...(proxyPort === null ? {} : { proxy: { server: `http://127.0.0.1:${proxyPort}` } }) })
+      return await chromium.launch({
+        headless: !windowed, timeout: 20_000,
+        // A window's run ends on the person's signals, handled in signIn; Playwright's own closed the browser first.
+        ...(windowed ? { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false } : {}),
+        ...(proxyPort === null ? {} : { proxy: { server: `http://127.0.0.1:${proxyPort}` } }),
+      })
     } catch (e) {
       const cli = fileURLToPath(new URL('../../node_modules/playwright-core/cli.js', import.meta.url))
-      console.error(`browse: no browser to run (${firstLine(e)}). The installer puts one in place; by hand: node '${cli}' install chromium-headless-shell`)
+      console.error(windowed
+        ? `browse: no browser with a window (${firstLine(e)}). Add one with: node '${cli}' install chromium`
+        : `browse: no browser to run (${firstLine(e)}). The installer puts one in place; by hand: node '${cli}' install chromium-headless-shell`)
       return null
     }
   }
@@ -155,14 +278,38 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error(`browse: refused — ${refused}`)
     return 4
   }
+  // A kept session that cannot be used is said before anything opens: for --login, before the person signs in to a
+  // window whose session would then be lost.
+  const loaded = request.state !== null ? loadSession(request.state) : null
+  if (loaded !== null && 'error' in loaded) {
+    console.error(`browse: ${loaded.error}`)
+    return 4
+  }
+  if (request.login && request.state !== null) {
+    try {
+      mkdirSync(dirname(request.state), { recursive: true, mode: 0o700 })
+      const problem = sessionPathProblem(request.state)
+      if (problem !== null) throw new Error(problem)
+    } catch (e) {
+      console.error(`browse: the session could not be kept there (${firstLine(e)})`)
+      return 4
+    }
+  }
   // Resolved once: the proxy keeps the answer for the run, so the page is fetched from the address that was judged.
   const resolve = createResolver()
   const pageAddresses = await resolve(requestHost(new URL(request.url).hostname))
   const proxy = await startPolicyProxy(opensPrivate(pageAddresses), resolve)
-  const browser = await launch(proxy.port)
+  // Signing in takes the person as long as it takes: no deadline.
+  if (request.login) clearTimeout(hardStop)
+  const browser = await launch(proxy.port, request.login)
   if (browser === null) { await proxy.close(); return 3 }
   try {
-    const context = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block' })
+    if (request.login && request.state !== null) {
+      const code = await signIn(browser, request.url, request.state)
+      if (proxy.blocked.length > 0) console.error(`browse: blocked during sign-in:\n${proxy.blocked.slice(0, BLOCKED_SHOWN).join('\n')}`)
+      return code
+    }
+    const context = await openContext(browser, sessionOf(loaded))
     const page = await context.newPage()
     // The status the page's own document came with; the last one, after any redirect.
     let status = 0
@@ -221,6 +368,18 @@ async function main(argv: readonly string[]): Promise<number> {
         () => console.log(`\nscreenshot: ${request.screenshot}`),
         (e) => console.error(`browse: no screenshot (${firstLine(e)})`),
       )
+    }
+    // The session as a run that went through left it: a site that renews its cookies keeps the account signed in. A
+    // failed run leaves the kept one as it was; one that ended signed out is said, with the one before it kept.
+    if (request.state !== null && failed === null) {
+      const before = sessionOf(loaded)?.cookies.length ?? 0
+      const kept = await context.storageState().then((s) => { keepSession(request.state as string, s); return s.cookies.length }, (e) => firstLine(e))
+      if (typeof kept === 'string') {
+        console.error(`browse: the session could not be kept (${kept})`)
+        failed = 'the session could not be kept'
+      } else if (kept === 0 && before > 0) {
+        console.error(`browse: the account looks signed out now (no cookies left); the session before this run is in ${request.state}.prev`)
+      }
     }
     return failed === null ? 0 : 4
   } finally {

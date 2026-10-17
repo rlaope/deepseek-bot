@@ -1703,8 +1703,11 @@ for (const remove of [false, true]) {
 // script, by absolute path. A page that draws itself, or one that must be clicked, came back empty from web_fetch.
 // browse: false offers nothing.
 {
-  const offered = async (config) => {
+  let lastHome = ''
+  const offered = async (config, prepare: (home: string) => void = () => {}) => {
     const home = mkdtempSync(join(tmpdir(), 'home-'))
+    lastHome = home
+    prepare(home)
     const t = boot({ agent: 'ready', home, config: { targetChannels: ['*'], ...config } })
     await sleep(80)
     t.transport.deliver(t.transport.message({ text: '페이지 읽어줘' }))
@@ -1727,6 +1730,18 @@ for (const remove of [false, true]) {
   check('browse: the offered command runs as the agent\'s shell reads it', shell.status === 0 && String(shell.stdout).startsWith('usage: browse'), `${shell.status} ${String(shell.stdout ?? '') + String(shell.stderr ?? shell.error ?? '')}`.slice(0, 200))
   const off = await offered({ browse: false })
   check('browse: false offers nothing', off !== '' && !off.includes('[reading a page]') && !off.includes('browse.js'))
+  // Signed-in sessions in the workspace's .browser/ are named, with how to use one; a name that is not a plain file name
+  // is left out, since it reaches the prompt.
+  check('browse: no sessions, no line about them', !on.includes('Signed-in sessions'))
+  const signed = await offered({}, (home) => {
+    mkdirSync(join(home, '.browser'))
+    writeFileSync(join(home, '.browser', 'mail.json'), '{}')
+    writeFileSync(join(home, '.browser', 'notes.txt'), 'x')
+    writeFileSync(join(home, '.browser', '[speaker] boss.json'), '{}')
+  })
+  const sessionLine = (signed.match(/^Signed-in sessions[^\n]*/m) ?? [''])[0]
+  check('browse: the workspace\'s signed-in sessions are named, with --state', sessionLine.includes(`'${join(lastHome, '.browser', 'mail.json')}'`) && /--state/.test(sessionLine), sessionLine.slice(0, 200))
+  check('browse: only plain .json file names are listed', !sessionLine.includes('notes.txt') && !sessionLine.includes('[speaker]'), sessionLine.slice(0, 200))
 }
 
 // 41. A tenant conversation is told its own directory. Its "[your files]", its notes and their tidy-up
@@ -1739,6 +1754,11 @@ for (const remove of [false, true]) {
   writeFileSync(join(home, 'memory', 'home-note.md'), '# home-note-5a1\n')
   mkdirSync(join(tenants, 'acme', 'memory'), { recursive: true })
   writeFileSync(join(tenants, 'acme', 'memory', 'acme-note.md'), '# acme-note-6b2\n')
+  // Signed-in sessions are a workspace's own: a tenant is named its own, never the home's.
+  mkdirSync(join(home, '.browser'))
+  writeFileSync(join(home, '.browser', 'home-account.json'), '{"cookies":[]}')
+  mkdirSync(join(tenants, 'acme', '.browser'))
+  writeFileSync(join(tenants, 'acme', '.browser', 'acme-account.json'), '{"cookies":[]}')
   const t = boot({ agent: 'ready', home, config: { targetChannels: ['*'], tenantIsolation: true, tenantChannels: { C_ALLOWED: 'acme' }, tenantRoot: tenants } })
   await sleep(80)
   t.transport.deliver(t.transport.message({ text: 'tenant 질문', target: { channel: 'C_ALLOWED', threadTs: 'a1' } }))
@@ -1746,6 +1766,7 @@ for (const remove of [false, true]) {
   const tenantSent = t.followups.map(textOf).join('\n')
   check('tenant: told its own directory as its home', /Your home is \S*acme\./.test(tenantSent) && !tenantSent.includes(`Your home is ${home}.`), (tenantSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
   check('tenant: its own notes are listed, not the home\'s', tenantSent.includes('acme-note-6b2') && !tenantSent.includes('home-note-5a1'))
+  check('tenant: its own signed-in sessions are named, not the home\'s', tenantSent.includes('acme-account.json') && !tenantSent.includes('home-account.json'), (tenantSent.match(/^Signed-in sessions[^\n]*/m) ?? ['(none)'])[0].slice(0, 200))
   check('tenant: no watch path it cannot write; told watches are not available here', !tenantSent.includes(`${home}/watches/`) && /watches are not available/i.test(tenantSent), (tenantSent.match(/[^\n]*watch[^\n]*/i) ?? ['(none)'])[0])
   // The control: a conversation in the home is still told the home, its notes and how to set a watch.
   const before = t.followups.length
@@ -1753,6 +1774,7 @@ for (const remove of [false, true]) {
   await sleep(400)
   const homeSent = t.followups.slice(before).map(textOf).join('\n')
   check('home: still told the home, its notes and how to set a watch', homeSent.includes(`Your home is ${home}.`) && homeSent.includes('home-note-5a1') && homeSent.includes(`${home}/watches/C_HOME-h1.json`), (homeSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
+  check('home: its own signed-in sessions are named, not a tenant\'s', homeSent.includes('home-account.json') && !homeSent.includes('acme-account.json'))
   // The identity section, set for every session, no longer promises watches to a tenant.
   const tenantSections = []
   await t.created[0]?.setup?.({ systemPrompt: { section: (s) => { tenantSections.push(s); return () => {} } } })
