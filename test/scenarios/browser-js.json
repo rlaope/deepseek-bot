@@ -1,0 +1,21 @@
+{
+  "_comment": "Does the bot read a page that draws itself, and act on it? page-js.html asks its server for the release's codename after load, and for the rollback deadline only when its Details button is pressed; the server (test/fixtures/page-server.mjs) answers only a request a browser makes itself. Neither value is in the page's source, and curl or web_fetch gets a refusal: only the browse tool, offered in the standing block and run with the agent's shell, can answer.",
+  "steps": [
+    {
+      "session": "J",
+      "say": "이 페이지를 열어서 이번 릴리스의 코드명을 알려줘. http://127.0.0.1:8899/page-js.html",
+      "expectContains": "ZENITH-7d3",
+      "expectToolUse": [
+        "bash"
+      ]
+    },
+    {
+      "session": "J",
+      "say": "그 페이지의 Details 버튼을 눌러야 나오는 롤백 기한은 배포 후 몇 분이야?",
+      "expectContains": "42",
+      "expectToolUse": [
+        "bash"
+      ]
+    }
+  ]
+}

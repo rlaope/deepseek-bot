@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      playwright-core:
+        specifier: 1.63.0
+        version: 1.63.0
     devDependencies:
       '@types/node':
         specifier: ^26.6.4
@@ -140,6 +144,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  playwright-core@1.63.0:
+    resolution: {integrity: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -213,6 +222,8 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
+
+  playwright-core@1.63.0: {}
 
   typescript@7.0.2:
     optionalDependencies:

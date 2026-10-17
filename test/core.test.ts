@@ -17,8 +17,10 @@ import './dist-fresh.ts'   // fails loudly on a stale dist
 import './scratch-dsh-home.ts'   // the recall index must not land in the real ~/.dsh
 
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, realpathSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, basename, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { apply } from '../dist/index.js'
 import { recallIndexPath } from '../dist/recallContext.js'
 import { createFakeTransport, type FakeTransportOptions } from './fake-transport.ts'
@@ -1626,6 +1628,32 @@ for (const remove of [false, true]) {
   try { await selfTest.created[0]?.setup?.({ systemPrompt: { section: (s) => { own.push(s); return () => {} } } }) } catch (e) { threw = String((e as Error).message) }
   check('identity: a turn outside any conversation is set up, and told so', threw === '' && /not in any conversation/.test(String(own.find((s) => s.name === 'deepbot:identity')?.text ?? '')), threw || String(own[0]?.text ?? '').split('\n')[1])
   selfTest.done()
+}
+
+// 40b. The browse tool is offered as the command the agent's shell runs: this process's node and the checkout's
+// script, by absolute path. A page that draws itself, or one that must be clicked, came back empty from web_fetch.
+// browse: false offers nothing.
+{
+  const offered = async (config) => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'))
+    const t = boot({ agent: 'ready', home, config: { targetChannels: ['*'], ...config } })
+    await sleep(80)
+    t.transport.deliver(t.transport.message({ text: '페이지 읽어줘' }))
+    await sleep(400)
+    const sent = t.followups.map(textOf).join('\n')
+    rmSync(home, { recursive: true, force: true })
+    t.done()
+    return sent
+  }
+  const script = fileURLToPath(new URL('../dist/tools/browse.js', import.meta.url))
+  const on = await offered({})
+  check('browse: offered as a command, with this node and the checkout\'s script', on.includes('[reading a page]') && on.includes(`'${process.execPath}' '${script}' '<url>'`), (on.match(/\[reading a page\][^\n]*\n[^\n]*\n[^\n]*/) ?? ['(none)'])[0].slice(0, 200))
+  // As a shell reads it: the line, with --help for the address, runs the tool.
+  const line = (on.match(/^(.*) '<url>' /m) ?? [])[1] ?? ''
+  const shell = spawnSync('/bin/bash', ['-c', `${line} --help`], { encoding: 'utf8' })
+  check('browse: the offered command runs as a shell reads it', shell.status === 0 && shell.stdout.startsWith('usage: browse'), `${shell.status} ${(shell.stdout + shell.stderr).slice(0, 160)}`)
+  const off = await offered({ browse: false })
+  check('browse: false offers nothing', off !== '' && !off.includes('[reading a page]') && !off.includes('browse.js'))
 }
 
 // 41. A tenant conversation is told its own directory. Its "[your files]", its notes and their tidy-up

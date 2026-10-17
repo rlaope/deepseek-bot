@@ -82,6 +82,9 @@ Decided against:
   from the unpacked bundle), but the runtime under `~/.dsh/dsh-runtimes` is unpacked by the app's host process
   at its start, and whether the document skills (their node is there) work before the app has been opened once
   is not known.
+- The browse tool on Linux and Windows: checked on macOS only, under the Seatbelt runner. A page behind a sign-in
+  is out of reach (no session is kept between runs). Not yet used from Slack by a person. A public page kept from a
+  private address is checked at the proxy and in the decision, not with a live public page (the suite has none).
 - The fetch gate against the harness's tool name: a manual probe (a fetch of the metadata address, refused with the
   gate's reason) is all that ties the gate to `web_fetch`; no daily scenario does, because the harness refuses that
   address too. The allowlist was not exercised live: a scenario would need its own profile with an allowlist.

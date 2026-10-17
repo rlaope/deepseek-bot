@@ -37,7 +37,8 @@ Order matters: when two conflict, the higher one wins.
 ### Non-goals
 
 - Replacing the owner's coding tools.
-- Browser automation, vision, multi-modal input.
+- Vision and multi-modal input. (Browser automation was one; a headless browser for one page at a time
+  is now a tool the agent runs, by the owner's decision.)
 - Being a product for other teams' Slack workspaces.
 - Semantic/vector search (may be revisited if keyword recall proves insufficient).
 

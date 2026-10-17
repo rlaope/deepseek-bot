@@ -53,7 +53,7 @@ cd "$REPO" || exit 1
 if [ "$QUICK" = 1 ]; then
   LIST="interrupt approval-gate"
 else
-  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser"
+  LIST="approval approval-gate isolation interrupt recall-immediate recall-paraphrase tenant injection browser browser-js"
 fi
 
 : > "$REPORT"
@@ -72,9 +72,14 @@ for name in $LIST; do
     (cd test/fixtures && python3 -m http.server 8899 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > /tmp/deepbot-qa-server.pid)
     sleep 2
   fi
+  # The script-drawn page's server answers its values only to a browser.
+  if [ "$name" = "browser-js" ]; then
+    ("$NODE" test/fixtures/page-server.mjs 8899 >/dev/null 2>&1 & echo $! > /tmp/deepbot-qa-server.pid)
+    sleep 2
+  fi
   out=$("$NODE" test/run-scenario.ts "$file" --timeout "$TIMEOUT" 2>&1)
   status=$?
-  if [ "$name" = "browser" ] && [ -f /tmp/deepbot-qa-server.pid ]; then
+  if { [ "$name" = "browser" ] || [ "$name" = "browser-js" ]; } && [ -f /tmp/deepbot-qa-server.pid ]; then
     kill "$(cat /tmp/deepbot-qa-server.pid)" 2>/dev/null
     rm -f /tmp/deepbot-qa-server.pid
   fi

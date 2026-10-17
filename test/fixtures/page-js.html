@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Release notes</title></head>
+<body>
+  <main id="notes">Loading…</main>
+  <button id="more" hidden>Details</button>
+  <p id="details"></p>
+  <!-- Neither value is in this file: the page asks its server for them, the deadline only once the button is
+       pressed, and the server answers only a browser (test/fixtures/page-server.mjs). -->
+  <script>
+    fetch('/codename').then((r) => r.text()).then((name) => {
+      document.getElementById('notes').innerHTML = '<h1>Release notes</h1><p>The codename for this release is <b></b>.</p>'
+      document.querySelector('#notes b').textContent = name
+      const more = document.getElementById('more')
+      more.hidden = false
+      more.onclick = () => fetch('/deadline').then((r) => r.text()).then((minutes) => {
+        document.getElementById('details').textContent = 'Rollback deadline: ' + minutes + ' minutes after the deploy.'
+      })
+    })
+  </script>
+</body>
+</html>

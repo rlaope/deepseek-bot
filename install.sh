@@ -204,6 +204,26 @@ build_checkout() {   # build_checkout <checkout>
   rm -f "$log"
 }
 
+# The browse tool's browser: Chromium's headless shell, the build this checkout's playwright-core names (about
+# 90 MB, once, in the user's cache; a rerun that finds it downloads nothing). Without it the bot works and the
+# tool says it has no browser, with this command: a failure here is said, and the install goes on.
+install_browser() {   # install_browser <checkout>
+  local log node
+  if [ ! -f "$1/node_modules/playwright-core/cli.js" ]; then note "no playwright-core in the checkout: no browser for the browse tool"; return 0; fi
+  node="${DEEPBOT_NODE:-$(command -v node || true)}"
+  log="$(mktemp)"
+  if [ -n "$node" ] && (cd "$1" && "$node" node_modules/playwright-core/cli.js install chromium-headless-shell) >"$log" 2>&1; then
+    note "a browser for the browse tool is ready"
+  elif [ -z "$node" ]; then
+    note "no browser for the browse tool (the bot works without it): no node to install one with"
+  else
+    note "no browser for the browse tool (the bot works without it). The installer said:"
+    tail -n 10 "$log" | sed 's/^/      /'
+    note "to add it later: cd '$1' && node node_modules/playwright-core/cli.js install chromium-headless-shell"
+  fi
+  rm -f "$log"
+}
+
 set_profile_language() {   # set_profile_language <patch> <en|ko|zh>
   sed -i '' -e "s/^    language: en$/    language: $2/" "$1"
 }
@@ -476,6 +496,7 @@ step "building"
 build_checkout "$DEEPBOT_DIR"
 [ -f "$DEEPBOT_DIR/dist/index.js" ] || die "the build produced no dist/index.js"
 note "dist/ ready"
+install_browser "$DEEPBOT_DIR"
 
 step "agent home and gateway profile"
 profile_dir="$DSH_HOME/profiles/$DEEPBOT_PROFILE"

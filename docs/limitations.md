@@ -86,9 +86,13 @@ node test/run-scenario.ts test/scenarios/recall-immediate.json
 If the row count stays flat after conversations, the refresh job is not running:
 `launchctl print gui/$(id -u)/ai.deepbot.recall-index`.
 
-- **No browser.** Link reading is an HTTP fetch: no JavaScript execution and no interaction,
-  so a page that renders its content client-side arrives empty. A headless browser would need
-  a browser engine in the deployment, which is not there. `web_fetch` is bounded by the tool
+- **A browser without a session.** `web_fetch` runs no JavaScript; for such a page the agent runs
+  `dist/tools/browse.js`, a headless browser that types, clicks and screenshots one page per run. It
+  keeps nothing between runs (no login, no cookies), so a page behind a sign-in stays out of reach,
+  and it needs Chromium's headless shell installed (the installer does it). It prints the page's own
+  text, not that of frames inside it. Text given to `--type` is on the command line, where the process
+  list and the session log show it: not for a password. Its proxy carries what the browser sends over
+  TCP; WebRTC's UDP does not go through it. `web_fetch` is bounded by the tool
   gate (scheme, metadata service, optional allowlist) and opens public addresses only; the agent's own
   commands (`curl`) are not bounded by that gate (`PLAN.md`, Open). Its output is not run through the
   injection guard — that covers channel history, attachments and material arriving in a

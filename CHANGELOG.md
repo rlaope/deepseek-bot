@@ -264,6 +264,21 @@ the caveat about version numbers is at the bottom.
   signature intact, and its CLI answered `--version` and booted the scenario profile for a real-model turn. README and docs/setup.md say how an agent runs the install without a terminal. Not
   verified: whether a harness placed this way and never opened as an app unpacks its runtime into
   `~/.dsh/dsh-runtimes` (the app's host process does that at its start, and the document skills' node is there).
+- **A headless browser the agent runs.** `web_fetch` runs no JavaScript, so a page that draws itself came back
+  empty, and nothing could be clicked or typed. `dist/tools/browse.js` opens a page in Chromium's headless shell,
+  lets it settle, types and clicks in the order asked, and prints the title, the address and the visible text
+  (`--screenshot` saves one). The adapter offers it in the standing block as a command with absolute paths when the
+  checkout has it (`browse: false` offers nothing); the agent runs it with its shell, under the same sandbox as any
+  command. It opens only http and https pages and downloads nothing. Every request the browser makes goes through a
+  proxy inside the tool that resolves the name and checks the address it connects to: never a cloud metadata
+  service, and a private address only from a page whose name resolves to private addresses alone. That holds for
+  each hop of a redirect, a frame, a window the page opens and a socket, which an interception of the page's own
+  requests missed; what was blocked is listed. The metadata list, which `web_fetch`'s gate shares, now also has
+  Azure's WireServer and Oracle Cloud's address. A page that answers with an error status, or runs past 75 s, fails the run and still shows what
+  it had. `playwright-core` (pinned) is the one runtime dependency, loaded only by this tool; the
+  installer downloads the headless shell (about 90 MB), and without it the bot works and the tool says how to add
+  it. A new scenario, `browser-js`, has a real model read a codename the page fetches after load and a deadline
+  it fetches when a button is pressed, from a server that answers only a browser.
 - **Recall finds a past said in other words.** Ranking was by the message's own words, so "되돌리기" never found
   a conversation that said "rollback". A message that points at the past, when this channel has anything to
   recall, now also asks the conversation's own model (its route, as its turn) for words related to it: synonyms,

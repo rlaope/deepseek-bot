@@ -115,7 +115,7 @@ suites on Node 22 with `pnpm run typecheck` in front of them.
 | Watches, reminders, health probe | verified unit; health restart verified against an injected failure |
 | Streaming tokens into Slack | implemented: the turn's text streams into the thread (chat.startStream / appendStream), and the answer is posted new while the streamed message is deleted; unit-checked against a stubbed Web API, its calls shaped by a live probe; a refusal falls back to the answer arriving whole |
 | Semantic/vector recall | **not implemented** — ranking is by words; a message that points at the past also ranks by words the conversation's model relates to it (synonyms, the other language), at the cost of a model call, so a paraphrase is found more often, not always |
-| Browser automation | **not implemented** — link reading is an HTTP fetch |
+| Browser automation | implemented as a command the agent runs (`dist/tools/browse.js`): a page drawn by JavaScript, typing, clicking, a screenshot; checked against a real browser and a real model |
 | Per-tenant *permission* preset | **not supported** — `permission` is read and never applied (`TODO` in `test/core.test.ts`) |
 
 ## How it works
@@ -415,19 +415,48 @@ the harness refuses a loopback or private one. `test:scenario:browser` serves it
 and its source, and seen live, the agent read it with `curl` from its shell after `web_fetch`
 refused the address.
 
-**What this is not:** a browser. It is an HTTP fetch — no JavaScript execution, no clicking, no
-form filling — so a page that renders its content client-side arrives empty. That is a real limit
-and it is written down rather than glossed over. Search is composed separately
-(`dsh-web-search-deepseek`) and needs `DEEPSEEK_API_KEY`.
+`web_fetch` is an HTTP fetch — no JavaScript runs, nothing is clicked — so a page that draws its
+content with a script arrived empty. Search is composed separately (`dsh-web-search-deepseek`) and
+needs `DEEPSEEK_API_KEY`.
 
-**Reading JavaScript-rendered pages is a decision that has not been taken, and it breaks a rule.**
-It needs a browser engine in the deployment, which would be the first runtime dependency this
-project has — hundreds of megabytes, a supply-chain surface, platform-specific binaries to keep
-current. Keeping that rule at zero is why the plugin resolves nothing from `node_modules` and why
-this deployment is a directory and a profile rather than a container. So the decision is recorded
-rather than assumed, with a concrete condition to revisit it: a page a user actually needs that
-arrives empty, more than once. Until then a client-rendered page is answered honestly — the fetch
-reports what it received, and an empty body is reported as empty.
+**For such a page there is a headless browser: `dist/tools/browse.js`.** The adapter offers it in
+the standing block as a command, with this process's node and the checkout's script by absolute path,
+when the script and `playwright-core` are in the checkout (`browse: false` offers nothing). The agent
+runs it with its shell:
+
+```
+'<node>' '<checkout>/dist/tools/browse.js' '<url>' [--type <selector> <text>]... [--click <selector>]... [--screenshot page.png]
+```
+
+It opens the page in Chromium's headless shell, lets it settle, does the steps in order, and prints
+the title, the address the page ended at and its visible text (20 000 characters unless `--max`
+says otherwise). A step that finds nothing fails the run and still shows the page. It runs under
+the agent's sandbox like any other command, so the browser writes only where the agent's commands
+may. On top of that it opens only `http` and `https` pages and downloads nothing, and the browser
+sends every request through a proxy inside the tool (`netPolicy.ts`). The proxy resolves the name,
+judges the address and connects to the address it judged, keeping the answer for the run (a name that
+answers differently the second time reaches nothing new). A cloud metadata service is refused always;
+a private address (this machine, the local network, a VPN's carrier-NAT range) only when every
+address the page's name resolves to is private, so a dev server or an intranet page works and a public
+page cannot reach into either (a name with one public address among private ones is a public page). Because the browser sends everything through it, this covers each hop of a redirect, a
+frame, a window the page opens and a socket; intercepting the page's own requests saw the first request
+of a redirect and none of a popup's. What it refused is listed under the page's text. A page that
+answers with an error status fails the run, and the run's work stops at 75 s with what the page showed
+by then printed. `test/net-policy.test.ts` checks the addresses and the proxy; `test/browse.test.ts`
+checks the tool against a real browser where one is installed (a page drawn by a script, typing and
+clicking, a redirect, a frame, a popup and a socket toward the metadata service, a request its server
+never answers, a screenshot) and says so where one is not; `test:scenario:browser-js` has a real model read a codename the page fetches after load and a
+deadline it fetches only when a button is pressed, from a server that answers only a browser
+(`test/fixtures/page-server.mjs`): neither is in the page's source, and curl gets a refusal. After
+each step it waits until nothing has been in flight for half a second, so a result that arrives by
+request is read once it has come.
+
+**It breaks the rule of no runtime dependency, by decision.** `playwright-core` (pinned, about 13 MB)
+is the one package the deployment resolves from `node_modules`, and only this tool loads it; the
+plugin itself still imports nothing. The browser is Chromium's headless shell, about 90 MB in the
+user's cache, which the installer downloads (`node node_modules/playwright-core/cli.js install
+chromium-headless-shell`); without it the bot works and the tool says it has no browser and how to
+add one.
 
 **It runs with bounds, because "in the sandbox" needed its own policy.** The harness's `web_fetch`
 tool runs in the harness rather than under the sandbox runner, so the tool gate bounds it (until
@@ -904,7 +933,7 @@ Two things worth knowing before editing them:
   point.
 - **Not semantic.** Recall ranking is lexical: it matches shared words, so a differently-worded
   question can miss, and the block says so where the model reads it.
-- **Not a browser.** Link reading is an HTTP fetch; no JavaScript, no clicking.
+- **A browser for one page at a time.** `browse.js` keeps nothing between runs: no login, no cookies, no tabs.
 - **Not multi-tenant by default, and not voice or video.** One instance is one memory unless you
   turn tenant isolation on. Images are supported; audio, video and computer use are not.
 - **Not safe by construction, everywhere.** Read confinement is a policy boundary; the

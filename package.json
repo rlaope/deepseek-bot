@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "test": "node test/dist-fresh.ts && node test/reconnect.test.ts && node test/core.test.ts && node test/recall.test.ts && node test/recall-workspaces.test.ts && node test/recall-context.test.ts && node test/notes.test.ts && node test/slack.test.ts && node test/tables.test.ts && node test/edges.test.ts && node test/failures.test.ts && node test/resources.test.ts && node test/usage.test.ts && node test/i18n.test.ts && node test/launcher.test.ts && node test/injection.test.ts && node test/telegram.test.ts && node test/discord.test.ts && node test/progress.test.ts && node test/confined-runner.test.ts && node test/delivery.test.ts && node test/history.test.ts && node test/attachments.test.ts && node test/persona-check.test.ts && node test/watch.test.ts && node test/safe-write.test.ts && node test/tui-render.test.ts && node test/tui-app.test.ts && node test/tui-panel.test.ts && node test/tui-questions.test.ts && node test/local.test.ts && node test/tui-client.test.ts && node test/health.test.ts && node test/install.test.ts && node test/update.test.ts && node test/gateway.test.ts && node test/secrets.test.ts .",
+    "test": "node test/dist-fresh.ts && node test/reconnect.test.ts && node test/core.test.ts && node test/recall.test.ts && node test/recall-workspaces.test.ts && node test/recall-context.test.ts && node test/notes.test.ts && node test/slack.test.ts && node test/tables.test.ts && node test/edges.test.ts && node test/failures.test.ts && node test/resources.test.ts && node test/usage.test.ts && node test/i18n.test.ts && node test/launcher.test.ts && node test/injection.test.ts && node test/telegram.test.ts && node test/discord.test.ts && node test/progress.test.ts && node test/confined-runner.test.ts && node test/delivery.test.ts && node test/history.test.ts && node test/attachments.test.ts && node test/persona-check.test.ts && node test/watch.test.ts && node test/safe-write.test.ts && node test/tui-render.test.ts && node test/tui-app.test.ts && node test/tui-panel.test.ts && node test/tui-questions.test.ts && node test/local.test.ts && node test/tui-client.test.ts && node test/health.test.ts && node test/install.test.ts && node test/update.test.ts && node test/gateway.test.ts && node test/net-policy.test.ts && node test/browse.test.ts && node test/secrets.test.ts .",
     "test:scenario": "node test/run-scenario.ts",
     "health": "node dist/service/health-check.js --status",
     "test:restart": "node test/run-scenario.ts test/scenarios/restart-1.json --dump /tmp/sessions.json && node test/run-scenario.ts test/scenarios/restart-2.json --seed /tmp/sessions.json",
@@ -51,6 +51,7 @@
     "test:immediate": "node test/run-scenario.ts test/scenarios/recall-immediate.json",
     "test:approval": "node test/run-scenario.ts test/scenarios/approval.json",
     "persona": "node dist/tools/persona-check.js",
+    "browse": "node dist/tools/browse.js",
     "init": "./init.sh",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json",
@@ -68,6 +69,7 @@
     "test:injection": "node test/injection.test.ts",
     "test:scenario:tenant": "node test/run-scenario.ts test/scenarios/tenant.json",
     "test:scenario:browser": "node test/run-scenario.ts test/scenarios/browser.json",
+    "test:scenario:browser-js": "node test/run-scenario.ts test/scenarios/browser-js.json",
     "test:profile": "node test/profile.test.ts",
     "test:slack": "node test/slack.test.ts",
     "qa:slack": "node dist/tools/qa-slack.js",
@@ -92,5 +94,8 @@
   "main": "dist/index.js",
   "bin": {
     "dsh": "dist/tui/main.js"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
   }
 }

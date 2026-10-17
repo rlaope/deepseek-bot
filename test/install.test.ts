@@ -116,6 +116,29 @@ const build = script.indexOf('build_checkout "$DEEPBOT_DIR"')
   const broken = build(null, 'echo "npm ERR! boom-4f5"; exit 1')
   check('build: an npm that fails stops the install, and says what npm said', broken.code !== 0 && broken.out.includes('npm ERR! boom-4f5') && !broken.calls.includes('npm run --silent build'), broken.out)
 }
+// The browse tool's browser, after the build: installed with the checkout's playwright-core; a failure is said and
+// the install goes on (the bot works without a browser); a checkout without playwright-core asks for nothing.
+{
+  const checkout = join(dir, 'browser-checkout')
+  const calls = join(dir, 'browser-calls')
+  const browser = (cli: string | null, env: Record<string, string> = { DEEPBOT_NODE: process.execPath }) => {
+    rmSync(checkout, { recursive: true, force: true }); rmSync(calls, { force: true })
+    mkdirSync(join(checkout, 'node_modules', 'playwright-core'), { recursive: true })
+    if (cli !== null) writeFileSync(join(checkout, 'node_modules', 'playwright-core', 'cli.js'), `require('fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n'); ${cli}`)
+    const r = withHelpers(`install_browser '${checkout}'; echo "rc=$?"`, env)
+    return { ...r, calls: existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : [] }
+  }
+  const ready = browser('process.exit(0)')
+  check('browser: the headless shell is installed with the checkout\'s playwright-core', ready.out.includes('rc=0') && JSON.stringify(ready.calls) === JSON.stringify(['install chromium-headless-shell']) && /ready/.test(ready.out), ready.out)
+  const failed = browser('console.log("download failed: net-7c1"); process.exit(1)')
+  check('browser: a failed download is said, with how to retry, and the install goes on', failed.out.includes('rc=0') && failed.out.includes('net-7c1') && /to add it later/.test(failed.out), failed.out)
+  // No node anywhere: said as that, not as an installer that said nothing.
+  const noNode = browser('process.exit(0)', { DEEPBOT_NODE: '', PATH: '/usr/bin:/bin' })
+  check('browser: with no node it says so, and the install goes on', noNode.out.includes('rc=0') && noNode.calls.length === 0 && /no node to install one with/.test(noNode.out) && !/installer said/.test(noNode.out), noNode.out)
+  const none = browser(null)
+  check('browser: without playwright-core nothing is asked for', none.out.includes('rc=0') && none.calls.length === 0 && /no playwright-core/.test(none.out), none.out)
+  check('browser: it comes after the build', script.indexOf('install_browser "$DEEPBOT_DIR"') > script.indexOf('build_checkout "$DEEPBOT_DIR"'))
+}
 // init.sh built again what install.sh had just built. A dry run of a copy of it, so nothing is written.
 {
   const copy = join(dir, 'init-copy')

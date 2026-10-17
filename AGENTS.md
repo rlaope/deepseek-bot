@@ -30,7 +30,8 @@ Minimum that solves the problem. Nothing speculative.
 
 - **No new runtime dependencies.** The plugin imports nothing from `node_modules`; adding one is a
   decision, not an implementation detail. Semantic recall was solved as lexical scoring for this
-  reason, and the limitation is written down instead of hidden.
+  reason, and the limitation is written down instead of hidden. The one decided exception is
+  `playwright-core`, pinned, loaded only by `tools/browse.ts`, never by the plugin.
 - **No knob that does not work.** A per-tenant `permission` key was read and never used, so it was
   removed rather than documented as supported. A half-working option is worse than a missing one.
   The installer refuses a `DSH_HOME` other than `~/.dsh` for the same reason: the services read
@@ -153,6 +154,7 @@ Define success criteria. Loop until verified.
 | `notes.ts`, `usage.ts`, `injection.ts` | note hygiene, token totals, flagging instruction-like text |
 | `i18n.ts`, `messages.ts` | the `language` setting (en, ko, zh) and what the bot itself says in each; the terminal's own words, English only, are `tui/strings.ts` |
 | `safeWrite.ts` | writes that never follow a link the agent left in its home |
+| `netPolicy.ts` | where a request may go: metadata and private addresses, and the proxy the browse tool's browser uses |
 | `service/` | launcher, sandbox runner, health probe, log rotation, scenario schedule, their installers |
 | `watch/` | the watch runner and its installer |
 | `install.sh`, `init.sh` | the one-line installer, and the scaffold of home and profile it calls |
@@ -160,6 +162,6 @@ Define success criteria. Loop until verified.
 | `agent/` | templates for a new agent home: `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md` |
 | `types/` | hand-written types for the harness and the platforms |
 | `test/` | unit suites (`*.test.ts`), real-model scenarios (`scenarios/`), the fake transport |
-| `tools/` | persona check, a live Slack QA script, the secret patterns |
+| `tools/` | persona check, a live Slack QA script, the secret patterns, the headless browser the agent runs (`browse.ts`) |
 | `docs/` | setup, how it works, limitations, harness API notes |
 | `SPEC.md`, `PLAN.md`, `CHANGELOG.md` | what it is for; what is done, open and unverified; what changed |
