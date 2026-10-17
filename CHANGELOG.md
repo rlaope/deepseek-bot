@@ -112,6 +112,13 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The terminal printed a wide table as its pipes and stars.** A table wider than the screen was left as
+  written, so a model's usual comparison table (long sentences in its cells, `**bold**` in the first column)
+  arrived as rows of `|` with the markers showing. Its widest columns are now narrowed and their cells wrap
+  inside them, with a rule between rows when a row wraps; a screen too narrow even for that shows the table as
+  a list, as Slack, Discord and Telegram do. Two more seen in the same answer: markup inside bold or a link's
+  label (`` **Run `/model`** ``, `[**docs**](url)`) was drawn as written, and a list item that wrapped repeated its
+  `•` or `2.` on every line; the first now nests, and a wrapped item hangs under its text.
 - **A command could not make a temp file.** The sandbox runner meant to let a command write its temp directory,
   but named it `/var/folders`, and Seatbelt matches the resolved path, `/private/var/folders`: every temp file a
   command made in its `TMPDIR` was refused (Python's `tempfile`, Node's `os.tmpdir()`, a browser's profile). Seen

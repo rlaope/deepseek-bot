@@ -8,7 +8,7 @@
  * styles; a code line wraps where it overflows, never at its spaces. A link's text carries its
  * target, which the screen turns into a clickable OSC 8 hyperlink.
  */
-import { graphemes, graphemeWidth, stringWidth } from './width.js'
+import { fit, graphemes, graphemeWidth, stringWidth } from './width.js'
 import type { Line, Span } from './text.js'
 
 export interface MarkdownStyles {
@@ -60,7 +60,10 @@ function bareUrl(token: string): string {
   }
 }
 
-/** Inline markup → styled pieces. Unknown or unbalanced markers stay as text. */
+/**
+ * Inline markup → styled pieces. Unknown or unbalanced markers stay as text. Markup nests inside
+ * emphasis and a link's label (`**run `x`**`, `[**docs**](url)`): the inner piece takes its own style.
+ */
 export function inline(text: string, base: string, s: MarkdownStyles): Span[] {
   const out: Span[] = []
   const push = (t: string, style: string, link?: string) => { if (t !== '') out.push(link === undefined ? { text: t, style } : { text: t, style, link }) }
@@ -80,12 +83,13 @@ export function inline(text: string, base: string, s: MarkdownStyles): Span[] {
     if (m[6] !== undefined && SHORTCODES[token.slice(1, -1)] === undefined) continue
     push(text.slice(last, at), base)
     if (m[1]) push(token.slice(1, -1), s.code)
-    else if (m[2]) push(token.slice(2, -2), s.bold)
-    else if (m[3] || m[4]) push(token.slice(1, -1), m[3] ? s.bold : s.italic)
+    else if (m[2]) out.push(...inline(token.slice(2, -2), s.bold, s))
+    else if (m[3] || m[4]) out.push(...inline(token.slice(1, -1), m[3] ? s.bold : s.italic, s))
     else if (m[5]) {
       const label = token.slice(1, token.indexOf(']'))
       const url = token.slice(token.indexOf('(') + 1, -1)
-      push(label, s.link, safeUrl(url))
+      const target = safeUrl(url)
+      for (const piece of inline(label, s.link, s)) out.push(target === undefined ? { text: piece.text, style: piece.style } : { ...piece, link: target })
       // Shown as well, for a terminal without hyperlinks and for a copy.
       if (url !== label) push(` (${url})`, s.dim)
     } else if (m[7]) {
@@ -234,31 +238,78 @@ const isRow = (raw: string) => /^\s*\|.*\|\s*$/.test(raw) || (raw.includes('|') 
 const isSeparator = (raw: string) => raw.includes('-') && cellsOf(raw).every((cell) => /^:?-+:?$/.test(cell))
 const cellsOf = (raw: string) => raw.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'))
 
+/** A column is not narrowed below this many cells, or below what it needs when that is less. */
+const MIN_COLUMN = 8
+
 /**
- * A GFM table, drawn with borders and its columns aligned by display width. Null when it does not
- * fit in `room` columns: then it is left as written, which still reads, rather than squeezed.
+ * Column widths that fit in `room`: each as wide as it needs, the widest narrowed first and evenly.
+ * Null when even columns narrowed to `MIN_COLUMN` do not fit.
+ */
+function fitColumns(natural: number[], room: number): number[] | null {
+  if (natural.reduce((n, w) => n + Math.min(w, MIN_COLUMN), 0) > room) return null
+  const widths = [...natural]
+  let left = room
+  const order = natural.map((_, c) => c).sort((a, b) => natural[a] - natural[b])
+  order.forEach((c, k) => { widths[c] = Math.min(natural[c], Math.floor(left / (order.length - k))); left -= widths[c] })
+  return widths
+}
+
+/**
+ * A GFM table, drawn with borders and its columns aligned by display width. Wider than `room`, its
+ * widest columns are narrowed and their cells wrap inside them, with a rule between rows so a
+ * wrapped row reads as one. Null when even narrowed columns do not fit.
  */
 function table(header: string[], aligns: Array<'left' | 'right' | 'center'>, body: string[][], room: number, s: MarkdownStyles): Span[][] | null {
   const columns = header.length
   const cell = (row: string[], c: number, base: string) => inline(row[c] ?? '', base, s)
   const rows = [header.map((_, c) => cell(header, c, s.bold)), ...body.map((row) => header.map((_, c) => cell(row, c, s.text)))]
   const widthOf = (spans: Span[]) => stringWidth(spans.map((sp) => sp.text).join(''))
-  const widths = header.map((_, c) => Math.max(1, ...rows.map((row) => widthOf(row[c]))))
-  if (1 + widths.reduce((n, w) => n + w + 3, 0) > room) return null
+  const widths = fitColumns(header.map((_, c) => Math.max(1, ...rows.map((row) => widthOf(row[c])))), room - 1 - 3 * columns)
+  if (widths === null) return null
   const border = (left: string, mid: string, right: string): Span[] => [{ text: `${left}${widths.map((w) => '─'.repeat(w + 2)).join(mid)}${right}`, style: s.dim }]
-  const drawRow = (row: Span[][]): Span[] => {
-    const spans: Span[] = [{ text: '│ ', style: s.dim }]
-    for (let c = 0; c < columns; c++) {
-      const free = widths[c] - widthOf(row[c])
-      const before = aligns[c] === 'right' ? free : aligns[c] === 'center' ? Math.floor(free / 2) : 0
-      if (before > 0) spans.push({ text: ' '.repeat(before), style: s.text })
-      spans.push(...row[c])
-      if (free - before > 0) spans.push({ text: ' '.repeat(free - before), style: s.text })
-      spans.push({ text: c < columns - 1 ? ' │ ' : ' │', style: s.dim })
-    }
-    return spans
+  const drawRow = (row: Span[][]): Span[][] => {
+    const pieces = row.map((spans, c) => wrapSpans(spans, widths[c], false).map((piece) => piece.spans))
+    return Array.from({ length: Math.max(...pieces.map((p) => p.length)) }, (_, k) => {
+      const spans: Span[] = [{ text: '│ ', style: s.dim }]
+      for (let c = 0; c < columns; c++) {
+        const piece = pieces[c][k] ?? []
+        const free = widths[c] - widthOf(piece)
+        const before = aligns[c] === 'right' ? free : aligns[c] === 'center' ? Math.floor(free / 2) : 0
+        if (before > 0) spans.push({ text: ' '.repeat(before), style: s.text })
+        spans.push(...piece)
+        if (free - before > 0) spans.push({ text: ' '.repeat(free - before), style: s.text })
+        spans.push({ text: c < columns - 1 ? ' │ ' : ' │', style: s.dim })
+      }
+      return spans
+    })
   }
-  return [border('┌', '┬', '┐'), drawRow(rows[0]), border('├', '┼', '┤'), ...rows.slice(1).map(drawRow), border('└', '┴', '┘')]
+  const [head, ...drawn] = rows.map(drawRow)
+  const rule = border('├', '┼', '┤')
+  const ruled = drawn.some((row) => row.length > 1)
+  return [border('┌', '┬', '┐'), ...head, rule, ...drawn.flatMap((row, k) => (ruled && k > 0 ? [rule, ...row] : row)), border('└', '┴', '┘')]
+}
+
+/**
+ * A table too narrow for its columns, as the chat platforms show one (`transports/tables.ts`): an item
+ * per row, its first cell in bold, the rest after a dash and, with three columns or more, named by
+ * their header.
+ */
+function tableAsList(header: string[], body: string[][], s: MarkdownStyles): Span[][] {
+  const joined = (parts: Span[][], between: string) => parts.flatMap((part, k) => (k > 0 ? [{ text: between, style: s.dim }, ...part] : part))
+  // As in the drawn table, cells past the header are not part of it.
+  const filled = body.map((row) => row.slice(0, header.length)).filter((row) => row.some((cell) => cell !== ''))
+  if (filled.length === 0) return header.some((cell) => cell !== '') ? [joined(header.filter((cell) => cell !== '').map((cell) => inline(cell, s.bold, s)), ' · ')] : []
+  // A header names its cells as a label: its words without their markup, cut short, since every row repeats it.
+  const labels = header.map((cell) => (header.length > 2 ? fit(inline(cell, s.dim, s).map((sp) => sp.text).join(''), 40) : ''))
+  return filled.map((row) => {
+    const named = row.slice(1).flatMap((cell, k) => {
+      if (cell === '') return []
+      const name = labels[k + 1] !== '' ? [{ text: `${labels[k + 1]}: `, style: s.dim }] : []
+      return [[...name, ...inline(cell, s.text, s)]]
+    })
+    const lead = row[0] === '' ? [] : [inline(row[0], s.bold, s)]
+    return lead.length > 0 && named.length > 0 ? [...lead[0], { text: ' — ', style: s.dim }, ...joined(named, ' · ')] : joined([...lead, ...named], ' · ')
+  })
 }
 
 /**
@@ -268,12 +319,14 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
   const lines: Line[] = []
   const lead = (extra: Span[] = []): Span[] => [{ ...prefix, decor: true }, ...extra.map((e) => ({ ...e, decor: true }))]
   const widthOfDecor = (decor: Span[]) => [prefix, ...decor].reduce((n, d) => n + stringWidth(d.text), 0)
-  const emit = (spans: Span[], decor: Span[], anywhere = false) => {
+  const emit = (spans: Span[], decor: Span[], anywhere = false, hang = decor) => {
     const room = Math.max(1, width - widthOfDecor(decor))
     wrapSpans(spans, room, anywhere).forEach((piece, i) => {
-      lines.push({ spans: [...lead(decor), ...piece.spans], soft: i > 0, ...(i > 0 ? { gap: piece.gap } : {}) })
+      lines.push({ spans: [...lead(i === 0 ? decor : hang), ...piece.spans], soft: i > 0, ...(i > 0 ? { gap: piece.gap } : {}) })
     })
   }
+  // A list item's mark is drawn once; its wrapped lines hang under its text.
+  const item = (spans: Span[], mark: string) => emit(spans, [{ text: mark, style: s.dim }], false, [{ text: ' '.repeat(stringWidth(mark)), style: s.dim }])
   const raws = text.split('\n')
   let fence: string | null = null
   for (let i = 0; i < raws.length; i++) {
@@ -291,14 +344,11 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
       const aligns = cellsOf(raws[i + 1]).map((d) => (d.endsWith(':') ? (d.startsWith(':') ? 'center' : 'right') : 'left') as 'left' | 'right' | 'center')
       let end = i + 2
       while (end < raws.length && isRow(raws[end]) && raws[end].trim() !== '') end++
-      const drawn = table(header, aligns, raws.slice(i + 2, end).map(cellsOf), Math.max(1, width - widthOfDecor([])), s)
-      if (drawn !== null) {
-        for (const row of drawn) lines.push({ spans: [...lead(), ...row], soft: false })
-        i = end - 1
-        continue
-      }
-      // Too wide to draw: the rows as written, which still read.
-      for (let k = i; k < end; k++) emit([{ text: raws[k], style: s.text }], [])
+      const body = raws.slice(i + 2, end).map(cellsOf)
+      const drawn = table(header, aligns, body, Math.max(1, width - widthOfDecor([])), s)
+      if (drawn !== null) for (const row of drawn) lines.push({ spans: [...lead(), ...row], soft: false })
+      // Too narrow for its columns: a list, which still reads.
+      else for (const row of tableAsList(header, body, s)) item(row, '• ')
       i = end - 1
       continue
     }
@@ -308,9 +358,9 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
     const quote = /^>\s?(.*)$/.exec(raw)
     if (quote !== null) { emit(inline(quote[1], s.quote, s), [{ text: '│ ', style: s.dim }]); continue }
     const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(raw)
-    if (bullet !== null) { emit(inline(bullet[2], s.text, s), [{ text: `${bullet[1]}• `, style: s.dim }]); continue }
+    if (bullet !== null) { item(inline(bullet[2], s.text, s), `${bullet[1]}• `); continue }
     const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(raw)
-    if (numbered !== null) { emit(inline(numbered[3], s.text, s), [{ text: `${numbered[1]}${numbered[2]}. `, style: s.dim }]); continue }
+    if (numbered !== null) { item(inline(numbered[3], s.text, s), `${numbered[1]}${numbered[2]}. `); continue }
     if (raw.trim() === '') { lines.push({ spans: lead(), soft: false }); continue }
     emit(inline(raw, s.text, s), [])
   }

@@ -735,7 +735,8 @@ is kept between runs in `$DSH_HOME/deepbot-tui/history.jsonl` (owner-only, the l
 What appears besides the conversation:
 
 - **Answers stream** as the model writes them (from `agent/assistant-stream`), with Markdown drawn
-  for a terminal: tables, code highlighted by token class for the common languages, and links you
+  for a terminal: tables (a wide one wrapped inside narrowed columns, a list on a screen too narrow
+  for that), code highlighted by token class for the common languages, and links you
   can click (OSC 8; only http(s) and mailto). The posted reply then takes the streamed text's place.
 - **Tool calls** show as Claude Code draws them: `● Name(what it was asked)` (the title from the
   harness's tool registry), the result under `⎿` — a read as `Read N lines`, a search as `Found N lines`,

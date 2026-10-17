@@ -332,6 +332,13 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   const copiedCode = extract(code, { line: 0, col: 0 }, { line: code.length - 1, col: 99 })
   check('markdown: a copy of wrapped code is the line as written, without the bar', copiedCode === 'const value = someFunction(argumentOne, argumentTwo)', JSON.stringify(copiedCode))
   check('markdown: no leading or trailing blank lines', md('\n\n본문\n\n').length === 1)
+  // A wrapped item hangs under its text: its mark is drawn once, not on every line. A quote's bar is on every line.
+  const items = md(['- the quick brown fox jumps over the lazy dog', '  12. the quick brown fox jumps over the lazy dog', '> the quick brown fox jumps over the lazy dog'].join('\n'), 24)
+  const marks = items.map(decor)
+  check('markdown: a wrapped list item shows its mark once and hangs under its text', marks.filter((m) => m === '  • ').length === 1 && marks.filter((m) => m === '    12. ').length === 1
+    && marks.includes('    ') && marks.includes('        ') && items.filter((l) => decor(l) === '  │ ').length > 1, JSON.stringify(marks))
+  const item = items.filter((l, k) => k < items.findIndex((x) => decor(x) === '    12. '))
+  check('markdown: a copy of a wrapped item is the item as written', extract(item, { line: 0, col: 0 }, { line: item.length - 1, col: 99 }) === 'the quick brown fox jumps over the lazy dog', JSON.stringify(extract(item, { line: 0, col: 0 }, { line: item.length - 1, col: 99 })))
 }
 
 // 12. A line diff, for an edit's card.
@@ -357,7 +364,8 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   const links = linked[0].spans.filter((sp) => sp.link !== undefined).map((sp) => `${sp.text}→${sp.link}`)
   check('markdown: a link and a bare URL carry their target, without the sentence\'s full stop', links.includes('문서→https://ex.am/ple') && links.includes('https://raw.example/path?q=1→https://raw.example/path?q=1'), JSON.stringify(links))
   check('markdown: a link to anything but http(s) or mailto is text only', !linked[0].spans.some((sp) => /javascript/.test(sp.link ?? '')) && drawn(linked[0]).includes('위험'))
-  check('markdown: a URL with a control character is no link', !md('[x](https://a.b/\x1b[2Jc)')[0].spans.some((sp) => sp.link !== undefined))
+  check('markdown: a URL inside the label of an unsafe link is no link either', !md('[see https://ok.com](javascript:x)', 200)[0].spans.some((sp) => sp.link !== undefined))
+  check('markdown: a URL with a control character is no link',!md('[x](https://a.b/\x1b[2Jc)')[0].spans.some((sp) => sp.link !== undefined))
   // Found in review: C1 controls (U+0080-9F) are escapes to some terminals, and a huge URL is rewritten per row.
   check('markdown: a URL with a C1 control or anything outside printable ASCII is no link', !md('[x](https://a/\u009c\u009d52;c;x\u009c)')[0].spans.some((sp) => sp.link !== undefined) && !md('[x](https://a/한글)')[0].spans.some((sp) => sp.link !== undefined))
   check('markdown: a URL too long to be one is no link', !md(`[x](https://a/${'p'.repeat(3000)})`, 200)[0].spans.some((sp) => sp.link !== undefined))
@@ -402,16 +410,42 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   unlinked.put(0, 0, '문서', 'L')
   check('screen: a link added to unchanged text is redrawn', diff(unlinked, screen).includes('\x1b]8;;https://ex.am/ple\x07'))
 
-  // Tables: borders, aligned columns by display width, header in bold; wider than the screen, left as written.
+  // Tables: borders, aligned columns by display width, header in bold; wider than the screen, wrapped in narrowed columns.
   const table = md(['| 이름 | 수량 | 비고 |', '|:---|---:|:-:|', '| 사과 | 3 | **신선** |', '| 배 | 12 |'].join('\n'), 60)
   const rows = table.map(drawn)
   check('markdown: a table is drawn with borders and aligned columns', JSON.stringify(rows) === JSON.stringify([
     '  ┌──────┬──────┬──────┐', '  │ 이름 │ 수량 │ 비고 │', '  ├──────┼──────┼──────┤', '  │ 사과 │    3 │ 신선 │', '  │ 배   │   12 │      │', '  └──────┴──────┴──────┘',
   ]), JSON.stringify(rows))
   check('markdown: the header and bold cells are bold', styled(table[1], 'B') === '이름|수량|비고' && styled(table[3], 'B') === '신선')
-  const wide = md(['| a | b |', '|---|---|', `| ${'긴'.repeat(40)} | x |`].join('\n'), 30)
-  check('markdown: a table wider than the screen is left as written', wide.some((l) => drawn(l).includes('| a | b |')) && !wide.some((l) => drawn(l).includes('┌')))
   check('markdown: pipes without a separator row are not a table', !md('a | b\nc | d').some((l) => drawn(l).includes('┌')))
+  // Seen in an answer: a table wider than the screen was printed as its pipes and stars. Its widest
+  // column is narrowed and its cells wrap inside their columns, every line within the screen.
+  const wide = md(['| a | b |', '|---|---|', `| ${'긴'.repeat(40)} | x |`].join('\n'), 30)
+  check('markdown: a table wider than the screen wraps its cells inside their columns', wide[0] !== undefined && drawn(wide[0]).includes('┌') && wide.every((l) => stringWidth(drawn(l)) <= 30)
+    && wide.map(drawn).join('').split('긴').length - 1 === 40 && !wide.some((l) => drawn(l).includes('|')), JSON.stringify(wide.map(drawn)))
+  const answer = md(['| Model property | What the bot can do with it | What you get |', '|---|---|---|',
+    '| **1M-token context** | Read a whole repository, a full document set, or months of thread history in one pass | Answers grounded in the actual code |',
+    '| **Vision** | Look at screenshots | Visual defects caught |'].join('\n'), 80)
+  const answerRows = answer.map(drawn)
+  check('markdown: a wrapped table draws no markers, keeps its bold, and fits the screen', answerRows.every((l) => stringWidth(l) <= 80 && !l.includes('**') && !l.includes('|'))
+    && answer.some((l) => styled(l, 'B').includes('1M-token')) && answerRows.join(' ').includes('Read a whole'), JSON.stringify(answerRows))
+  check('markdown: rows of a wrapped table are ruled apart, a table that fits is not', answerRows.filter((l) => l.trim().startsWith('├')).length === 2 && rows.filter((l) => l.trim().startsWith('├')).length === 1, JSON.stringify(answerRows))
+  // Too narrow for even narrowed columns: a list, as the chat platforms show a table.
+  const narrow = md(['| 항목 | **첫째** | 둘째 | 셋째 | 넷째 | 다섯째 |', '|---|---|---|---|---|---|', '| **사과** | 1 | 2 | 3 | 4 | 5 |'].join('\n'), 30)
+  check('markdown: a table too narrow for its columns becomes a list, its first cell bold and the rest named', narrow.length > 0 && narrow[0].spans.some((sp) => sp.decor && sp.text === '• ')
+    && styled(narrow[0], 'B') === '사과' && drawn(narrow[0]).includes('첫째: 1') && !narrow.some((l) => drawn(l).includes('|') || drawn(l).includes('**')), JSON.stringify(narrow.map(drawn)))
+  // Found in review: an empty header, or a row empty but for cells past the header, drew a bare bullet.
+  const bare = [...md(['|   |   |   |   |   |   |   |   |   |', '|-|-|-|-|-|-|-|-|-|'].join('\n'), 30),
+    ...md(['| a | b | c | d | e | f |', '|-|-|-|-|-|-|', '|  |  |  |  |  |  | z |', '| 1 |  |  |  |  |  |'].join('\n'), 20)]
+  check('markdown: a table as a list draws no empty item', bare.length > 0 && bare.every((l) => drawn(l).trim() !== '•'), JSON.stringify(bare.map(drawn)))
+  // Found in review: a header is repeated as a label in every row, so a long one made a list of seconds.
+  const labels = timed([`|${` ${'h'.repeat(5000)} |`.repeat(8)}`, `|${'---|'.repeat(8)}`, ...Array(600).fill(`|${' x |'.repeat(8)}`)].join('\n'))
+  check('markdown: a table with long headers is laid out as a list quickly', labels < 1500, `${labels}ms`)
+  // Seen in an answer: markup inside bold or a link's label was drawn as written.
+  const nested = md('2. **Run `/model` in the terminal** and [**문서**](https://ex.am/ple)', 200)
+  check('markdown: code inside bold and bold inside a link are styled, not drawn as markers', drawn(nested[0]).trim() === '2. Run /model in the terminal and 문서 (https://ex.am/ple)'
+    && styled(nested[0], 'C') === '/model' && styled(nested[0], 'B') === 'Run | in the terminal|문서'
+    && nested[0].spans.some((sp) => sp.text === '문서' && sp.link === 'https://ex.am/ple'), JSON.stringify(nested[0].spans))
 
   // Code: keywords, numbers, comments and strings by language; unknown languages plain; copy unchanged.
   const ts = md(['```ts', 'const n = 42 // 답', "if (ok) return 'yes'", '```'].join('\n'))
