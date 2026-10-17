@@ -235,6 +235,45 @@ rmSync(dir, { recursive: true, force: true })
   rmSync(paraDir, { recursive: true, force: true })
 }
 
+// Passages the conversation's model chose (index.ts asks it, from the channel's latest): a past said in words the
+// message shares none of was ranked below passages that only share surface words, or not at all.
+{
+  const pickDir = mkdtempSync(join(tmpdir(), 'deepbot-recallpick-'))
+  const pickPath = join(pickDir, 'pick.jsonl')
+  const pickRows = [
+    { ts: 10, role: 'user', sessionId: 'p1', channel: 'C', text: '백업 스크립트가 /tmp 에 쓰고 있었어. 복구 리허설 RCV-118' },
+    { ts: 20, role: 'user', sessionId: 'p2', channel: 'C', text: '고객 만족도 설문 응답률이 올랐어' },
+    { ts: 30, role: 'user', sessionId: 'p3', channel: 'C', text: '고객 자료 화면 글꼴을 바꿨어' },
+    { ts: 40, role: 'user', sessionId: 'p4', channel: 'D', text: '다른 채널의 고객 자료 이야기' },
+    { ts: 50, role: 'user', sessionId: 'own', channel: 'C', text: '이 대화 자신의 고객 자료 이야기' },
+  ]
+  writeFileSync(pickPath, pickRows.map((r) => JSON.stringify(r)).join('\n'))
+  const pick = createRecallContext({ indexPath: pickPath, channel: 'C', sessionId: 'own', topN: 2 })
+  const latest = pick.recent(10)
+  check('recent: this channel\'s, not this conversation\'s own, newest first', JSON.stringify(latest.map((r) => r.sessionId)) === JSON.stringify(['p3', 'p2', 'p1']), JSON.stringify(latest.map((r) => r.sessionId)))
+  check('recent: at most as many as asked', pick.recent(2).length === 2)
+  const question = '예전에 고객 자료를 통째로 잃을 뻔했던 일, 그 기록 번호가 뭐였지?'
+  const lexical = pick.block(question)
+  check('without a choice, the passage in other words is not shown', !lexical.includes('RCV-118'), lexical.split('\n').filter((l) => l.startsWith('- ')).join(' | ').slice(0, 160))
+  const chosen = pick.block(question, [], [pickRows[0]])
+  const listed = chosen.split('\n').filter((l) => l.startsWith('- '))
+  check('a chosen passage is shown first, though it shares no word', listed[0]?.includes('RCV-118') === true, listed.join(' | ').slice(0, 160))
+  check('and the block says some were chosen by the model', /chose/i.test(chosen), chosen.split('\n')[1]?.slice(0, 120))
+  check('chosen and matched passages together are held to topN', listed.length === 2, String(listed.length))
+  // The model's choice never takes every place: the passage that shares the most words keeps one.
+  const four = createRecallContext({ indexPath: pickPath, channel: 'C', sessionId: 'own', topN: 2 })
+  const crowded = four.block('지난번 고객 만족도 설문 결과', [], [pickRows[0], pickRows[2]])
+  const crowdedLines = crowded.split('\n').filter((l) => l.startsWith('- '))
+  check('a full choice leaves the best match by words its place', crowdedLines.length === 2 && crowdedLines[0].includes('RCV-118') && crowdedLines.some((l) => l.includes('만족도')), crowdedLines.join(' | ').slice(0, 200))
+  // With one place, it is the words' when they found something.
+  const single = createRecallContext({ indexPath: pickPath, channel: 'C', sessionId: 'own', topN: 1 })
+  const one = single.block('지난번 고객 만족도 설문 결과', [], [pickRows[0]]).split('\n').filter((l) => l.startsWith('- '))
+  check('with one place, the best match by words keeps it', one.length === 1 && one[0].includes('만족도'), one.join(' | ').slice(0, 160))
+  const both = pick.block(question, [], [pickRows[2]])
+  check('a passage both chosen and matched is shown once', (both.match(/글꼴/g) ?? []).length === 1, both.split('\n').filter((l) => l.startsWith('- ')).join(' | ').slice(0, 160))
+  rmSync(pickDir, { recursive: true, force: true })
+}
+
 const failed = results.filter((x) => !x.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -29,8 +29,9 @@ Don't assume. Don't hide confusion. Surface tradeoffs.
 Minimum that solves the problem. Nothing speculative.
 
 - **No new runtime dependencies.** The plugin imports nothing from `node_modules`; adding one is a
-  decision, not an implementation detail. Semantic recall was solved as lexical scoring for this
-  reason, and the limitation is written down instead of hidden. The one decided exception is
+  decision, not an implementation detail. Recall was solved without a vector index for this
+  reason (words, and the conversation's own model choosing among the latest passages), and its
+  limit is written down instead of hidden. The one decided exception is
   `playwright-core`, pinned, loaded only by `tools/browse.ts`, never by the plugin.
 - **No knob that does not work.** A per-tenant `permission` key was read and never used, so it was
   removed rather than documented as supported. A half-working option is worse than a missing one.

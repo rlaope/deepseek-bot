@@ -157,11 +157,16 @@ export function createRecallContext(options: RecallOptions) {
       try { return candidates().length > 0 } catch { return false }
     },
 
+    /** This conversation's latest passages, newest first: what the model is asked to choose from. */
+    recent(limit: number): RecallRow[] {
+      try { return candidates().sort((a, b) => Number(b.ts ?? 0) - Number(a.ts ?? 0)).slice(0, Math.max(0, limit)) } catch { return [] }
+    },
+
     /**
      * The block to inject, or '' when there is nothing to say. Never throws: a recall that fails
      * must not cost a turn.
      */
-    block(prompt: string, related: readonly string[] = []): string {
+    block(prompt: string, related: readonly string[] = [], chosen: readonly RecallRow[] = []): string {
       try {
         const query = [...new Set(words(prompt).map(stem))]
         // The model's related words: each line matched whole (a phrase split into its words brought in "the" and
@@ -171,7 +176,7 @@ export function createRecallContext(options: RecallOptions) {
           const ws = words(line)
           return ws.length === 1 ? stem(ws[0]) : flat(line)
         }))].filter((w) => w.length >= 2 && !query.includes(w) && !/^\d+$/.test(w) && !/^[0-9a-z]{1,2}$/.test(w))
-        if (query.length === 0 && extra.length === 0) return ''
+        if (query.length === 0 && extra.length === 0 && chosen.length === 0) return ''
         const runs = hanRuns(prompt)
         const rows = candidates()
         if (rows.length === 0) return ''
@@ -214,22 +219,34 @@ export function createRecallContext(options: RecallOptions) {
           })
           .filter((hit) => hit.score > 0)
           .sort((a, b) => b.score - a.score || Number(b.row.ts ?? 0) - Number(a.row.ts ?? 0))
-          .slice(0, topN)
-        if (ranked.length === 0) return ''
+        // What the model chose comes first: it read the passages, where the ranking only counted shared words. A
+        // passage both chosen and matched is shown once.
+        const same = (a: RecallRow, b: RecallRow) => a.sessionId === b.sessionId && a.ts === b.ts && a.text === b.text
+        // Never every place: the passage that shares the most words keeps one (a model that chose the four newest
+        // pushed out the one the words had found).
+        const picked = chosen.filter((row, i) => chosen.findIndex((other) => same(other, row)) === i).slice(0, ranked.length > 0 ? Math.max(0, topN - 1) : topN)
+        const shown = [...picked.map((row) => ({ row })), ...ranked.filter((hit) => !picked.some((row) => same(row, hit.row)))].slice(0, topN)
+        if (shown.length === 0) return ''
         // Unprompted — no word pointing at the past — only a strong match is worth the interruption.
-        // It used to need a trigger word, so "did anyone say X?" found nothing.
-        if (!this.triggered(prompt) && ranked[0].distinctive < 2) return ''
+        // It used to need a trigger word, so "did anyone say X?" found nothing. (The model chooses only for a message
+        // that points at the past.)
+        if (!this.triggered(prompt) && (ranked[0]?.distinctive ?? 0) < 2) return ''
 
-        const lines = ranked.map(({ row }) => {
+        const lines = shown.map(({ row }) => {
           const text = String(row.text).replace(/\s+/g, ' ').trim().slice(0, 240)
           return `- ${format(row.ts)}${row.role ?? 'unknown'}: ${text}`
         })
         const body = [
           '[earlier conversations, and what they imply]',
-          ranked.some((hit) => hit.widened)
-            ? 'Passages from past sessions that share words with this message or words related to it — matched by words, so'
-            : 'Passages from past sessions that share words with this message — matched lexically, so',
-          'this is not a semantic search and may miss a differently-worded question.',
+          ...(picked.length > 0 ? [
+            'Passages from past sessions: first those the model chose from the latest as about this message, then those',
+            'that share words with it. Older passages are matched by words only, so one put in other words can be missed.',
+          ] : [
+            ranked.some((hit) => hit.widened)
+              ? 'Passages from past sessions that share words with this message or words related to it — matched by words, so'
+              : 'Passages from past sessions that share words with this message — matched lexically, so',
+            'this is not a semantic search and may miss a differently-worded question.',
+          ]),
           ...lines,
           'Use them to decide the next step, and say the step. Do not summarise the passages back.',
         ].join('\n')

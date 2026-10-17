@@ -233,9 +233,13 @@ const DEFAULTS = {
   streamFlushMs: 1500,
   streamIdleMs: 120_000,
   streamRetryMs: 2000,
-  // How long a message that points at the past waits for the model's related words before recall goes without
-  // them; 0 asks for none.
+  // How long a message that points at the past waits for the model's related words (and its choice of passages)
+  // before recall goes without them; 0 asks for neither.
   recallExpandMs: 4000,
+  // How many of the channel's latest passages the model is asked to choose from, for a message that points at the
+  // past: matched by words, a past said in other words was outranked by passages that only shared surface words. 0
+  // asks nothing.
+  recallPickFrom: 40,
   // How often the mark on the person's message (a platform's reactions) is looked at while a turn runs; it changes
   // only when its digit does, so a turn makes about as many changes as it has digits, whatever this is.
   markEveryMs: 5000,
@@ -404,6 +408,8 @@ export function apply(ctx, config) {
   if (cfg.askTools != null && (!Array.isArray(cfg.askTools) || cfg.askTools.some((n: unknown) => typeof n !== 'string' || !/^(?:[^\s*]+\*?|\*)$/.test(n)))) {
     problems.push('askTools: must be a list of tool names (e.g. [mcp__mail__send_message, mcp__calendar__*])')
   }
+  // Each passage offered is up to 200 characters sent with every such message: a few hundred is already a page.
+  if (!Number.isInteger(cfg.recallPickFrom) || cfg.recallPickFrom < 0 || cfg.recallPickFrom > 200) problems.push(`recallPickFrom: must be a whole number from 0 to 200 (got: ${String(cfg.recallPickFrom)})`)
   if (!['open', 'local', 'public'].includes(cfg.commandNetwork)) problems.push(`commandNetwork: must be 'open', 'local' or 'public' (got: ${String(cfg.commandNetwork)})`)
   if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
     problems.push('fetchAllowedHosts: must be a list of host names (e.g. [example.com])')
@@ -1079,9 +1085,17 @@ export function apply(ctx, config) {
           return key === undefined ? null : key.split(':')[0]
         },
       })
-      const related = recallContext.triggered(prompt) && recallContext.hasRows() ? await relatedWords(prompt, sessionKey ?? '') : []
+      // Asked of the model together, under one deadline each: words related to the message, and which of the
+      // channel's latest passages are about it.
+      const asking = recallContext.triggered(prompt) && recallContext.hasRows()
+      const latest = asking && cfg.recallPickFrom > 0 ? recallContext.recent(cfg.recallPickFrom) : []
+      const [related, chosenAt] = asking
+        ? await Promise.all([relatedWords(prompt, sessionKey ?? ''), pickedPassages(prompt, sessionKey ?? '', latest.map((row) => String(row.text)))])
+        : [[], []]
       if (related.length > 0) log(`recall: ${related.length} related word(s) from the model`)
-      const past = recallContext.block(prompt, related)
+      const chosen = chosenAt.map((i) => latest[i])
+      if (chosen.length > 0) log(`recall: ${chosen.length} passage(s) chosen by the model from the latest ${latest.length}`)
+      const past = recallContext.block(prompt, related, chosen)
       if (past !== '') {
         parts.push(defuse(past))
         // A deterministic signal that the decision block reached the prompt, so a scenario can
@@ -1103,28 +1117,16 @@ export function apply(ctx, config) {
   }
 
   /**
-   * Words related to a message that points at the past — synonyms, the other language's words — asked of the
-   * conversation's own model, for recall to rank by as well: ranking by the message's own words missed a past said in
-   * other words. It costs a model call, and the turn waits for it, `recallExpandMs` at most; on any failure there are
-   * none, and the turn goes on.
+   * One short answer from the conversation's own model, for recall: on its route as its turn takes, reasoning off
+   * where the model can turn it off (then capped), else the least it has. The turn waits for it `recallExpandMs` at
+   * most, the route's lookup included; the lines that arrived whole by then are kept. Null when it was not had, which
+   * is said: a bad key or a quota would otherwise fail every such turn unseen.
    */
-  async function relatedWords(prompt: string, key: string): Promise<string[]> {
+  async function recallAsk(key: string, what: string, request: string, longest: number): Promise<string | null> {
     const service = llm()
-    if (!(cfg.recallExpandMs > 0) || typeof service?.stream !== 'function') return []
+    if (!(cfg.recallExpandMs > 0) || typeof service?.stream !== 'function') return null
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), cfg.recallExpandMs)
-    // Learned against a model with reasoning off: asked for "the same thing as the message" it rephrased the question,
-    // which matches no passage; asked for "what it refers to" it named what was asked ("Undo ID", "Undo token") and
-    // not the subject; and it took an instruction sent as a system message for nothing and answered the message. So
-    // the instruction and the message go as one, with an example from another subject.
-    const ask = [
-      'The message below asks about something said or done before. Name that thing or action (not what is asked about',
-      'it) in the other words someone might have used for it then: synonyms, related technical terms, and their Korean',
-      'and English equivalents. Do not answer the message. One term per line, one or two words, at most twelve; only',
-      'terms, nothing else.',
-      'Example. Message: "저번에 고른 점심 식당 이름이 뭐였지?" Terms:',
-      '점심', 'lunch', '식당', 'restaurant', '맛집', '가게',
-    ].join('\n')
     // The deadline covers all of it, the route's lookup included: the race below starts with the timer.
     const aborted = new Promise<'aborted'>((resolve) => controller.signal.addEventListener('abort', () => resolve('aborted')))
     let text = ''
@@ -1137,45 +1139,95 @@ export function apply(ctx, config) {
         const route = await turnModel(key)
         if (!route.provider || !route.model) return 'none' as const
         where = `${route.provider}/${route.model}`
-        // A list of words needs no reasoning: off, or the least the model has. A cap on the answer only with
+        // A short answer needs no reasoning: off, or the least the model has. A cap on the answer only with
         // reasoning off: a model that reasons unseen (its efforts unknown) spent a cap of 300 thinking and answered
         // nothing.
         const { efforts } = await modelInfo(route.provider, route.model)
         const least = ['off', 'minimal', 'low'].find((e) => efforts.includes(e))
         const controls = { ...(least !== undefined ? { reasoningEffort: least } : {}), ...(least === 'off' ? { maxTokens: 300 } : {}) }
         if (controller.signal.aborted) return 'done' as const
-        // Never half a character: a cut between the two halves of one outside the BMP.
-        const end = prompt.length > 2000 && /[\ud800-\udbff]/.test(prompt[1999]) ? 1999 : 2000
-        const call = service.stream({ provider: route.provider, model: route.model, ...controls, messages: [userMessage(`${ask}\n\nMessage:\n${prompt.slice(0, end)}`)], signal: controller.signal })
+        const call = service.stream({ provider: route.provider, model: route.model, ...controls, messages: [userMessage(request)], signal: controller.signal })
         for await (const chunk of call) {
           if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
           // The harness does not throw a failed call: it ends the stream with it.
           if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') failure = String(chunk.reason.failure?.code ?? chunk.reason.failure?.message ?? 'error').slice(0, 80)
-          // Enough: what is cut off at the end is not a term.
-          if (text.length > 600) { text = text.slice(0, text.lastIndexOf('\n') + 1); break }
+          // Enough: what is cut off at the end is not an answer.
+          if (text.length > longest) { text = text.slice(0, text.lastIndexOf('\n') + 1); break }
         }
         return 'done' as const
       })()
       const outcome = await Promise.race([work, aborted])
-      if (outcome === 'none') return []
+      if (outcome === 'none') return null
       if (outcome === 'aborted') {
-        log(`recall: related words given up after ${cfg.recallExpandMs} ms (${where})`)
-        // The lines that did arrive whole are still words.
-        text = text.slice(0, text.lastIndexOf('\n') + 1)
-      } else if (failure !== null) {
-        // Said: a bad key or a quota would otherwise fail every such turn unseen.
-        log(`recall: related words not had — ${where} answered ${failure}`)
-        return []
+        log(`recall: ${what} given up after ${cfg.recallExpandMs} ms (${where})`)
+        // The lines that did arrive whole are still an answer.
+        return text.slice(0, text.lastIndexOf('\n') + 1)
       }
-      // A term each, without its bullet or number ("11." left "11", which matched every date with an 11 in it); a
-      // translation in brackets, after a slash, a colon or a dash, or in a Chinese list is a term of its own.
-      return text.split(/[\n,;()/|，、；:：]+|\s-\s/u).map((t) => t.replace(/^\s*(?:[-*•·]|\d+[.)])\s*/u, '').trim()).filter((t) => t !== '' && t.length <= 40).slice(0, 24)
+      if (failure !== null) {
+        log(`recall: ${what} not had — ${where} answered ${failure}`)
+        return null
+      }
+      return text
     } catch (e) {
-      log(`recall: related words not asked (${String((e as Error)?.message ?? e).slice(0, 120)})`)
-      return []
+      log(`recall: ${what} not asked (${String((e as Error)?.message ?? e).slice(0, 120)})`)
+      return null
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /** The message as it goes to the model for recall: at most 2000 characters, never half of one. */
+  const recallMessage = (prompt: string) => prompt.slice(0, prompt.length > 2000 && /[\ud800-\udbff]/.test(prompt[1999]) ? 1999 : 2000)
+
+  /**
+   * Words related to a message that points at the past — synonyms, the other language's words — asked of the
+   * conversation's own model, for recall to rank by as well: ranking by the message's own words missed a past said in
+   * other words. On any failure there are none, and the turn goes on.
+   */
+  async function relatedWords(prompt: string, key: string): Promise<string[]> {
+    // Learned against a model with reasoning off: asked for "the same thing as the message" it rephrased the question,
+    // which matches no passage; asked for "what it refers to" it named what was asked ("Undo ID", "Undo token") and
+    // not the subject; and it took an instruction sent as a system message for nothing and answered the message. So
+    // the instruction and the message go as one, with an example from another subject.
+    const ask = [
+      'The message below asks about something said or done before. Name that thing or action (not what is asked about',
+      'it) in the other words someone might have used for it then: synonyms, related technical terms, and their Korean',
+      'and English equivalents. Do not answer the message. One term per line, one or two words, at most twelve; only',
+      'terms, nothing else.',
+      'Example. Message: "저번에 고른 점심 식당 이름이 뭐였지?" Terms:',
+      '점심', 'lunch', '식당', 'restaurant', '맛집', '가게',
+    ].join('\n')
+    const text = await recallAsk(key, 'related words', `${ask}\n\nMessage:\n${recallMessage(prompt)}`, 600)
+    if (text === null) return []
+    // A term each, without its bullet or number ("11." left "11", which matched every date with an 11 in it); a
+    // translation in brackets, after a slash, a colon or a dash, or in a Chinese list is a term of its own.
+    return text.split(/[\n,;()/|，、；:：]+|\s-\s/u).map((t) => t.replace(/^\s*(?:[-*•·]|\d+[.)])\s*/u, '').trim()).filter((t) => t !== '' && t.length <= 40).slice(0, 24)
+  }
+
+  /**
+   * Which of the channel's latest passages (`passages`, newest first) are about what a message that points at the
+   * past asks, by the conversation's own model: their indexes, the most relevant first, at most four. Matched by words,
+   * a past said in other words was outranked by passages that only shared surface words. Only numbers it was offered
+   * count; on any failure there are none.
+   */
+  async function pickedPassages(prompt: string, key: string, passages: readonly string[]): Promise<number[]> {
+    if (passages.length === 0) return []
+    const ask = [
+      'Below are passages from earlier conversations, numbered, and a message that asks about something said or done',
+      'before. Which passages are about that thing? Answer with their numbers only, the most relevant first, at most',
+      'four, separated by commas; answer 0 if none is. Do not answer the message.',
+      'Example. Passages: 1. 회의실 예약을 3층으로 바꿨어 2. 점심은 을지로 국수집으로 정했어',
+      'Message: "저번에 고른 점심 식당 이름이 뭐였지?" Answer: 2',
+    ].join('\n')
+    const list = passages.map((text, i) => `${i + 1}. ${text.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join('\n')
+    const text = await recallAsk(key, 'passage choice', `${ask}\n\nPassages:\n${list}\n\nMessage:\n${recallMessage(prompt)}`, 200)
+    if (text === null) return []
+    // The first line, and only when it is numbers alone ("Answer:" aside): what follows is the model explaining, and a
+    // line of prose ("Passages 4 to 1") names numbers it did not choose.
+    const first = (text.trim().split('\n')[0] ?? '').replace(/^\s*answer\s*:\s*/i, '').trim()
+    if (!/^[\d\s,.、，]+$/.test(first)) return []
+    const numbers = [...first.matchAll(/\d+/g)].map((m) => Number(m[0])).filter((n) => n >= 1 && n <= passages.length)
+    return [...new Set(numbers)].slice(0, 4).map((n) => n - 1)
   }
 
   // ── createUserMessage, inlined ────────────────────────────────────────────

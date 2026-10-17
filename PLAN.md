@@ -78,6 +78,12 @@ Decided against:
 
 ## Unverified
 
+- Recall's choice by the model over a large channel: measured on 24 passages. With hundreds, the latest 40 are
+  offered and older ones are matched by words; whether 40 is the right number, and the choice's quality over
+  passages cut at 200 characters, are not measured. Measured only on the test profile's route (OpenGateway,
+  reasoning off). That the choosing request (a direct model call) reaches no session log the indexer reads is
+  by reading the plugin, not the harness.
+
 - Google mail and calendar through `workspace-mcp` (docs/setup.md): written from its code and README, not run. It
   needs the owner's Google OAuth client, which was not available. Also unchecked: the first sign-in from a gateway
   under launchd (the server opens the browser itself), and the tool names `askTools` should list for it. An

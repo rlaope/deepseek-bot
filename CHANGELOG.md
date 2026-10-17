@@ -249,6 +249,22 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **Recall: the conversation's model chooses the passages about the message.** Matched by words (and the
+  words the model relates to the message), a past put in words the message shares none of was outranked by
+  newer passages on the same subject that only shared surface words.
+  - A message that points at the past now also has the model shown the channel's latest passages
+    (`recallPickFrom`, 40), numbered, and asked which are about it. It answers in numbers, at most four,
+    in parallel with the related words and under the same deadline. Its choice comes first in the block.
+  - Only a first line of numbers counts, and the passage that shares the most words keeps its place.
+  - A benchmark of facts, each among five newer near misses in the same words, a new daily scenario
+    (`recall-near`): words alone answered 4 of 8 over two runs, with the choice 8 of 8 (one route, a small
+    sample).
+  - It costs a second model call for such a message, up to about 8,000 characters of passages at 40.
+    `recallPickFrom: 0` turns it off; 200 is the most.
+- **A scenario's expected answers were readable by the agent.** The runner wrote each scenario, with every
+  step's expectation and seeded passages, to the user's temp, which the agent's commands read. In the first
+  benchmark run the agent answered five of eight questions by grep. It now writes the copy under the harness
+  home, which the commands cannot read, and removes it at exit; it never did.
 - **The agent's commands' network can be bounded: `commandNetwork`.** The sandbox confined what commands read
   and write, not where they connect, so a command reached the local network and, on a cloud host, the metadata
   service.

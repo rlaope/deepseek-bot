@@ -1,0 +1,71 @@
+{
+  "_comment": "A harder recall benchmark: each fact sits among five near misses on the same subject in the same words (each with a code of its own), all said after it, so ranking by words and recency puts them first. The index is written directly and autoIndex is off; no tool may read, so only the recall block answers, and a wrong passage gives a wrong code.",
+  "config": {
+    "autoIndex": false
+  },
+  "outside": {
+    "{RECALL_INDEX}": "{\"sessionId\": \"bench2-01\", \"ts\": 1790003600000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"백업 스크립트가 S3 버킷이 아니라 /tmp 에 쓰고 있던 걸 오늘 발견했어. 석 달치가 날아갈 뻔했고, 복구 리허설 기록은 RCV-118 이야.\"}\n{\"sessionId\": \"bench2-02\", \"ts\": 1790007200000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"백업 스크립트 실행 시간을 새벽 2시로 옮겼어. 변경 기록은 OPS-301.\"}\n{\"sessionId\": \"bench2-03\", \"ts\": 1790010800000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"S3 백업 버킷 비용이 조금 늘었어. 보고서는 FIN-771.\"}\n{\"sessionId\": \"bench2-04\", \"ts\": 1790014400000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"백업 복구 리허설을 다음 달에 하기로 했어. 일정은 CAL-120.\"}\n{\"sessionId\": \"bench2-05\", \"ts\": 1790018000000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"백업 대상에 위키 DB 를 추가했어. 티켓은 OPS-302.\"}\n{\"sessionId\": \"bench2-06\", \"ts\": 1790021600000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"고객 자료 화면에 내보내기 버튼을 달았어. 이슈는 UI-904.\"}\n{\"sessionId\": \"bench2-07\", \"ts\": 1790025200000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"고객사 아크메가 다음 분기부터 계약 갱신 안 한대. 이탈 사유 정리는 CHURN-77 에 적었어.\"}\n{\"sessionId\": \"bench2-08\", \"ts\": 1790028800000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"아크메가 계약 갱신 조건으로 할인 10% 를 요청했어. 메모는 SALES-410.\"}\n{\"sessionId\": \"bench2-09\", \"ts\": 1790032400000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"거래처 목록을 CRM 으로 옮겼어. 작업은 CRM-88.\"}\n{\"sessionId\": \"bench2-10\", \"ts\": 1790036000000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"다음 분기 계약 갱신 대상 정리는 SALES-411 에 있어.\"}\n{\"sessionId\": \"bench2-11\", \"ts\": 1790039600000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"아크메 담당자가 바뀌었대. 연락처는 CONTACT-19.\"}\n{\"sessionId\": \"bench2-12\", \"ts\": 1790043200000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"큰 거래처 세 곳에 감사 카드를 보냈어. 기록은 CS-55.\"}\n{\"sessionId\": \"bench2-13\", \"ts\": 1790046800000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"로그인 화면에서 비밀번호 틀릴 때 계정이 있는지 없는지 메시지가 달라서 사용자 존재가 드러났어. 수정 PR 은 SEC-1907.\"}\n{\"sessionId\": \"bench2-14\", \"ts\": 1790050400000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"로그인 화면 배경을 새 브랜드 색으로 바꿨어. PR 은 UI-1201.\"}\n{\"sessionId\": \"bench2-15\", \"ts\": 1790054000000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"비밀번호 최소 길이를 12자로 올렸어. PR 은 SEC-1910.\"}\n{\"sessionId\": \"bench2-16\", \"ts\": 1790057600000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"로그인 실패 5회면 계정을 잠그도록 했어. PR 은 SEC-1911.\"}\n{\"sessionId\": \"bench2-17\", \"ts\": 1790061200000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"보안 교육 이수율이 92% 야. 보고는 HR-77.\"}\n{\"sessionId\": \"bench2-18\", \"ts\": 1790064800000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"가입 화면에 약관 동의 체크를 추가했어. PR 은 UI-1202.\"}\n{\"sessionId\": \"bench2-19\", \"ts\": 1790068400000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"엑셀 내보내기에서 날짜가 미국식으로 나와서 정산팀이 3월과 1월을 헷갈렸어. 버그는 XLS-63.\"}\n{\"sessionId\": \"bench2-20\", \"ts\": 1790072000000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"엑셀 내보내기 파일 이름에 날짜를 붙였어. 이슈는 XLS-64.\"}\n{\"sessionId\": \"bench2-21\", \"ts\": 1790075600000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"정산팀이 다음 주부터 재택이래. 공지는 HR-81.\"}\n{\"sessionId\": \"bench2-22\", \"ts\": 1790079200000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"엑셀 템플릿 글꼴을 나눔고딕으로 통일했어. 이슈는 XLS-65.\"}\n{\"sessionId\": \"bench2-23\", \"ts\": 1790082800000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"회계 마감은 매달 5일까지야. 문서는 FIN-12.\"}\n{\"sessionId\": \"bench2-24\", \"ts\": 1790086400000, \"seq\": 1, \"role\": \"user\", \"sourceKind\": \"user\", \"channel\": \"scenario\", \"text\": \"날짜 선택기에서 주말을 회색으로 표시했어. 이슈는 UI-330.\"}\n"
+  },
+  "steps": [
+    {
+      "session": "H1",
+      "say": "예전에 우리가 고객 자료를 통째로 잃을 뻔했던 일 있었잖아. 그때 남긴 기록 번호가 뭐였지? 모르면 '없음'이라고만 답해.",
+      "expectContains": "RCV-118",
+      "expectNoToolUse": [
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "fs_read",
+        "fs_grep",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "session": "H2",
+      "say": "전에 큰 거래처 하나가 떠난다고 했던 거, 그 이유 정리한 번호가 뭐였더라? 모르면 '없음'이라고만 답해.",
+      "expectContains": "CHURN-77",
+      "expectNoToolUse": [
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "fs_read",
+        "fs_grep",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "session": "H3",
+      "say": "예전에 가입 여부가 새어 나가던 보안 문제 있었잖아, 그거 고친 번호 알려줘. 모르면 '없음'이라고만 답해.",
+      "expectContains": "SEC-1907",
+      "expectNoToolUse": [
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "fs_read",
+        "fs_grep",
+        "web_fetch",
+        "web_search"
+      ]
+    },
+    {
+      "session": "H4",
+      "say": "전에 회계 쪽에서 월이 뒤바뀌어 보였던 문제, 그 버그 번호가 뭐였지? 모르면 '없음'이라고만 답해.",
+      "expectContains": "XLS-63",
+      "expectNoToolUse": [
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "fs_read",
+        "fs_grep",
+        "web_fetch",
+        "web_search"
+      ]
+    }
+  ]
+}

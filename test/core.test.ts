@@ -1386,7 +1386,8 @@ for (const remove of [false, true]) {
 // message, with something to recall; a call that fails is said and the turn goes on, and a slow one costs it
 // recallExpandMs at most.
 {
-  const recallFor = async (llm, text, config = {}, { rows = null, state = {} } = {}) => {
+  // The choosing call (34c) is off here: these check the related words alone.
+  const recallFor = async (llm, text, config: Record<string, unknown> = {}, { rows = null, state = {} } = {}) => {
     const home = mkdtempSync(join(tmpdir(), 'home-'))
     const dshHome = mkdtempSync(join(tmpdir(), 'dsh-'))
     const previousDsh = process.env.DSH_HOME
@@ -1394,7 +1395,7 @@ for (const remove of [false, true]) {
     const index = recallIndexPath(home)
     mkdirSync(dirname(index), { recursive: true })
     writeFileSync(index, (rows ?? [{ ts: 1, role: 'assistant', sessionId: 'z', channel: 'C_ALLOWED', text: 'production rollback 절차 rb-5e1' }]).map((r) => JSON.stringify(r)).join('\n'))
-    const t = boot({ agent: 'ready', home, llm, config, state })
+    const t = boot({ agent: 'ready', home, llm, config: { recallPickFrom: 0, ...config }, state })
     await sleep(80)
     const started = Date.now()
     t.transport.deliver(t.transport.message({ text }))
@@ -1466,6 +1467,88 @@ for (const remove of [false, true]) {
   asked.length = 0
   const off = await recallFor(related, '지난번 배포 되감기 어떻게 했지', { recallExpandMs: 0 })
   check('related: recallExpandMs 0 turns it off', asked.length === 0 && off.sent !== '' && !off.sent.includes('rb-5e1'), off.sent.slice(0, 60))
+}
+
+// 34c. The conversation's model also chooses, from the channel's latest passages, the ones about the message: a past
+// put in words the message shares none of was outranked by passages that only shared surface words (the recall
+// benchmark: 3 of 8). Asked with the related words, under the same deadline; a failure is said, and recall goes on.
+{
+  const pickFor = async (llm, text, config: Record<string, unknown> = {}) => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'))
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-'))
+    const previousDsh = process.env.DSH_HOME
+    process.env.DSH_HOME = dshHome
+    const index = recallIndexPath(home)
+    mkdirSync(dirname(index), { recursive: true })
+    const rows = [
+      { ts: 10, role: 'user', sessionId: 'p1', channel: 'C_ALLOWED', text: '백업 스크립트가 /tmp 에 쓰고 있었어. 복구 리허설 RCV-118' },
+      { ts: 20, role: 'user', sessionId: 'p2', channel: 'C_ALLOWED', text: '고객 만족도 설문 응답률이 올랐어' },
+      { ts: 30, role: 'user', sessionId: 'p3', channel: 'C_ALLOWED', text: '고객 자료 화면 글꼴을 바꿨어' },
+      { ts: 40, role: 'user', sessionId: 'p4', channel: 'C_ALLOWED', text: '고객 자료 내보내기 버튼 색을 바꿨어' },
+    ]
+    writeFileSync(index, rows.map((r) => JSON.stringify(r)).join('\n'))
+    const t = boot({ agent: 'ready', home, llm, config: { recallTopN: 2, ...config } })
+    await sleep(80)
+    t.transport.deliver(t.transport.message({ text }))
+    for (let i = 0; i < 100 && t.followups.length === 0; i++) await sleep(10)
+    const sent = t.followups.map(textOf).join('\n')
+    if (previousDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousDsh
+    for (const dir of [home, dshHome]) rmSync(dir, { recursive: true, force: true })
+    t.done()
+    return { sent, logs: t.logs }
+  }
+  const asks = []
+  // Answers each call as asked: the choosing one with the number of the passage that holds the record.
+  const choosing = (answer = (list: string) => (list.split('\n').find((l) => l.includes('RCV-118')) ?? '').split('.')[0]) => ({
+    stream: async function* (options) {
+      asks.push(options)
+      const said = JSON.stringify(options.messages)
+      if (said.includes('Passages:')) {
+        const list = JSON.parse(said)[0].content.map((c) => c.text ?? '').join('').split('Passages:\n')[1].split('\n\nMessage:')[0]
+        yield { type: 'text-delta', text: answer(list) }
+      } else yield { type: 'text-delta', text: '- 무관한말' }
+      yield { type: 'finish' }
+    },
+  })
+  const question = '예전에 고객 자료를 통째로 잃을 뻔했던 일, 그 기록 번호가 뭐였지?'
+  const found = await pickFor(choosing(), question)
+  check('pick: a past in other words, chosen by the model, is recalled ahead of surface matches', found.sent.includes('RCV-118'), found.sent.slice(0, 120) || '(no followup)')
+  const pickAsk = asks.find((o) => JSON.stringify(o.messages).includes('Passages:'))
+  check('pick: asked once, with the passages numbered, newest first, and the message', asks.filter((o) => JSON.stringify(o.messages).includes('Passages:')).length === 1 && /1\. [^"]*내보내기/.test(JSON.stringify(pickAsk?.messages)) && JSON.stringify(pickAsk?.messages).includes('통째로'), JSON.stringify(pickAsk?.messages ?? []).slice(0, 200))
+  check('pick: and the related words are still asked', asks.some((o) => !JSON.stringify(o.messages).includes('Passages:')))
+  asks.length = 0
+  const few = await pickFor(choosing(), question, { recallPickFrom: 2 })
+  check('pick: offered no more than recallPickFrom passages', /1\. [^"]*2\. /.test(JSON.stringify(asks.find((o) => JSON.stringify(o.messages).includes('Passages:'))?.messages)) && !/3\. /.test(JSON.stringify(asks.find((o) => JSON.stringify(o.messages).includes('Passages:'))?.messages)) && !few.sent.includes('RCV-118'))
+  asks.length = 0
+  await pickFor(choosing(), question, { recallPickFrom: 0 })
+  check('pick: recallPickFrom 0 asks nothing', !asks.some((o) => JSON.stringify(o.messages).includes('Passages:')))
+  // Only numbers it was offered count: "0", a number past the list, or words choose nothing.
+  for (const reply of ['0', '9, 12', 'none of them']) {
+    asks.length = 0
+    const none = await pickFor(choosing(() => reply), question)
+    check(`pick: "${reply}" chooses nothing, and recall by words goes on`, !none.sent.includes('RCV-118') && /내보내기|글꼴/.test(none.sent), none.sent.slice(0, 80))
+  }
+  // A first line that is not numbers alone is not a choice: "Passages 4 to 1 (of 4)" names numbers it did not choose.
+  for (const reply of ['Passages 4 to 1 (of 4)', 'I think 4 is closest']) {
+    const prose = await pickFor(choosing(() => reply), question)
+    check(`pick: "${reply}" chooses nothing`, !prose.sent.includes('RCV-118'), prose.sent.slice(0, 80))
+  }
+  const labelled = await pickFor(choosing((list) => `Answer: ${(list.split('\n').find((l) => l.includes('RCV-118')) ?? '').split('.')[0]}`), question)
+  check('pick: "Answer: N" is a choice', labelled.sent.includes('RCV-118'), labelled.sent.slice(0, 80))
+  // The first line only: what follows is the model explaining, and its numbers are not a choice.
+  const explained = await pickFor(choosing((list) => `${(list.split('\n').find((l) => l.includes('글꼴')) ?? '').split('.')[0]}\nnot ${(list.split('\n').find((l) => l.includes('RCV-118')) ?? '').split('.')[0]}, which is about backups`), question)
+  check('pick: numbers after the first line are not a choice', !explained.sent.includes('RCV-118') && explained.sent.includes('글꼴'), explained.sent.slice(0, 120))
+  const refusing = { stream: async function* (options) { if (JSON.stringify(options.messages).includes('Passages:')) yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMITED' } } }; else { yield { type: 'text-delta', text: '- 무관' }; yield { type: 'finish' } } } }
+  const failedPick = await pickFor(refusing, question)
+  check('pick: a failed call is said, and recall goes on without it', failedPick.sent !== '' && failedPick.logs.some((l) => /passage choice not had.*RATE_LIMITED/.test(l)), failedPick.logs.filter((l) => /recall/.test(l)).join(' | ').slice(0, 200))
+  asks.length = 0
+  await pickFor(choosing(), '고객 자료 화면 정리해줘')
+  check('pick: not asked for a message that does not point at the past', asks.length === 0, String(asks.length))
+  for (const value of [-1, 2.5, 'ten', 201]) {
+    let refused = ''
+    try { boot({ config: { targetChannels: ['*'], recallPickFrom: value } }).done() } catch (err) { refused = String((err as Error).message) }
+    check(`pick: recallPickFrom ${JSON.stringify(value)} is a config error`, /recallPickFrom: must be a whole number from 0 to 200/.test(refused), refused.split('\n')[1] ?? refused)
+  }
 }
 
 // 35. A document the turn wrote, and named in its answer, reaches the thread as a file.

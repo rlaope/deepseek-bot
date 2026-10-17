@@ -40,7 +40,8 @@ Order matters: when two conflict, the higher one wins.
 - Vision and multi-modal input. (Browser automation was one; a headless browser for one page at a time
   is now a tool the agent runs, by the owner's decision.)
 - Being a product for other teams' Slack workspaces.
-- Semantic/vector search (may be revisited if keyword recall proves insufficient).
+- A vector index (the model's choice covers paraphrase among the latest passages without one; older ones are
+  matched by words).
 
 ## 4. Users
 
@@ -94,7 +95,9 @@ in the harness; the **state** column is honest about what works today.
   know what it missed — so "I did not find it" stays the required answer when nothing
   is given.
 - Matching is by shared words, weighted by how rare they are; a strong match is
-  recalled without a trigger word. It is not semantic.
+  recalled without a trigger word. For a message that points at the past, the
+  conversation's model also chooses among the channel's latest passages. There is
+  no vector index.
 
 ## 6. Presence and failure
 

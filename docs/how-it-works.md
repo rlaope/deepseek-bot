@@ -68,7 +68,7 @@ Each line is traceable to code and to something that checks it.
 | Serves a **terminal** (`dsh`) over a local socket, beside Slack or alone: streamed answers, approval buttons, a turn's questions, its subagents and shells | `transports/local.ts`, `transports/composite.ts`, `tui/` | `test/local.test.ts` 132/132, `test/tui-*.test.ts`; `test/tui-live.ts` 11/11 against a model |
 | Keeps a **durable session per thread**, resumed after a restart | `index.ts`, `<stateDir>/sessions.json` | `test/core.test.ts` 152/152; `test/scenarios/restart-1.json` + `restart-2.json` |
 | Injects **persona and notes** (`SOUL.md`/`USER.md`/`MEMORY.md` from the adapter, `AGENTS.md` from `dsh-agent-instructions`), without re-sending them every turn | `index.ts` | `test/core.test.ts`; `test/scenarios/persona.json` 4/4 |
-| **Recalls past conversations** — rank passages, then ask for what they imply | `recall/`, `recallContext.ts` | `test/recall.test.ts` 13/13; `test/recall-context.test.ts` 25/25 |
+| **Recalls past conversations** — rank passages and have the conversation's model choose among the latest, then ask for what they imply | `recall/`, `recallContext.ts` | `test/recall.test.ts`; `test/recall-context.test.ts`; `test/scenarios/recall-near.json` |
 | Reads the **thread it was mentioned in**, as a delta | `transports/slack.ts` | `test/history.test.ts` 9/9 |
 | Sends an attached **image** to the model as an image | `transports/attachments.ts`, `index.ts` | `test/attachments.test.ts` 13/13; `vision.json` needs a model |
 | Produces **documents** (docx, pptx, xlsx) | `profile/cordis.patch.yml` office rows | `test/scenarios/document.json` asserts the artifacts |
@@ -115,7 +115,7 @@ suites on Node 22 with `pnpm run typecheck` in front of them.
 | Read confinement | implemented; a **policy** boundary, not a kernel one |
 | Watches, reminders, health probe | verified unit; health restart verified against an injected failure |
 | Streaming tokens into Slack | implemented: the turn's text streams into the thread (chat.startStream / appendStream), and the answer is posted new while the streamed message is deleted; unit-checked against a stubbed Web API, its calls shaped by a live probe; a refusal falls back to the answer arriving whole |
-| Semantic/vector recall | **not implemented** — ranking is by words; a message that points at the past also ranks by words the conversation's model relates to it (synonyms, the other language), at the cost of a model call, so a paraphrase is found more often, not always |
+| Semantic recall | **by the conversation's model, over the latest passages** — a message that points at the past has the model choose, from the channel's latest passages (`recallPickFrom`, 40), the ones about it, and ranks the rest by words and the words the model relates to it; older passages are matched by words only. No vector index |
 | Browser automation | implemented as a command the agent runs (`dist/tools/browse.js`): a page drawn by JavaScript, typing, clicking, a screenshot; checked against a real browser and a real model |
 | Per-tenant *permission* preset | **not supported** — `permission` is read and never applied (`TODO` in `test/core.test.ts`) |
 
@@ -246,7 +246,18 @@ wires up what it does not turn on by default, and adds the consumer the agent pl
   related words. Each line of the answer is matched whole, a common one or a number is dropped, and only the
   best match counts, for half a word of the person's own. The turn waits for it at most `recallExpandMs`
   (4 s); a failure or a timeout is logged and recall goes on by the message's words alone.
-  `test/recall.test.ts`, `test/recall-context.test.ts` 25/25, `test/core.test.ts`.
+- **And the model chooses.** With the related words, in parallel and under the same deadline, the
+  conversation's model is shown the channel's latest passages (`recallPickFrom`, 40; each cut at 200
+  characters), numbered, and asked which are about what the message asks: numbers only, at most four.
+  Only a first line of numbers counts, only numbers it was offered, and its choice comes first in the
+  block, leaving the passage that shares the most words its place. Matched by words alone, a past put in
+  words the message shares none of was outranked by passages on the same subject that only shared
+  surface words: on four facts each said among five newer near misses in the same words
+  (`test/scenarios/recall-near.json`), words alone answered 4 of 8 over two runs and with the choice 8 of
+  8 (one route, a small sample). It costs a second model call for such a message, with up to 200
+  characters a passage: up to about 8,000 characters at 40, a few thousand tokens. Older passages are
+  still matched by words only. `recallPickFrom: 0` turns it off; 200 is the most.
+  `test/recall.test.ts`, `test/recall-context.test.ts`, `test/core.test.ts`.
 
 ## Memory: the layers, and who writes what
 
@@ -961,6 +972,7 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 |---|---|
 | `recall.json` | a fact stated in one conversation is recalled in another, with its date; a fact never stated is not invented |
 | `recall-immediate.json` | the index already holds a fact from a turn that just happened, and holds the user's words — not the adapter's injected preamble |
+| `recall-near.json` | a fact among five newer near misses on the same subject in the same words is recalled: the model's choice among the latest passages finds it where ranking by words put the near misses first |
 | `recall-paraphrase.json` | a past said in other words is found: the question shares no word with it, only with the words the model relates to the question; no note is written and none read, so only recall answers |
 | `recall-decision.json` | recall ends in a decision ("here is what happened, therefore this") rather than a dump of passages |
 | `restart-1.json` + `restart-2.json` | a second process resumes the first's session and still knows what was said (`pnpm test:restart`) |
@@ -1016,8 +1028,9 @@ Two things worth knowing before editing them:
 - **Not a coding agent.** It edits files and runs commands; it is not competing with your editor.
 - **Not a chat toy.** Single-turn Q&A is a side effect; remembering across conversations is the
   point.
-- **Not semantic.** Recall ranking is lexical: it matches shared words, so a differently-worded
-  question can miss, and the block says so where the model reads it.
+- **Not a vector search.** The conversation's model chooses among the channel's latest passages; older
+  ones are matched by words, so a differently-worded question about an older one can miss, and the
+  block says so where the model reads it.
 - **A browser for one page at a time.** `browse.js` keeps no tabs between runs, and a sign-in only in a session file
   you made for it (`--login`, `--state`).
 - **Not multi-tenant by default, and not voice or video.** One instance is one memory unless you

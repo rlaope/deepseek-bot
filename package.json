@@ -84,6 +84,7 @@
     "test:recall-context": "node test/recall-context.test.ts",
     "build:check": "node test/dist-fresh.ts",
     "test:scenario:recall-decision": "node test/run-scenario.ts test/scenarios/recall-decision.json",
+    "test:scenario:recall-near": "node test/run-scenario.ts test/scenarios/recall-near.json",
     "test:notes": "node test/notes.test.ts",
     "test:scenario:notes-hygiene": "node test/run-scenario.ts test/scenarios/notes-hygiene.json",
     "test:scenario:persona": "node test/run-scenario.ts test/scenarios/persona.json",
