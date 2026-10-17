@@ -1775,7 +1775,7 @@ for (const remove of [false, true]) {
     return { t, record }
   }
   const pub = await written('public')
-  check('commandNetwork public: where its proxy listens is written for the runner, under the harness home, with its pid', pub.record?.mode === 'public' && Number.isInteger(pub.record?.port) && pub.record?.pid === process.pid && (statSync(file).mode & 0o077) === 0, JSON.stringify(pub.record))
+  check('commandNetwork public: where its proxy listens is written for the runner, under the harness home, with its pid', pub.record?.mode === 'public' && Number.isInteger(pub.record?.port) && pub.record?.pid === process.pid && (process.platform === 'win32' || (statSync(file).mode & 0o077) === 0), JSON.stringify(pub.record))
   check('commandNetwork public: its proxy refuses this machine and the local network', await viaProxy(pub.record?.port, `http://127.0.0.1:${targetPort}/a`) === 403)
   check('commandNetwork public: the refusal is logged', pub.t.logs.some((l) => /command network: blocked "http:\/\/127\.0\.0\.1/.test(l)), pub.t.logs.filter((l) => /command network/.test(l)).join(' | '))
   // A command that keeps trying fills the log at most so far a minute.
