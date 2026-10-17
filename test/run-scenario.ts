@@ -23,7 +23,8 @@
 import './dist-fresh.ts'   // a scenario must not run a stale build
 
 import { spawn } from 'node:child_process'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
@@ -88,6 +89,9 @@ console.log()
 // A test home mirrors the live one where it matters — the instruction file is
 // what tells the agent that a recall index exists at all.
 mkdirSync(TEST_HOME, { recursive: true })
+// A run with commandNetwork bounded leaves the gateway's file for this home, closed, as a stop does: the home goes at
+// exit, and the file with it. Keyed as the gateway keys it, by the real path, read now while the home is there.
+const NETWORK_FILE = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'deepbot', 'command-network', `${createHash('sha256').update(realpathSync(TEST_HOME)).digest('hex').slice(0, 16)}.json`)
 
 // A scenario may need a file to exist before the plugin boots — a large MEMORY.md, for instance,
 // which a fresh home never has. Without this the note-hygiene path could not be exercised at all,
@@ -152,6 +156,7 @@ const AGENTS_HOME = mkdtempSync(join(homedir(), '.dsh', 'deepbot', 'agents-home-
 
 process.on('exit', () => {
   rmSync(AGENTS_HOME, { recursive: true, force: true })
+  if (!keep) rmSync(NETWORK_FILE, { force: true })
   // The index outlives the fresh home otherwise, one directory per run under ~/.dsh/recall.
   if (!keep) rmSync(dirname(RECALL_INDEX), { recursive: true, force: true })
   for (const [path] of outsideFiles) rmSync(path, { force: true })
