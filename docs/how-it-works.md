@@ -426,8 +426,21 @@ The agent has the harness's `web_fetch` tool, so a URL in the conversation is so
 actually read, and it is expected to say where it read it. `web_fetch` opens public addresses only:
 the harness refuses a loopback or private one. `test:scenario:browser` serves its page on
 127.0.0.1 and asks for a fact that appears nowhere in the prompt: the answer carries both the fact
-and its source, and seen live, the agent read it with `curl` from its shell after `web_fetch`
-refused the address.
+and its source. The standing block tells the agent that such a page opens with the browse tool.
+
+What each way of reaching an address may reach:
+
+| | a public address | this machine, the local network, carrier-NAT ranges (Tailscale's among them) | a cloud metadata service |
+|---|---|---|---|
+| `web_fetch` | yes | no: the harness refuses it | no: the fetch gate refuses it by name (`fetchPolicy`, on by default), and the harness refused it live as a non-public address |
+| the browse tool | yes | only from a page that is itself there (every address its name resolves to is private) | never |
+| the agent's commands (`curl`, a script) | yes | yes | yes: the sandbox does not bound where a command connects |
+
+The browse tool's rule is the one a page needs: an intranet or dev-server page works, and a public
+page cannot reach into this machine or its network; a name that resolves to any public address counts
+as a public page. The agent's commands reach what the user's machine reaches: the sandbox confines what
+they read and write, not where they connect, so on a cloud host a command could ask the metadata
+service for the host's credentials.
 
 `web_fetch` is an HTTP fetch — no JavaScript runs, nothing is clicked — so a page that draws its
 content with a script arrived empty. Search is composed separately (`dsh-web-search-deepseek`) and

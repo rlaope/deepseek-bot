@@ -1730,6 +1730,10 @@ for (const remove of [false, true]) {
   check('browse: the offered command runs as the agent\'s shell reads it', shell.status === 0 && String(shell.stdout).startsWith('usage: browse'), `${shell.status} ${String(shell.stdout ?? '') + String(shell.stderr ?? shell.error ?? '')}`.slice(0, 200))
   const off = await offered({ browse: false })
   check('browse: false offers nothing', off !== '' && !off.includes('[reading a page]') && !off.includes('browse.js'))
+  // web_fetch refuses this machine and the local network; the agent is told where such a page opens instead. Without
+  // it, an intranet address went to web_fetch first, was refused, and was then read with whatever came to hand. The
+  // sentence is matched within one line of the block: keep it on one.
+  check('browse: told that a page on this machine or the local network opens with it, not web_fetch', /web_fetch [^\n]*opens public addresses only/.test(on) && /this machine or the local network/.test(on), (on.match(/\[reading a page\][\s\S]{0,600}/) ?? ['(none)'])[0].slice(0, 400))
   // Signed-in sessions in the workspace's .browser/ are named, with how to use one; a name that is not a plain file name
   // is left out, since it reaches the prompt.
   check('browse: no sessions, no line about them', !on.includes('Signed-in sessions'))

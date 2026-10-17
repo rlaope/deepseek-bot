@@ -249,6 +249,11 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **A local or intranet page goes to the browse tool, said where the agent reads it.** `web_fetch` refuses
+  this machine and the local network, and the agent tried it first and then fell back on whatever came to hand
+  (`curl`, seen live). The standing block now says `web_fetch` opens public addresses only and that such a page
+  opens with the browse tool. docs/how-it-works.md has the table of what `web_fetch`, the browse tool and the
+  agent's commands may each reach.
 - **The browser can browse as you, on a site you signed it in to.** `browse.js` kept nothing between runs, so a
   page behind a sign-in was out of reach.
   - `--login '<url>' --state <file>`, run by you in your own terminal, opens a window. You sign in, and when you
