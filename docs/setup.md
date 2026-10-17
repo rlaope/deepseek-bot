@@ -203,6 +203,38 @@ It needs the `message.channels` and `message.groups` events (the app `dsh gatewa
 thread under the bot's own post (a watch's report) needs a mention to start, like any other.
 `allowedUsers` narrows who, as above.
 
+## Installing without a terminal
+
+The install line in the README asks its questions at the terminal, reading `/dev/tty`. Run by an agent
+such as Claude Code, or by a script, there is none, and it asks nothing:
+
+- **DeepSeek Harness.** When the app is missing it is downloaded only when told to:
+  `curl … | DEEPBOT_INSTALL_HARNESS=1 bash` (the variable goes on `bash`, not on `curl`). It is DeepSeek's
+  own build for this Mac, the one the app's updater names (on `download.deepseek.com`), checked against the
+  feed's sha512 and size before it is placed in `/Applications`; a few hundred MB. Without the variable the
+  run stops and says this, and nothing is downloaded; `DEEPBOT_INSTALL_HARNESS=0` never installs it. A
+  `DSH_BIN` names a harness CLI kept elsewhere: then nothing is downloaded, and one that is not there is an
+  error. At a terminal the same question is asked, Enter meaning yes, and the variable answers it.
+- **The language** of the bot's own messages is the environment's (`LC_ALL`, `LC_MESSAGES`, `LANG`): `ko`,
+  `zh`, else `en`.
+- **The model route** is DeepSeek's own API. OpenGateway or a custom endpoint is chosen at a terminal, or
+  added to the profile afterwards ([the model provider](#the-model-provider)).
+- **The model's key** is not asked for. One the harness already has — in the app's store, or in `~/.dsh/.env`
+  — is used as it is; a key only exported in the shell is left alone, since it may be another program's. To
+  give one, write it to `~/.dsh/.env` (mode 600) before running the installer. `dsh gateway status` says
+  where the model's key was found, or that it was not.
+- **The services** are installed and started. One that fails to install fails the run, which says which.
+
+```bash
+mkdir -p ~/.dsh && touch ~/.dsh/.env && chmod 600 ~/.dsh/.env
+grep -q '^DEEPSEEK_API_KEY=' ~/.dsh/.env || printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY" >> ~/.dsh/.env
+curl -fsSL https://raw.githubusercontent.com/rlaope/deepseek-bot/master/install.sh | DEEPBOT_INSTALL_HARNESS=1 bash
+dsh gateway status
+```
+
+A messenger is connected the same way, from the environment:
+[connecting a messenger](#connecting-a-messenger-dsh-gateway).
+
 ## Windows, by hand (the terminal only)
 
 There is no installer and there are no services on Windows yet, and no sandbox the profile can use

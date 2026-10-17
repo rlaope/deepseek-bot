@@ -249,6 +249,21 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **The installer installs DeepSeek Harness when it is missing.** It stopped with "install the app" where the
+  harness app was not found. It now offers to download the app from DeepSeek's own server — the build the app's
+  updater names for this Mac's architecture (its feed, `nightly-mac.yml` for `mac-arm64` or `mac-x64`), checked
+  against the feed's sha512 and size before it is placed in `/Applications` — and goes on with that CLI. Asked at
+  a terminal, Enter meaning yes; without one — an agent, a script — nothing that large is downloaded on an
+  assumption: the run stops and says to run it again as `curl … | DEEPBOT_INSTALL_HARNESS=1 bash`, which also
+  answers the question at a terminal; `0` never installs it. A `DSH_BIN` given by hand that does not run, or an
+  app that is there without its CLI, stops the install as before. The feed is read as the YAML it is (a value
+  folded onto the next line or on the key's line), and only an https url, a 64-byte hash, a number and a version
+  are accepted from it; an archive that is not the app with its CLI, or an app already there, is not placed.
+  Checked by the suite against a feed and an archive of its own (the question driven in a pty: n, Enter, yes),
+  and once for real: the current build (0.2.0-rc.2, 357 MB) downloaded, matched the feed, unpacked with its
+  signature intact, and its CLI answered `--version` and booted the scenario profile for a real-model turn. README and docs/setup.md say how an agent runs the install without a terminal. Not
+  verified: whether a harness placed this way and never opened as an app unpacks its runtime into
+  `~/.dsh/dsh-runtimes` (the app's host process does that at its start, and the document skills' node is there).
 - **Recall finds a past said in other words.** Ranking was by the message's own words, so "되돌리기" never found
   a conversation that said "rollback". A message that points at the past, when this channel has anything to
   recall, now also asks the conversation's own model (its route, as its turn) for words related to it: synonyms,

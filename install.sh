@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/rlaope/deepseek-bot/master/install.sh | bash
 #
 # Fetches deepbot into ~/.deepbot, builds it, creates the agent's home and the gateway profile, asks for
-# the model's key when the harness has none, and installs the services that keep it running. The bot
+# the model's key when the harness has none, and installs the services that keep it running. When the
+# DeepSeek Harness app itself is missing it offers to download it, from DeepSeek's own server. The bot
 # starts with the terminal, dsh; a messenger is connected afterwards with `dsh gateway setup`, which is
 # not part of this. Run it again to update (`dsh update` does): every file you have edited is kept, and no
 # key is asked twice.
@@ -17,6 +18,7 @@
 #   DEEPBOT_REF      branch or tag                        (default master)
 #   DSH_BIN          the dsh CLI                          (default: inside DeepSeek Harness.app)
 #   DEEPBOT_SKIP_SERVICES=1   build and configure only; install no launchd jobs
+#   DEEPBOT_INSTALL_HARNESS   1: install the DeepSeek Harness app when it is missing, asking nothing; 0: never
 set -euo pipefail
 
 # Helpers at the top level, so a test can source this file (DEEPBOT_INSTALL_SOURCED=1) and call them.
@@ -231,8 +233,103 @@ harness_cli() {
   if [ -n "$found" ] && ! grep -q -e "^$LAUNCHER_MARK" -e 'dsh: the bot in a terminal' "$found" 2>/dev/null; then
     printf '%s\n' "$found"
   else
-    printf '%s\n' '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh'
+    printf '%s\n' "$HARNESS_APP/Contents/Resources/runtime/cli/bin/dsh"
   fi
+}
+
+# ── DeepSeek Harness ────────────────────────────────────────────────────────
+# The harness is the DeepSeek Harness app, and its CLI is inside it: the launcher, the services and the
+# terminal all look for it there. When the app is missing, this installer offers to put it there from
+# DeepSeek's own download server. The app's updater reads a feed per architecture (its app-update.yml:
+# channel nightly, so the file is nightly-mac.yml) that names the current build, its sha512 and its size,
+# and the zip it names holds the app at its top.
+HARNESS_APP='/Applications/DeepSeek Harness.app'
+HARNESS_FEEDS='https://download.deepseek.com/dsh-desk/feeds'
+
+# The feed for this Mac. uname under Rosetta says x86_64 on an arm64 Mac; the hardware is asked first.
+harness_feed() {   # harness_feed [machine]
+  local machine="${1:-$(uname -m)}"
+  [ -n "${1:-}" ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" != 1 ] || machine=arm64
+  case "$machine" in
+    arm64) printf '%s/mac-arm64/nightly-mac.yml\n' "$HARNESS_FEEDS" ;;
+    x86_64) printf '%s/mac-x64/nightly-mac.yml\n' "$HARNESS_FEEDS" ;;
+    *) warn "no DeepSeek Harness build for $machine"; return 1 ;;
+  esac
+}
+
+# What the feed names, as "<url> <sha512> <size> <version>" on one line. The feed is electron-builder's
+# YAML: a long value is a folded scalar (`>-`) on the line after its key, a short one is on the key's line;
+# `path` and the top-level `sha512` are the first file's. Each is checked for shape before it is trusted —
+# the url https (or a local file), the hash 64 bytes in base64, the size a number — so nothing a feed says
+# reaches a command line unchecked.
+harness_release() {   # harness_release <feed url>
+  local yml line url sum size version
+  yml="$(curl -fsSL --max-time 60 "$1")" || { warn "could not read the DeepSeek Harness feed at $1"; return 1; }
+  line="$(printf '%s\n' "$yml" | awk '
+    function val(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
+    want != "" { if ($0 ~ /^[[:space:]]*$/) next; got[want] = val($0); want = ""; next }
+    /^(path|sha512|version):/ { k = $1; sub(/:$/, "", k); v = $0; sub(/^[a-z0-9]+:[[:space:]]*/, "", v); v = val(v); if (v ~ /^[>|]-?$/) want = k; else if (!(k in got)) got[k] = v; next }
+    /^[[:space:]]*size:[[:space:]]*[0-9]+[[:space:]]*$/ { if (!("size" in got)) { v = $0; sub(/^[[:space:]]*size:[[:space:]]*/, "", v); got["size"] = val(v) } }
+    END { printf "%s %s %s %s\n", got["path"], got["sha512"], got["size"], got["version"] }')"
+  read -r url sum size version <<<"$line"
+  { [[ $url =~ ^(https|file)://[^[:space:]]+$ ]] && [[ $sum =~ ^[A-Za-z0-9+/]{86}==$ ]] && [[ $size =~ ^[0-9]+$ ]] && [ -n "$version" ]; } \
+    || { warn "the DeepSeek Harness feed at $1 does not name a build the way this installer reads it (an https url, a sha512, a size and a version)"; return 1; }
+  printf '%s %s %s %s\n' "$url" "$sum" "$size" "$version"
+}
+
+# Download the build and place the app. Nothing lands in <applications> unless the bytes are the ones the
+# feed describes: the size and the sha512 both have to match. The zip is opened with ditto, which keeps
+# the bundle as it was signed, and only an archive that holds the app, with its CLI, is placed; one that is
+# there already is not replaced.
+install_harness() {   # install_harness <url> <sha512> <size> <version> <applications dir>
+  local tmp zip host status=0 app="$5/$(basename "$HARNESS_APP")"
+  [ -d "$5" ] && [ -w "$5" ] || { warn "$5 is not writable by you; put the app there yourself, then run this again"; return 1; }
+  host="${1#*://}"; host="${host%%/*}"; [ -n "$host" ] || host="$1"
+  tmp="$(mktemp -d)"; zip="$tmp/$(basename "$HARNESS_APP" .app).zip"
+  note "downloading DeepSeek Harness $4 ($(( $3 / 1048576 )) MB) from $host"
+  if [ -t 2 ]; then curl -fL --retry 3 --connect-timeout 30 --speed-limit 1024 --speed-time 60 --progress-bar -o "$zip" "$1" || status=$?
+  else curl -fsSL --retry 3 --connect-timeout 30 --speed-limit 1024 --speed-time 60 -o "$zip" "$1" || status=$?; fi
+  [ "$status" -eq 0 ] || { rm -rf "$tmp"; warn "the download failed (curl exit $status); nothing was installed"; return 1; }
+  if [ "$(stat -f %z "$zip")" != "$3" ] || [ "$(openssl dgst -sha512 -binary "$zip" | base64 | tr -d '\n')" != "$2" ]; then
+    rm -rf "$tmp"; warn "the download is not the build the feed describes (its size or sha512 differs); nothing was installed"; return 1
+  fi
+  note "checked against the feed's sha512"
+  ditto -x -k "$zip" "$tmp/app" 2>/dev/null || { rm -rf "$tmp"; warn "the archive could not be opened; nothing was installed"; return 1; }
+  [ -x "$tmp/app/$(basename "$HARNESS_APP")/Contents/Resources/runtime/cli/bin/dsh" ] \
+    || { rm -rf "$tmp"; warn "the archive does not hold $(basename "$HARNESS_APP") with its CLI; nothing was installed"; return 1; }
+  [ ! -e "$app" ] || { rm -rf "$tmp"; warn "$app exists already; nothing was replaced"; return 1; }
+  mv "$tmp/app/$(basename "$HARNESS_APP")" "$5/" || { rm -rf "$tmp"; warn "could not move the app into $5; nothing was installed"; return 1; }
+  rm -rf "$tmp"
+}
+
+# The harness is missing: install it, or say why not. DEEPBOT_INSTALL_HARNESS decides without a question
+# (1 installs, 0 never does); otherwise it is asked at a terminal, Enter meaning yes. Without a terminal —
+# an agent, a script — nothing this large is downloaded on an assumption: the run stops and says what to set.
+ensure_harness() {   # ensure_harness <feed url> <applications dir>
+  # Not `answer`: ask's own local of that name would take the assignment, and the question's reply be lost.
+  local release url sum size version yes_no host
+  case "${DEEPBOT_INSTALL_HARNESS:-}" in
+    1|'') ;;
+    0) warn "DeepSeek Harness is not installed, and DEEPBOT_INSTALL_HARNESS=0 says not to install it. Install the app, or set DSH_BIN to its CLI, then run this again."; return 1 ;;
+    *) warn "DEEPBOT_INSTALL_HARNESS=$DEEPBOT_INSTALL_HARNESS: 1 installs the DeepSeek Harness app when it is missing, 0 never does."; return 1 ;;
+  esac
+  if [ -z "${DEEPBOT_INSTALL_HARNESS:-}" ] && [ -z "${TTY:-}" ]; then
+    warn "DeepSeek Harness is not installed. This installer downloads it (DeepSeek's own build, a few hundred MB, into $2) when told to:"
+    warn "  curl -fsSL https://raw.githubusercontent.com/rlaope/deepseek-bot/master/install.sh | DEEPBOT_INSTALL_HARNESS=1 bash"
+    warn "Or install the app yourself, or set DSH_BIN to its CLI, then run this again."
+    return 1
+  fi
+  release="$(harness_release "$1")" || return 1
+  read -r url sum size version <<<"$release"
+  if [ -z "${DEEPBOT_INSTALL_HARNESS:-}" ]; then
+    host="${url#*://}"; host="${host%%/*}"; [ -n "$host" ] || host="$url"
+    ask yes_no "DeepSeek Harness is not installed. Download $version ($(( size / 1048576 )) MB, from $host) into $2 (Y/n)?" y
+    case "$yes_no" in
+      y|Y|yes) ;;
+      *) warn "not installed. Install the DeepSeek Harness app, or set DSH_BIN to its CLI, then run this again."; return 1 ;;
+    esac
+  fi
+  install_harness "$url" "$sum" "$size" "$version" "$2"
 }
 
 # The services, the runner and the health probe read the harness's home at ~/.dsh. A DSH_HOME elsewhere
@@ -282,6 +379,7 @@ record_install() {   # record_install <dir>
 
 step() { printf '%s==>%s %s\n' "${blue:-}" "${off:-}" "$*"; }
 note() { printf '    %s%s%s\n' "${dim:-}" "$*" "${off:-}"; }
+warn() { printf '    %s\n' "$*" >&2; }   # why a step did not do something, before its caller stops
 die()  { printf '%serror:%s %s\n' "${red:-}" "${off:-}" "$*" >&2; exit 1; }
 
 # A line that may carry a credential: the web UI's ?token=, a Slack token, a bearer header, an API key.
@@ -316,6 +414,7 @@ DEEPBOT_REPO="${DEEPBOT_REPO:-https://github.com/rlaope/deepseek-bot.git}"
 DEEPBOT_REF="${DEEPBOT_REF:-master}"
 check_dsh_home || exit 1
 DSH_HOME="$HOME/.dsh"
+DSH_BIN_GIVEN="${DSH_BIN:-}"
 DSH_BIN="${DSH_BIN:-$(harness_cli)}"
 export DSH_HOME DSH_BIN DEEPBOT_HOME DEEPBOT_PROFILE
 
@@ -344,8 +443,22 @@ command -v node >/dev/null || die "Node.js 22 or newer is needed (brew install n
 command -v npm >/dev/null || die "npm is needed (it ships with Node.js)."
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$node_major" -ge 22 ] || die "Node.js 22 or newer is needed; this is $(node -v)."
-[ -x "$DSH_BIN" ] || die "DeepSeek Harness was not found at $DSH_BIN — install the app, or set DSH_BIN."
-note "node $(node -v) · git · dsh at $DSH_BIN"
+note "node $(node -v) · git"
+
+step "DeepSeek Harness"
+if [ -x "$DSH_BIN" ]; then
+  note "dsh at $DSH_BIN"
+else
+  # Only the app's own place is filled: a DSH_BIN someone gave names where they keep the harness, and an
+  # app that is there without its CLI is theirs to repair.
+  [ -z "$DSH_BIN_GIVEN" ] || die "DeepSeek Harness was not found at DSH_BIN=$DSH_BIN."
+  [ ! -e "$HARNESS_APP" ] || die "$HARNESS_APP is there, but has no CLI at $DSH_BIN; reinstall the app."
+  feed="$(harness_feed)" || die "install the DeepSeek Harness app yourself and set DSH_BIN to its CLI."
+  ensure_harness "$feed" "$(dirname "$HARNESS_APP")" || exit 1
+  [ -x "$DSH_BIN" ] || die "the app was placed, but its CLI is not at $DSH_BIN."
+  harness_version="$("$DSH_BIN" --version 2>/dev/null)" || die "the installed harness CLI does not run: $DSH_BIN --version failed."
+  note "installed $HARNESS_APP · dsh $harness_version"
+fi
 
 step "fetching deepbot into $DEEPBOT_DIR"
 # .git is a file in a linked worktree.

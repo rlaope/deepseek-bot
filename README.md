@@ -34,9 +34,11 @@ dsh gateway setup      # connect Slack, Telegram or Discord: ↑↓ and Enter
 ```
 
 The first line installs it, and running it again updates. It needs macOS with Node.js 22+, the
-DeepSeek Harness app and a DeepSeek API key — none asked for if the harness already has one. DeepSeek's
-own API is the default and needs nothing else; OpenGateway or another OpenAI-compatible endpoint is an
-option the installer offers. The bot starts with the terminal, `dsh`.
+DeepSeek Harness app and a DeepSeek API key — none asked for if the harness already has one. When the
+app is missing, the installer offers to download it from DeepSeek's own server (a few hundred MB, into
+`/Applications`), checked against the build's published hash. DeepSeek's own API is the default and
+needs nothing else; OpenGateway or another OpenAI-compatible endpoint is an option the installer offers.
+The bot starts with the terminal, `dsh`.
 
 `dsh gateway setup` connects a messenger: pick one with ↑↓ and Enter, and it opens the page where each
 token is made, checks each token as you paste it, and offers to restart the bot. Without a terminal it takes the
@@ -48,6 +50,19 @@ tokens from the environment instead, so an agent can do it for you ([docs/setup.
 ```bash
 dsh update
 ```
+
+### From an agent, or a script
+
+Without a terminal the installer asks nothing: the language comes from `LANG`, the model route is
+DeepSeek's own, a key is used where the harness already has it (its app, `~/.dsh/.env`), and the
+DeepSeek Harness app is downloaded only when told to:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rlaope/deepseek-bot/master/install.sh | DEEPBOT_INSTALL_HARNESS=1 bash
+```
+
+Where to put the key first, and what each stop means: [installing without a
+terminal](docs/setup.md#installing-without-a-terminal).
 
 <img src="docs/opengateway-logo.svg" height="16" alt="OpenGateway"> **Optional: faster on [OpenGateway](https://opengateway.ai).** It serves `deepseek/deepseek-v4.1-flash-ultrafast`
 on an OpenAI-compatible endpoint (`https://apis.opengateway.ai/v1`), which it lists at 12× the speed and

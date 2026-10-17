@@ -467,6 +467,103 @@ if (/^if \[ "\$\{DEEPBOT_INSTALL_SOURCED:-0\}" = 1 \]; then return 0; fi$/m.test
   check('scenarios: node runs the checkout\'s script there, and its status is the job\'s', run.status === 3 && existsSync(out) && readFileSync(out, 'utf8').trim().endsWith('/scenarios-repo'), `status ${run.status}, cwd ${existsSync(out) ? readFileSync(out, 'utf8').trim() : '(none)'}`)
 }
 
+// The DeepSeek Harness app, when it is missing: offered from DeepSeek's own feed, for this Mac, and placed only
+// when the bytes are the feed's; without a terminal nothing that large is downloaded on an assumption. Checked
+// against a feed and an archive of this suite's own, through file:// URLs, so nothing here reaches the network;
+// the question is driven in a pty by expect, which macOS ships.
+if (process.platform === 'darwin') {
+  const feedOf = (m: string) => withHelpers(`harness_feed ${m} 2>&1`)
+  check('harness: the feed is the arm64 build\'s on an arm64 Mac, the x64 build\'s on an Intel one, none for another',
+    feedOf('arm64').out === 'https://download.deepseek.com/dsh-desk/feeds/mac-arm64/nightly-mac.yml' && feedOf('x86_64').out === 'https://download.deepseek.com/dsh-desk/feeds/mac-x64/nightly-mac.yml' && feedOf('i386').code !== 0 && /no DeepSeek Harness build for i386/.test(feedOf('i386').out), `${feedOf('arm64').out} | ${feedOf('i386').out}`)
+  check('harness: with no machine named, it is this Mac\'s', /^https:\/\/download\.deepseek\.com\/dsh-desk\/feeds\/mac-(arm64|x64)\/nightly-mac\.yml$/.test(withHelpers('harness_feed').out), withHelpers('harness_feed').out)
+  // The feed the installed app updates from, where there is one: the installer's must be the same server and channel.
+  const updateYml = '/Applications/DeepSeek Harness.app/Contents/Resources/app-update.yml'
+  if (existsSync(updateYml)) {
+    const yml = readFileSync(updateYml, 'utf8')
+    const url = (yml.match(/^url: (\S+)/m) ?? [])[1] ?? ''
+    const channel = (yml.match(/^channel: (\S+)/m) ?? [])[1] ?? ''
+    check('harness: the feed is the one the installed app updates from (its app-update.yml)', url.startsWith('https://download.deepseek.com/dsh-desk/feeds/mac-') && feedOf(url.includes('mac-arm64') ? 'arm64' : 'x86_64').out === `${url}${channel}-mac.yml`, `${url} ${channel}`)
+  } else console.log('  TODO  harness: no DeepSeek Harness app here to compare the feed with')
+
+  // An app of this suite's own, zipped as electron-builder zips the real one: the bundle at the archive's top.
+  const stage = join(dir, 'harness-stage')
+  const cli = join(stage, 'DeepSeek Harness.app', 'Contents', 'Resources', 'runtime', 'cli', 'bin', 'dsh')
+  mkdirSync(dirname(cli), { recursive: true })
+  writeFileSync(cli, '#!/bin/sh\necho 9.9.9-test\n'); chmodSync(cli, 0o755)
+  const zip = join(dir, 'harness.zip')
+  execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', join(stage, 'DeepSeek Harness.app'), zip])
+  const sha512 = (file: string) => execFileSync('/bin/bash', ['-c', 'openssl dgst -sha512 -binary "$1" | base64 | tr -d "\\n"', 'bash', file], { encoding: 'utf8' }).trim()
+  const sum = sha512(zip), size = statSync(zip).size
+  // A feed laid out as electron-builder writes the real one: the file's url, sha512 and size under `files`, then
+  // `path` and `sha512` again at the top level; a long value folded onto the line after its key, or not.
+  const feedFile = (name: string, f: { url: string, sum: string, size: number, folded?: boolean }) => {
+    const v = (key: string, value: string, indent: string) => f.folded ? `${key}: >-\n${indent}  ${value}` : `${key}: ${value}`
+    writeFileSync(join(dir, name), `version: 9.9.9-test\nfiles:\n  - ${v('url', f.url, '    ')}\n    ${v('sha512', f.sum, '    ')}\n    size: ${f.size}\n${v('path', f.url, '')}\n${v('sha512', f.sum, '')}\nreleaseDate: '2026-01-01T00:00:00.000Z'\n`)
+    return `file://${join(dir, name)}`
+  }
+  const good = { url: `file://${zip}`, sum, size }
+  const feed = feedFile('feed.yml', { ...good, folded: true })
+  const inline = feedFile('inline.yml', good)
+  const release = (url: string) => withHelpers(`harness_release '${url}' 2>&1`)
+  check('harness: the feed is read — url, sha512, size and version — folded onto the next line or on the key\'s line', release(feed).out === `file://${zip} ${sum} ${size} 9.9.9-test` && release(inline).out === release(feed).out, release(feed).out)
+  const http = feedFile('http.yml', { ...good, url: 'http://x.invalid/h.zip' })
+  const noHash = feedFile('no-hash.yml', { ...good, sum: 'not-a-hash' })
+  const unreadable = `file://${join(dir, 'no-such-feed.yml')}`
+  check('harness: a feed with an http url, a hash that is not one, or none at all is refused', release(http).code !== 0 && release(noHash).code !== 0 && release(unreadable).code !== 0 && /could not read/.test(release(unreadable).out) && /does not name a build/.test(release(http).out), `${release(http).out} | ${release(noHash).out}`)
+
+  const apps = join(dir, 'Applications'); mkdirSync(apps)
+  const placedCli = join(apps, 'DeepSeek Harness.app', 'Contents', 'Resources', 'runtime', 'cli', 'bin', 'dsh')
+  const placed = () => existsSync(placedCli)
+  const runsPlaced = () => placed() && execFileSync(placedCli, { encoding: 'utf8' }).trim() === '9.9.9-test'
+  const ensure = (env: Record<string, string>, url = feed) => withHelpers(`ensure_harness '${url}' '${apps}' 2>&1`, { TTY: '', DEEPBOT_INSTALL_HARNESS: '', ...env })
+  const noTerminal = ensure({})
+  check('harness: without a terminal and nothing set, nothing is downloaded, and it says to run with DEEPBOT_INSTALL_HARNESS=1', noTerminal.code !== 0 && !placed() && noTerminal.out.includes('| DEEPBOT_INSTALL_HARNESS=1 bash') && noTerminal.out.includes('DSH_BIN'), noTerminal.out)
+  const never = ensure({ DEEPBOT_INSTALL_HARNESS: '0' })
+  check('harness: DEEPBOT_INSTALL_HARNESS=0 never installs it, and says so', never.code !== 0 && !placed() && /DEEPBOT_INSTALL_HARNESS=0/.test(never.out), never.out)
+  const odd = ensure({ DEEPBOT_INSTALL_HARNESS: 'maybe' })
+  check('harness: another value is refused, with what the two mean', odd.code !== 0 && !placed() && /1 installs .* 0 never/.test(odd.out), odd.out)
+  const told = ensure({ DEEPBOT_INSTALL_HARNESS: '1' })
+  check('harness: DEEPBOT_INSTALL_HARNESS=1 downloads, checks and places the app, whose CLI runs', told.code === 0 && runsPlaced() && told.out.includes("checked against the feed's sha512"), told.out)
+  const again = ensure({ DEEPBOT_INSTALL_HARNESS: '1' })
+  check('harness: an app already there is not replaced', again.code !== 0 && /exists already/.test(again.out) && runsPlaced(), again.out)
+  rmSync(join(apps, 'DeepSeek Harness.app'), { recursive: true, force: true })
+  // A feed that reads well, whose archive is not what it says: the download happens, and the check refuses it.
+  const wrongSum = ensure({ DEEPBOT_INSTALL_HARNESS: '1' }, feedFile('tampered.yml', { ...good, sum: `${'A'.repeat(86)}==` }))
+  const wrongSize = ensure({ DEEPBOT_INSTALL_HARNESS: '1' }, feedFile('size.yml', { ...good, size: size + 1 }))
+  const notTheBuild = (r: { out: string, code: number }) => r.code !== 0 && /downloading/.test(r.out) && /not the build the feed describes/.test(r.out)
+  check('harness: a download whose sha512 or size is not the feed\'s is not placed', notTheBuild(wrongSum) && notTheBuild(wrongSize) && !placed(), `${wrongSum.out} | ${wrongSize.out}`)
+  // An archive that is not the app at its top (zipped without the bundle as parent: Contents/ is the top).
+  const other = join(dir, 'other.zip')
+  execFileSync('/usr/bin/ditto', ['-c', '-k', join(stage, 'DeepSeek Harness.app'), other])
+  const notApp = ensure({ DEEPBOT_INSTALL_HARNESS: '1' }, feedFile('other.yml', { url: `file://${other}`, sum: sha512(other), size: statSync(other).size }))
+  check('harness: an archive that does not hold the app with its CLI is not placed', notApp.code !== 0 && /checked against/.test(notApp.out) && /does not hold/.test(notApp.out) && !placed(), notApp.out)
+  const unwritable = join(dir, 'Applications-ro'); mkdirSync(unwritable); chmodSync(unwritable, 0o555)
+  const readOnly = withHelpers(`ensure_harness '${feed}' '${unwritable}' 2>&1`, { TTY: '', DEEPBOT_INSTALL_HARNESS: '1' })
+  check('harness: a place it cannot write is said, before anything is downloaded', readOnly.code !== 0 && /not writable/.test(readOnly.out) && !/downloading/.test(readOnly.out), readOnly.out)
+  chmodSync(unwritable, 0o755)
+
+  // At a terminal: asked, Enter is yes, n is no. Driven in a pty, since the question reads /dev/tty.
+  if (existsSync('/usr/bin/expect')) {
+    const atTerminal = (reply: string) => {
+      rmSync(join(apps, 'DeepSeek Harness.app'), { recursive: true, force: true })
+      // set +e: sourced, the installer's own set -e would end the shell at a refusal, before the status is printed.
+      writeFileSync(join(dir, 'ask.exp'), `set timeout 60\nspawn /bin/bash -c "DEEPBOT_INSTALL_SOURCED=1 source '${INSTALL}'; set +e; TTY=/dev/tty DEEPBOT_INSTALL_HARNESS= ensure_harness '${feed}' '${apps}'; echo EXIT=\\$?"\nexpect "(Y/n)?"\nsend "${reply}\\r"\nexpect eof\n`)
+      const r = spawnSync('/usr/bin/expect', [join(dir, 'ask.exp')], { encoding: 'utf8', cwd: dir, env: { ...process.env, HOME: dir } })
+      return (r.stdout ?? '') + (r.stderr ?? '')
+    }
+    const no = atTerminal('n')
+    check('harness: at a terminal it asks, and n installs nothing and says what to do instead', /EXIT=1/.test(no) && !placed() && /\(Y\/n\)\? \[y\]/.test(no) && /set DSH_BIN/.test(no), no.slice(-240))
+    const enter = atTerminal('')
+    check('harness: Enter takes the default, yes, and the app is placed', /EXIT=0/.test(enter) && runsPlaced(), enter.slice(-240))
+    const yes = atTerminal('yes')
+    check('harness: so does yes', /EXIT=0/.test(yes) && runsPlaced(), yes.slice(-240))
+  } else console.log('  TODO  harness: no /usr/bin/expect to drive the question in a pty')
+
+  // In the installer: the step fills the app's own place only, and the CLI it then uses is checked to run.
+  check('harness: install.sh installs only when no DSH_BIN was given and the app is not there, and then runs the CLI it placed',
+    /\[ -z "\$DSH_BIN_GIVEN" \] \|\| die /.test(installer) && /\[ ! -e "\$HARNESS_APP" \] \|\| die /.test(installer) && /ensure_harness "\$feed" "\$\(dirname "\$HARNESS_APP"\)" \|\| exit 1/.test(installer) && /"\$DSH_BIN" --version/.test(installer))
+}
+
 rmSync(dir, { recursive: true, force: true })
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
