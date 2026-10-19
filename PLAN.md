@@ -77,8 +77,7 @@ Decided against:
   is reached with the browse tool, and an app with a command line or an MCP server of its own through that. The
   agent's commands cannot reach the desktop either: the runner refuses `osascript`, `osacompile`, `automator`,
   `shortcuts`, `open` and `screencapture`, and the pasteboard. A program compiled to send Apple Events or take the
-  screen itself is not stopped, and with the network open `lsappinfo` lists the running apps (docs/how-it-works.md,
-  Read confinement).
+  screen itself is not stopped (docs/how-it-works.md, Read confinement).
 - **Permalinks on Discord and Telegram.** On Slack a link points at a thread inside a channel; on
   Discord and Telegram the conversation *is* the channel or chat, Discord's `<#channel>` mention is
   already a link, and a private Telegram chat has none. A link to where the person already is would

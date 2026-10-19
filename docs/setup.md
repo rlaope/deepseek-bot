@@ -301,8 +301,8 @@ the deepbot row:
 Bounded, a command makes one connection, to the proxy: `curl`, `git` over https, `pip`, `npm` and node's
 `fetch` are pointed at it, and what ignores a proxy (ssh and `git` over ssh, a raw socket, a UDP service,
 a database client to a local server) reaches nothing, this machine's own services included. Names are
-not looked up either (the proxy resolves what goes through it), and a command cannot start or script
-another app (`open`, `osascript`, `automator`, `shortcuts`), which would fetch outside the sandbox. What
+not looked up either (the proxy resolves what goes through it); a command cannot start or script another app
+(`open`, `osascript`, `automator`, `shortcuts`), which would fetch outside the sandbox, in any mode. What
 the proxy refuses is in the bot's log as `command network: blocked …`, at most twenty a minute. The browse
 tool goes through the same proxy, under its rule: with `local`, any page it opens may reach the local
 network. If the gateway stops, the agent's commands have no way out until it starts again. Restart the
@@ -335,8 +335,11 @@ refused: the agent can make links in its workspace, and `--login` writes as you.
 a tenant's session in that tenant's directory, under its own `.browser/`.
 
 The file is the account: the agent's commands can read it, and whoever can talk to the bot in that
-workspace can browse as you there. Keep one only for an account you would hand the bot, and delete the file
-(and its `.prev`) to sign it out. Some sites refuse sign-in in a browser driven by automation, or tie a
+workspace can browse as you there. So can a page: the pages the agent reads are not yours, and one that tells
+it to read the file and send it somewhere asks for nothing a command cannot do, which `commandNetwork` does not
+stop while a public address may be reached (found by the final review). Keep one only for an account you would
+hand the bot and whoever writes the pages it reads, with the narrowest access the account allows, and delete the
+file (and its `.prev`) to sign it out. Some sites refuse sign-in in a browser driven by automation, or tie a
 session to more than cookies; those stay out of reach.
 
 ## Running it

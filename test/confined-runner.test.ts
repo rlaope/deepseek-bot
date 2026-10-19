@@ -487,6 +487,15 @@ for (const resolved of [false, true]) {
     const tool = run(argv)
     check(`desktop: ${argv[0]} does not run`, tool.status !== 0 && /not permitted/i.test(tool.stderr), `${tool.status} ${tool.stderr.trim().slice(0, 100)}`)
   }
+  // LaunchServices is closed in every mode too, not only with the network bounded (found by the final review): open, a
+  // program the agent compiled could start an app outside the sandbox, and lsappinfo showed which apps the user had
+  // open and which was in front.
+  check('desktop: LaunchServices is closed with the network open', /\(deny mach-lookup \(global-name-regex #"\^com\\\.apple\\\.coreservices\\\.launchservicesd"\)/.test(text), text.split('\n').filter((l) => /launchservices/.test(l)).join(' | ') || '(no rule)')
+  const front = spawnSync('/usr/bin/lsappinfo', ['front'], { encoding: 'utf8' }).stdout.trim()
+  if (/^ASN:/.test(front)) {
+    const seen = run(['/usr/bin/lsappinfo', 'front'])
+    check('desktop: which app is in front is not seen', !/ASN:/.test(seen.stdout), seen.stdout.trim().slice(0, 60))
+  } else console.log('  TODO  desktop: no front app here (no login session); the LaunchServices check did not run')
   // The ruler pasteboard, which nothing uses, rather than the user's clipboard: the same service holds both.
   const marker = `deepbot-${process.pid}-${Date.now()}`
   const shown = () => spawnSync('/usr/bin/pbpaste', ['-pboard', 'ruler'], { encoding: 'utf8' }).stdout

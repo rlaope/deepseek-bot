@@ -764,6 +764,13 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   check('readOutside: a path cannot add a line to the question', forged?.kind === 'ask' && !String(forged?.reason).includes('\n'), JSON.stringify(forged))
   // The editor tool reads as well (view, str_replace).
   check('readOutside: the editor tool\'s read outside is asked for too', t.gate(exec('str_replace_editor', { command: 'view', path: report }))?.kind === 'ask')
+  // Its writes are not reads: one outside is refused, never asked about (found by the final review: the question named
+  // only the tool, so a write could be approved as a read).
+  const editorWrite = t.gate(exec('str_replace_editor', { command: 'create', path: report, file_text: 'x' }))
+  check('readOutside: the editor\'s write outside is refused, not asked for', editorWrite?.kind === 'deny' && /writing outside the workspace/.test(editorWrite?.reason ?? ''), JSON.stringify(editorWrite))
+  check('readOutside: so is its str_replace there', t.gate(exec('str_replace_editor', { command: 'str_replace', path: report, old_str: 'a', new_str: 'b' }))?.kind === 'deny')
+  const inWorkspace = t.gate(exec('str_replace_editor', { command: 'create', path: join(home, 'editor-new.md'), file_text: 'x' }))
+  check('readOutside: its write in the workspace is not this gate\'s', inWorkspace === 'delegated', JSON.stringify(inWorkspace))
   check('readOutside: a turn with nobody to ask is refused', t.gate(exec('read', { file_path: report }, 'slack-unmapped'))?.kind === 'deny')
   t.done()
   let refused = ''

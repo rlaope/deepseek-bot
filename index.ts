@@ -214,7 +214,7 @@ const DEFAULTS = {
   tenantPolicies: {},          // { acme: { preset, permission, model: { provider, model }, persona } }
   // What web_fetch may open. The harness's web_fetch runs in the harness, not in the sandbox
   // runner, so "inside the sandbox" needed its own policy: only http(s), never the cloud
-  // metadata service, and an optional allowlist. The agent's own commands are not bounded by it.
+  // metadata service, and an optional allowlist. The agent's own commands are not bounded by it (commandNetwork is theirs).
   fetchPolicy: true,
   fetchAllowedHosts: [],       // empty means any host web_fetch opens (the harness opens public ones only)
   // Where the agent's commands may connect. 'open': where the user's machine can, as before. 'public': public
@@ -2137,8 +2137,10 @@ export function apply(ctx, config) {
     const outside = candidates.filter((candidate) => !isInside(candidate, roots))
     if (outside.length === 0) return null
     // With the person's consent, in the conversation: not for a credential, a tenant (its directory is its boundary),
-    // or a turn with nobody to ask.
-    const key = cfg.readOutside === 'ask' && tenant === null && !outside.some(credentialPath) ? callConversation(exec) : undefined
+    // or a turn with nobody to ask. Nor for the editor's writes (every command but view), which are not reads: asked
+    // about by the tool's name alone, a write could be approved as a read (found by the final review).
+    const writes = name === 'str_replace_editor' && args.command !== 'view'
+    const key = cfg.readOutside === 'ask' && !writes && tenant === null && !outside.some(credentialPath) ? callConversation(exec) : undefined
     if (key !== undefined) {
       // Where each read lands, as it is judged: a link the agent made in its home to a file of the user's read as the
       // agent's own draft. On one line each, cut with the cut said: a line break in a path made a line of its own.
@@ -2152,10 +2154,12 @@ export function apply(ctx, config) {
       log(`asking for approval: read outside the workspace, ${name} ${outside[0]} in ${key}`)
       return { kind: 'ask', reason: `${name} outside the workspace: ${shown}` }
     }
-    log(`read outside the sandbox denied: ${name} ${outside[0]}`)
+    log(`${writes ? 'write' : 'read'} outside the sandbox denied: ${name} ${outside[0]}`)
     return {
       kind: 'deny',
-      reason: `reading outside the workspace (${roots[0]}) is not allowed. Ask the user to put the file there, or to paste its contents.`,
+      reason: writes
+        ? `writing outside the workspace (${roots[0]}) is not allowed. Write the file in the workspace and tell the user where it is.`
+        : `reading outside the workspace (${roots[0]}) is not allowed. Ask the user to put the file there, or to paste its contents.`,
     }
   }
 

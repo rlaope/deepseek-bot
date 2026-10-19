@@ -363,8 +363,8 @@ app that would (`osacompile`), take the screen (`screencapture`), or read or rep
 often a password (the pasteboard service is closed). The clipboard and the screen were open to commands in
 every mode before, and other apps unless the network was bounded. A copy of one of those tools is killed by
 macOS; a program compiled to send Apple Events or take the screen itself is not stopped, though macOS's own
-permissions for each app and for the screen still apply to it. With the network open, LaunchServices is not
-closed, so `lsappinfo` lists the apps the user has running (it starts or scripts none). Temp is `/tmp` and a directory of the workspace's own inside the user's temp
+permissions for each app and for the screen still apply to it. LaunchServices is closed in every mode, so no
+command can ask it to start an app, and which apps the user has open is not seen (found by the final review). Temp is `/tmp` and a directory of the workspace's own inside the user's temp
 (`deepbot-cmd-<hash>`, made by the runner, never a link), where it points `TMPDIR`; the user's temp
 itself stays closed, since unconfined processes keep scripts and sockets there. Another workspace's
 temp directory cannot be read: a tenant's temp files are its own. macOS's `mktemp`
@@ -390,7 +390,7 @@ at `$DEEPBOT_READ_PROFILE`; nothing in this repository generates it.)
 - id: deepbot
   config:
     readScope: true                                        # default
-    readScopeTools: [read, read_image, grep, glob]
+    readScopeTools: [read, read_image, grep, glob, str_replace_editor]
     readScopeRoots: []                                     # default: workspace + temp + tooling
 ```
 
@@ -402,7 +402,8 @@ with the same buttons as a destructive command. It is refused, with a reason the
 above, the harness home, a file named `.env…`), in a place `DEEPBOT_DENY_READ` names, or a folder
 holding one (a search above `~/.config/gh` read its token), judged where it really is; when the turn is
 a tenant's, its first turn included (its directory is its boundary); when no conversation can be
-asked; and always with `readOutside: deny`. The agent's commands read an ordinary file outside without asking, as before:
+asked; and always with `readOutside: deny`. The editor's commands but view are writes, and one outside is
+refused, never asked about as a read. The agent's commands read an ordinary file outside without asking, as before:
 the runner refuses the places above, not the user's documents; `DEEPBOT_DENY_READ` adds places.
 Writing outside the workspace is not possible either way: the agent writes in its home, and the
 person copies. Symlinks are resolved when the path exists, so a link
@@ -499,9 +500,13 @@ so it keeps a name's answer for a minute (a failed lookup for five seconds, a th
 closes a tunnel whose client is gone or that carries nothing for fifteen minutes, and holds at most 256 open
 at once, refusing the next (found by the final review: kept for good, each grew in the gateway). Two other ways around it are shut
 (found by review): the system resolver's socket, since a name looked up carries data out in its labels,
-and other apps, which run outside the sandbox: LaunchServices is closed, and `open`, `osascript`,
-`automator`, `shortcuts` and the other tools above do not run in any mode. A program compiled to send Apple
-Events itself is not stopped.
+and other apps, which run outside the sandbox: LaunchServices is closed and `open`, `osascript`,
+`automator`, `shortcuts` and the other tools above do not run, in any mode. A program compiled to send Apple
+Events itself is not stopped. With `local`, a command reaches this machine's services through the proxy, the
+harness's own web port among them, which answers nothing without its token (seen: 401), and the token is kept
+under the harness home, which commands cannot read. A watch the agent wrote runs under the same runner, so
+with the network bounded it goes through the gateway's proxy too, and has no way out while the gateway is
+stopped.
 The gateway writes the file closed (no port) before its proxy listens and again when it stops, and a
 file whose gateway is no longer running names no port to the runner: a file that is not there leaves
 commands open, so it is never removed while bounded, and a port a crashed gateway left may be another

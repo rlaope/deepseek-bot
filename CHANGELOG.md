@@ -7,6 +7,17 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **LaunchServices was open to commands unless the network was bounded.** With `commandNetwork: open`, the
+  default, a program the agent compiled could ask it to start an app outside the sandbox, and `lsappinfo` showed
+  which apps the user had open and which was in front. It is closed in every mode now; node, python, git, curl, pip,
+  npm and `security` were run with it closed and work as before. Checked by the runner suite: the front app was
+  seen inside the runner before, not now. Found by the final review.
+
+- **The editor's write outside the workspace was asked about as a read.** With `readOutside: ask`, a
+  `str_replace_editor` create, str_replace or insert on a path outside asked "str_replace_editor outside the
+  workspace", which a person could approve as a read. Its writes outside are refused now, never asked about.
+  Checked in the core suite, red before. Found by the final review.
+
 - **The browse tool took a proxy of the user's own for the commands', and ran no policy.** It read
   `https_proxy` on this machine as the commands' proxy, so with a local proxy client set in the gateway's
   environment it ran none of its own, and a public page could send the browser to a metadata service or into
@@ -29,8 +40,7 @@ the caveat about version numbers is at the bottom.
   None of it runs now, in any mode: the runner refuses those tools and the pasteboard. Checked by the runner suite
   with the network open: each tool ran before and none does now, and a marker on a pasteboard nothing uses was
   read and replaced before and is neither now (four one-line mutants red). A program compiled to send Apple Events
-  or take the screen itself is still not stopped; macOS's own permissions are what stand in its way. With the
-  network open, `lsappinfo` still lists the apps the user has running.
+  or take the screen itself is still not stopped; macOS's own permissions are what stand in its way.
 
 - **The agent's commands read the user's SSH keys and stored tokens.** The sandbox runner refused the ssh-agent
   socket, but not the key files behind it: `cat ~/.ssh/id_ed25519` worked, and so did the cloud CLIs' tokens, the gh

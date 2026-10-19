@@ -104,7 +104,8 @@ If the row count stays flat after conversations, the refresh job is not running:
   run. A site that needs a sign-in is reached only through a session you keep for it (`--login`, then
   `--state`; docs/setup.md), and a site that refuses sign-in in a browser driven by automation stays out of
   reach. The session file holds the account's cookies, and the agent's commands can read it: whoever can
-  talk to the bot in that workspace can browse as you there. It needs Chromium's headless shell installed
+  talk to the bot in that workspace can browse as you there. A page the agent reads can tell it to send the
+  file out, and `commandNetwork` does not stop that while public addresses are reachable. It needs Chromium's headless shell installed
   (the installer does it), and `--login` a browser with a window. It prints the page's own
   text, not that of frames inside it. Text given to `--type` is on the command line, where the process
   list and the session log show it: not for a password. Its proxy carries what the browser sends over
