@@ -7,7 +7,7 @@
  */
 import './dist-fresh.ts'   // fails loudly on a stale dist
 import { createServer, request } from 'node:http'
-import { connect } from 'node:net'
+import { connect, createServer as createNetServer, type Socket } from 'node:net'
 import { addressKind, createResolver, destinationRefusal, startPolicyProxy } from '../dist/netPolicy.js'
 
 const results = []
@@ -109,7 +109,128 @@ const marked = await new Promise<string | undefined>((done) => {
 })
 check('a refusal carries its mark', marked === '1', String(marked))
 check('and is told as it is made', told.length === 1 && told[0].startsWith(`blocked "http://127.0.0.1:${targetPort}/g"`), JSON.stringify(told))
+// What is told goes to the gateway's log: a query may hold a secret, so it is told without one. The list a browse run
+// prints for the agent, who made the request, keeps it.
+await viaProxy(telling.port, `http://127.0.0.1:${targetPort}/h?token=s3cret#frag`)
+check('a refusal is told without its query', told.length === 2 && told[1].startsWith(`blocked "http://127.0.0.1:${targetPort}/h"`) && !told[1].includes('s3cret') && telling.blocked.some((b) => b.includes('s3cret')), JSON.stringify(told))
 await telling.close()
+
+// The commands' proxy lives as long as the gateway, for weeks (found by the final review). A tunnel whose client is
+// gone takes its far end with it, a reset included; one left idle is closed; and only so many are open at once.
+const sink = createNetServer((socket) => { socket.on('error', () => {}) })
+const farEnds: Socket[] = []
+sink.on('connection', (socket) => farEnds.push(socket))
+await new Promise<void>((done) => sink.listen(0, '127.0.0.1', done))
+const sinkPort = (sink.address() as { port: number }).port
+/** A CONNECT to the sink that is left open: resolves with the client socket once the proxy says 200, or null. */
+const opened = (proxyPort: number) => new Promise<{ client: Socket; status: string }>((done) => {
+  const client = connect(proxyPort, '127.0.0.1', () => client.write(`CONNECT 127.0.0.1:${sinkPort} HTTP/1.1\r\nHost: x\r\n\r\n`))
+  let got = ''
+  client.on('data', (d) => { got += d; if (got.includes('\r\n\r\n')) done({ client, status: got.split('\r\n')[0] }) })
+  client.on('error', () => done({ client, status: 'error' }))
+})
+const isClosed = (socket: Socket) => socket.destroyed || socket.readyState === 'closed'
+const settle = (ms: number) => new Promise((done) => setTimeout(done, ms))
+/** The sink's end of the newest tunnel, once it has arrived. */
+const farEnd = async (count: number) => { for (let i = 0; i < 50 && farEnds.length < count; i++) await settle(20); return farEnds[count - 1] }
+const lasting = await startPolicyProxy(true, createResolver(), { idleMs: 60_000 })
+const vanishing = await opened(lasting.port)
+const farOfVanishing = await farEnd(1)
+vanishing.client.resetAndDestroy()
+await settle(400)
+check('tunnel: a client that vanishes takes its far end with it', / 200 /.test(vanishing.status) && farOfVanishing !== undefined && isClosed(farOfVanishing), `${vanishing.status}; far ${farOfVanishing ? (isClosed(farOfVanishing) ? 'closed' : 'open') : 'none'}`)
+await lasting.close()
+const idling = await startPolicyProxy(true, createResolver(), { idleMs: 200 })
+const before = farEnds.length
+const idle = await opened(idling.port)
+const farOfIdle = await farEnd(before + 1)
+await settle(500)
+check('tunnel: one left idle is closed, both ends', / 200 /.test(idle.status) && isClosed(idle.client) && farOfIdle !== undefined && isClosed(farOfIdle), `${idle.status}; client ${isClosed(idle.client) ? 'closed' : 'open'}`)
+await idling.close()
+const capped: string[] = []
+const few = await startPolicyProxy(true, createResolver(), { maxTunnels: 2, onBlocked: (line) => capped.push(line) })
+const one = await opened(few.port)
+const two = await opened(few.port)
+const three = await opened(few.port)
+check('tunnel: only so many are open at once, and the one refused is told', / 200 /.test(one.status) && / 200 /.test(two.status) && / 503 /.test(three.status) && capped.some((l) => /too many/.test(l)), `${one.status} | ${two.status} | ${three.status} | ${JSON.stringify(capped)}`)
+for (const c of [one, two, three]) c.client.destroy()
+await few.close()
+// A burst, every one waiting on a slow lookup at once: the cap is held across the wait, not checked before it and
+// counted after (found by review: all of a burst got through).
+const slow = async () => { await settle(200); return [{ address: '127.0.0.1', family: 4 }] }
+const bursty = await startPolicyProxy(true, slow, { maxTunnels: 2 })
+const burst = await Promise.all([1, 2, 3, 4, 5].map(() => opened(bursty.port)))
+const admitted = burst.filter((b) => / 200 /.test(b.status)).length
+check('tunnel: a burst is held to the cap too', admitted === 2 && burst.filter((b) => / 503 /.test(b.status)).length === 3, burst.map((b) => b.status).join(' | '))
+for (const b of burst) b.client.destroy()
+await bursty.close()
+// One stuck on its lookup is closed by the same idle time, and gives its place back.
+const stuck = await startPolicyProxy(true, () => new Promise(() => {}), { idleMs: 200, maxTunnels: 1 })
+const waiting = connect(stuck.port, '127.0.0.1', () => waiting.write(`CONNECT stuck.example:443 HTTP/1.1\r\nHost: x\r\n\r\n`))
+waiting.on('error', () => {})
+await settle(600)
+check('tunnel: one stuck on its lookup is closed too', isClosed(waiting) && stuck.open() === 0, `client ${isClosed(waiting) ? 'closed' : 'open'}, open ${stuck.open()}`)
+await stuck.close()
+// A plain request whose client went during the lookup is not made: no connection is opened for it.
+let hits = 0
+const counting = createServer((_req, res) => { res.end('x') })
+counting.on('connection', () => { hits++ })
+await new Promise<void>((done) => counting.listen(0, '127.0.0.1', done))
+const countingPort = (counting.address() as { port: number }).port
+const lagging = await startPolicyProxy(true, async () => { await settle(300); return [{ address: '127.0.0.1', family: 4 }] })
+const gone = request({ host: '127.0.0.1', port: lagging.port, path: `http://lagging.example:${countingPort}/x`, headers: { host: `lagging.example:${countingPort}` } })
+gone.on('error', () => {})
+gone.end()
+setTimeout(() => gone.destroy(), 50)
+await settle(600)
+check('a request whose client went during the lookup is not made', hits === 0, `${hits} connection(s) reached the server`)
+await lagging.close()
+counting.close()
+// A CONNECT to a port nothing listens on: the failed socket is let go, not held for the proxy's life.
+const toNothing = await startPolicyProxy(true, createResolver(), { maxTunnels: 2 })
+const dead = createNetServer()
+await new Promise<void>((done) => dead.listen(0, '127.0.0.1', done))
+const deadPort = (dead.address() as { port: number }).port
+await new Promise<void>((done) => dead.close(() => done()))
+for (let i = 0; i < 4; i++) {
+  await new Promise<void>((done) => {
+    const client = connect(toNothing.port, '127.0.0.1', () => client.write(`CONNECT 127.0.0.1:${deadPort} HTTP/1.1\r\nHost: x\r\n\r\n`))
+    client.on('close', () => done())
+    client.on('error', () => {})
+    setTimeout(() => client.destroy(), 2000)
+  })
+}
+await settle(100)
+const afterFailed = await opened(toNothing.port)
+check('tunnel: failed ones hold nothing, and leave the cap free', toNothing.open() === 2 && / 200 /.test(afterFailed.status), `open ${toNothing.open()}, then ${afterFailed.status}`)
+afterFailed.client.destroy()
+await toNothing.close()
+sink.close()
+
+// A name's answer is kept for a minute, a failure for seconds, and so many names at once: kept for the process, a
+// name that moved was reached at its old address for weeks, and one that failed once failed until a restart. The
+// address a request goes to is still the one checked, so a name that answers differently later is checked again.
+let lookups = 0
+let failing = false
+const timed = createResolver({ ttlMs: 240, failMs: 90, max: 2, lookup: async () => { lookups++; if (failing) throw new Error('ENOTFOUND'); return [{ address: '93.184.216.34', family: 4 }] } })
+await timed('a.example'); await timed('a.example')
+check('resolver: within its time a name is looked up once', lookups === 1, String(lookups))
+await settle(360)
+await timed('a.example')
+check('resolver: after it, again', lookups === 2, String(lookups))
+failing = true
+const none = await timed('b.example')
+failing = false
+await settle(180)
+const back = await timed('b.example')
+check('resolver: a failure is kept only briefly', none.length === 0 && back.length === 1, `${none.length} then ${back.length}`)
+let counted = 0
+const few2 = createResolver({ ttlMs: 60_000, max: 2, lookup: async () => { counted++; return [{ address: '93.184.216.34', family: 4 }] } })
+await few2('a.example'); await few2('b.example'); await few2('c.example')
+await few2('b.example'); await few2('c.example')
+const beforeOldest = counted
+await few2('a.example')
+check('resolver: only so many names are kept, the oldest let go', beforeOldest === 3 && counted === 4, `${beforeOldest} then ${counted}`)
 target.close()
 
 const failed = results.filter((r) => !r.ok)

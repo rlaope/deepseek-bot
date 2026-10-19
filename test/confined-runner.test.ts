@@ -420,11 +420,15 @@ for (const resolved of [false, true]) {
   const policy = [...READ_ONLY, '--tmpfs', '/tmp', '--bind', agentHome, agentHome]
   const printed = () => execFileSync(RUNNER, ['--print-profile', ...policy, '--', 'true'], { encoding: 'utf8', env })
   check('network: without the gateway\'s proxy, commands connect as before', !/network-outbound \(remote ip/.test(printed()))
+  // That name, brought by whoever started the command, is dropped: unbounded, there is no commands' proxy to name.
+  const brought = execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env: { ...env, DEEPBOT_COMMAND_PROXY: 'http://127.0.0.1:7890' } })
+  check('network: a commands\' proxy named by the caller is not passed on', !/^DEEPBOT_COMMAND_PROXY=/m.test(brought))
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify({ port: 18999, mode: 'public', pid: process.pid }))
   const bounded = printed()
   check('network: with it, outbound connections are held to the proxy\'s port, not every port here', bounded.includes('(deny network-outbound (remote ip))') && bounded.includes('(allow network-outbound (remote ip "localhost:18999"))') && !bounded.includes('localhost:*'), bounded.split('\n').filter((l) => l.includes('network')).join(' | '))
   const seen = execFileSync(RUNNER, [...policy, '--', '/usr/bin/env'], { encoding: 'utf8', env })
+  check('network: the browse tool is told it is the commands\' proxy, by the name only this runner sets', /^DEEPBOT_COMMAND_PROXY=http:\/\/127\.0\.0\.1:18999$/m.test(seen), seen.split('\n').filter((l) => /DEEPBOT_COMMAND/.test(l)).join(' | '))
   check('network: and the command is told the proxy, with nothing exempt from it', /^https_proxy=http:\/\/127\.0\.0\.1:18999$/m.test(seen) && /^HTTPS_PROXY=http:\/\/127\.0\.0\.1:18999$/m.test(seen) && /^http_proxy=http:\/\/127\.0\.0\.1:18999$/m.test(seen) && /^NODE_USE_ENV_PROXY=1$/m.test(seen) && !/^no_proxy=/im.test(seen), seen.split('\n').filter((l) => /proxy/i.test(l)).join(' | '))
   // A direct connection elsewhere is refused by the sandbox at once, not left to time out; and so is one to a service on
   // this machine other than the proxy (seen live: with every port here open, curl reached a local page around it).

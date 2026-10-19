@@ -7,6 +7,21 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **The browse tool took a proxy of the user's own for the commands', and ran no policy.** It read
+  `https_proxy` on this machine as the commands' proxy, so with a local proxy client set in the gateway's
+  environment it ran none of its own, and a public page could send the browser to a metadata service or into
+  this machine. The runner now names the commands' proxy as `DEEPBOT_COMMAND_PROXY`, set by it alone and
+  dropped when the caller brings one, and the tool reads only that. Checked in the browse suite with a stand-in
+  for the user's proxy (it got the request before, nothing now) and the runner suite; found by the final review.
+
+- **The commands' proxy kept what a browse run could keep, for the gateway's life.** A tunnel whose client
+  went away by a reset kept its far end open, nothing closed an idle one, any number could be open, and a
+  name's answer (a failure too) was kept until a restart, for any number of names. It now closes the far end
+  with the client (and lets go of one that never connected), closes a tunnel idle for fifteen minutes, holds 256
+  at most, a burst included, and keeps an answer for a minute
+  (a failure for five seconds, a thousand names). The log tells a refusal without its query, which may hold a
+  secret. Checked in the net-policy suite, each red before; found by the final review.
+
 - **The agent's commands reached the user's desktop.** In every mode they read and replaced what the user had
   copied, often a password, and could take the screen (`screencapture`); unless `commandNetwork` bounded them,
   they scripted other apps (`osascript`, `automator`, `shortcuts`) and started them (`open`), and in every mode

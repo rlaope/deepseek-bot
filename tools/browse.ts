@@ -170,12 +170,14 @@ export function keepSession(file: string, session: unknown): void {
 }
 
 /**
- * The agent's commands' proxy (commandNetwork), which the sandbox runner names in the environment when it holds
+ * The agent's commands' proxy (commandNetwork), which the sandbox runner names in DEEPBOT_COMMAND_PROXY when it holds
  * commands to it: the one connection a command may make. The browser then goes through it, under its rule, and this
- * tool runs no proxy of its own, which the sandbox would not let the browser reach. Only one on this machine is taken.
+ * tool runs no proxy of its own, which the sandbox would not let the browser reach. Only one on this machine is taken,
+ * and only by that name: a proxy of the user's own on this machine (a local proxy client, named in https_proxy) taken
+ * for it left the browser with no policy at all (found by the final review).
  */
 export function commandProxyFrom(env: Record<string, string | undefined>): { host: string; port: number } | null {
-  const value = env.https_proxy ?? env.HTTPS_PROXY ?? env.http_proxy ?? env.HTTP_PROXY
+  const value = env.DEEPBOT_COMMAND_PROXY
   if (!value) return null
   try {
     const url = new URL(value)

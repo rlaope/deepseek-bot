@@ -357,13 +357,15 @@ if [ -n "$cmd_temp" ]; then
 fi
 # Pointed at the proxy, in every spelling the common tools read; node reads them only when told to. Nothing is exempt
 # (no NO_PROXY): a request for this machine goes through the proxy too, which decides by its mode. Without a port,
-# whatever proxy was set is dropped: there is none to reach.
+# whatever proxy was set is dropped: there is none to reach. DEEPBOT_COMMAND_PROXY names it to the browse tool, and
+# only this runner sets it: one the caller brought is dropped, so a proxy of the user's own is never taken for it.
+unset DEEPBOT_COMMAND_PROXY
 if [ -n "$net_file" ]; then
   unset NO_PROXY no_proxy
   if [ -n "$net_port" ]; then
     net_proxy="http://127.0.0.1:$net_port"
     export http_proxy="$net_proxy" https_proxy="$net_proxy" HTTP_PROXY="$net_proxy" HTTPS_PROXY="$net_proxy" ALL_PROXY="$net_proxy" all_proxy="$net_proxy"
-    export NODE_USE_ENV_PROXY=1
+    export NODE_USE_ENV_PROXY=1 DEEPBOT_COMMAND_PROXY="$net_proxy"
   else
     unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
   fi

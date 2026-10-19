@@ -476,13 +476,15 @@ page cannot reach into this machine or its network; a name that resolves to any 
 as a public page. With `commandNetwork` bounded, the browse tool runs as a command like any other: its
 browser goes through the commands' proxy, under that proxy's rule, and the tool runs none of its own (the
 sandbox would not let the browser reach it). So with `public` no page reaches this machine or its
-network, and with `local` any page may, as the agent's commands may.
+network, and with `local` any page may, as the agent's commands may. The runner names that proxy to the
+tool as `DEEPBOT_COMMAND_PROXY`, set by it alone; a proxy of the user's own on this machine, named in
+`https_proxy`, is not taken for it (taken, it left the browser with no policy: found by the final review).
 
 **The agent's commands' network (`commandNetwork`).** The sandbox runner confines what commands read
 and write; by default it leaves where they connect to the user's machine, so on a cloud host a command
 could ask the metadata service for the host's credentials. With `public` or `local`, the gateway runs a
-proxy of the browse tool's kind (`netPolicy.ts`: each name resolved once, the address it connects to
-checked; metadata never; private addresses only with `local`), logs what it refuses
+proxy of the browse tool's kind (`netPolicy.ts`: the address it connects to is the one it checked;
+metadata never; private addresses only with `local`), logs what it refuses without a request's query
 (`command network: blocked …`), and writes where it listens to
 `~/.dsh/deepbot/command-network/<the agent home's real path, hashed>.json`, which the agent's commands
 cannot read or write. The runner reads that file at every command: it adds Seatbelt rules that refuse
@@ -492,7 +494,10 @@ proxy in every spelling the common tools read (`http_proxy`, `HTTPS_PROXY`, `ALL
 proxy as well, which decides by its mode. Not every port here is open: with them open, a command
 reached a local page around the proxy, seen live with `public`. `curl`, `git` over https, `pip`, `npm`
 and node's `fetch` go through it; what ignores a proxy (ssh, a raw socket, UDP, a database client to a
-local server) reaches nothing: Seatbelt refuses it at once (`EPERM`). Two other ways around it are shut
+local server) reaches nothing: Seatbelt refuses it at once (`EPERM`). It lives as long as the gateway,
+so it keeps a name's answer for a minute (a failed lookup for five seconds, a thousand names at most),
+closes a tunnel whose client is gone or that carries nothing for fifteen minutes, and holds at most 256 open
+at once, refusing the next (found by the final review: kept for good, each grew in the gateway). Two other ways around it are shut
 (found by review): the system resolver's socket, since a name looked up carries data out in its labels,
 and other apps, which run outside the sandbox: LaunchServices is closed, and `open`, `osascript`,
 `automator`, `shortcuts` and the other tools above do not run in any mode. A program compiled to send Apple

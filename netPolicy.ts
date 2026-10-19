@@ -111,24 +111,46 @@ export function destinationRefusal(host: string, addresses: readonly string[], a
 }
 
 export type Resolved = { address: string; family: number }
+export type ResolverOptions = {
+  /** How long an answer is kept, and a failure (an empty answer). */
+  ttlMs?: number
+  failMs?: number
+  /** How many names are kept; the oldest goes first. */
+  max?: number
+  lookup?: (host: string) => Promise<Resolved[]>
+}
 /**
- * A name's addresses, looked up once and kept for the run: a name that answers differently the second time (DNS
- * rebinding) reaches nothing new.
+ * A name's addresses, kept for a minute (a failure for seconds, and so many names at once): the commands' proxy lives as
+ * long as the gateway, and kept for good, a name that moved was reached at its old address and one that failed once
+ * failed until a restart (found by the final review). A request goes to the address that was checked, so a name that
+ * answers differently later (DNS rebinding) is checked again and reaches nothing the policy refuses.
  */
-export function createResolver(): (host: string) => Promise<Resolved[]> {
-  const known = new Map<string, Promise<Resolved[]>>()
+export function createResolver(options: ResolverOptions = {}): (host: string) => Promise<Resolved[]> {
+  const { ttlMs = 60_000, failMs = 5_000, max = 1_000 } = options
+  const find = options.lookup ?? ((host: string) => lookup(host, { all: true }))
+  const known = new Map<string, { until: number; answer: Promise<Resolved[]> }>()
   return (host) => {
     if (isIP(host) !== 0) return Promise.resolve([{ address: host, family: isIP(host) }])
-    if (!known.has(host)) known.set(host, lookup(host, { all: true }).catch(() => []))
-    return known.get(host)!
+    const kept = known.get(host)
+    if (kept !== undefined && performance.now() < kept.until) return kept.answer
+    known.delete(host)
+    if (known.size >= max) known.delete(known.keys().next().value!)
+    const entry = { until: Number.POSITIVE_INFINITY, answer: find(host).catch(() => [] as Resolved[]) }
+    entry.answer.then((found) => { entry.until = performance.now() + (found.length > 0 ? ttlMs : failMs) })
+    known.set(host, entry)
+    return entry.answer
   }
 }
 
-export type PolicyProxy = { port: number; blocked: string[]; close: () => Promise<void> }
+export type PolicyProxy = { port: number; blocked: string[]; open: () => number; close: () => Promise<void> }
 
 export type PolicyProxyOptions = {
-  /** Told each refusal as it is made: a long-lived proxy (the commands') logs them rather than keeping them all. */
+  /** Told each refusal as it is made, without a request's query: a long-lived proxy (the commands') logs them. */
   onBlocked?: (line: string) => void
+  /** A tunnel with no traffic for this long is closed, both ends. */
+  idleMs?: number
+  /** How many tunnels may be open at once; one more is refused. */
+  maxTunnels?: number
 }
 
 /** The header this proxy's refusal carries, so a client can tell it from a page's own 403. */
@@ -142,11 +164,12 @@ const BLOCKED_KEPT = 1000
  */
 export async function startPolicyProxy(allowPrivate: boolean, resolve = createResolver(), options: PolicyProxyOptions = {}): Promise<PolicyProxy> {
   const blocked: string[] = []
+  const { idleMs = 900_000, maxTunnels = 256 } = options
   const refuse = (label: string, why: string) => {
-    const line = `blocked ${JSON.stringify(label.slice(0, 100))}: ${why}`
-    if (blocked.length < BLOCKED_KEPT) blocked.push(line)
-    options.onBlocked?.(line)
+    if (blocked.length < BLOCKED_KEPT) blocked.push(`blocked ${JSON.stringify(label.slice(0, 100))}: ${why}`)
+    options.onBlocked?.(`blocked ${JSON.stringify(label.replace(/[?#].*$/, '').slice(0, 100))}: ${why}`)
   }
+  let tunnels = 0
   // Everything it holds open, so that closing it lets the process end: a request the page left waiting on its server
   // kept the tool running for as long as the server held it.
   const sockets = new Set<Socket>()
@@ -164,6 +187,7 @@ export async function startPolicyProxy(allowPrivate: boolean, resolve = createRe
     if (url.protocol !== 'http:') { res.writeHead(400).end(); return }
     const to = await admit(url.href, requestHost(url.hostname))
     if (to === null) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', [REFUSED_HEADER]: '1' }).end('refused by the network policy'); return }
+    if (req.socket.destroyed) return   // gone during the lookup: nothing to fetch for
     const headers = { ...req.headers }
     delete headers['proxy-connection']
     delete headers['proxy-authorization']
@@ -184,8 +208,15 @@ export async function startPolicyProxy(allowPrivate: boolean, resolve = createRe
     const target = /^(.+):(\d+)$/.exec(req.url ?? '')
     if (target === null) { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); return }
     const label = `${target[1]}:${target[2]}`
+    if (tunnels >= maxTunnels) { refuse(label, `too many connections open at once (${maxTunnels})`); socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n'); return }
+    // Its place is taken now, before the lookup, and given back when its client goes, whichever way: checked before the
+    // wait and counted after it, a burst all got through (found by review). One that carries nothing for idleMs is closed.
+    tunnels++
+    socket.once('close', () => { tunnels-- })
+    socket.setTimeout(idleMs, () => socket.destroy())
     const to = await admit(label, requestHost(target[1].toLowerCase()))
     if (to === null) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return }
+    if (socket.destroyed) return
     const join = (other: Socket, rest: Buffer) => {
       sockets.add(other)
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
@@ -199,12 +230,19 @@ export async function startPolicyProxy(allowPrivate: boolean, resolve = createRe
     const direct = connect({ host: to.address, port: Number(target[2]), family: to.family }, () => join(direct, Buffer.alloc(0)))
     sockets.add(direct)
     direct.on('error', () => socket.destroy())
+    // A client gone, by a reset, an error or the idle time rather than an end the pipe would pass on, takes the far end
+    // with it (what a tunnel carries passes through both, so the client's idle time is the tunnel's), and a far end that
+    // never connected is let go. Left open, each held a socket for good.
+    direct.on('close', () => sockets.delete(direct))
+    socket.on('close', () => direct.destroy())
   })
   server.on('clientError', (_e, socket) => socket.destroy())
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
   return {
     port: (server.address() as { port: number }).port,
     blocked,
+    /** How many sockets it holds open: both ends of each tunnel, and a tunnel's while it connects. */
+    open: () => sockets.size,
     close: () => new Promise<void>((done) => {
       for (const s of sockets) s.destroy()
       agent.destroy()

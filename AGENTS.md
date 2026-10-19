@@ -155,7 +155,7 @@ Define success criteria. Loop until verified.
 | `notes.ts`, `usage.ts`, `injection.ts` | note hygiene, token totals, flagging instruction-like text |
 | `i18n.ts`, `messages.ts` | the `language` setting (en, ko, zh) and what the bot itself says in each; the terminal's own words, English only, are `tui/strings.ts` |
 | `safeWrite.ts` | writes that never follow a link the agent left in its home |
-| `netPolicy.ts` | where a request may go: metadata and private addresses, and the proxy the browse tool's browser uses |
+| `netPolicy.ts` | where a request may go: metadata and private addresses, and the policy proxy the browse tool runs and the gateway runs for the agent's commands (`commandNetwork`) |
 | `service/` | launcher, sandbox runner, health probe, log rotation, scenario schedule, their installers |
 | `watch/` | the watch runner and its installer |
 | `install.sh`, `init.sh` | the one-line installer, and the scaffold of home and profile it calls |

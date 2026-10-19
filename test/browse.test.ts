@@ -90,9 +90,12 @@ check('a name with a public address among private ones is a public page', !opens
 }
 
 // The commands' proxy (commandNetwork), which the tool goes through when the runner names one: on this machine only.
-check('commands\' proxy: the one on this machine is gone through', JSON.stringify(commandProxyFrom({ https_proxy: 'http://127.0.0.1:41000' })) === JSON.stringify({ host: '127.0.0.1', port: 41000 }))
+check('commands\' proxy: the one on this machine is gone through', JSON.stringify(commandProxyFrom({ DEEPBOT_COMMAND_PROXY: 'http://127.0.0.1:41000' })) === JSON.stringify({ host: '127.0.0.1', port: 41000 }))
 check('commands\' proxy: none named, none gone through', commandProxyFrom({}) === null)
-check('commands\' proxy: one elsewhere is not it (the tool keeps its own way out)', commandProxyFrom({ https_proxy: 'http://proxy.corp.example:3128' }) === null && commandProxyFrom({ HTTPS_PROXY: 'socks5://127.0.0.1:1080' }) === null)
+check('commands\' proxy: one elsewhere is not it (the tool keeps its own way out)', commandProxyFrom({ DEEPBOT_COMMAND_PROXY: 'http://proxy.corp.example:3128' }) === null && commandProxyFrom({ DEEPBOT_COMMAND_PROXY: 'socks5://127.0.0.1:1080' }) === null)
+// A proxy of the user's own on this machine (a local proxy client) is not the commands': taken for it, the tool ran
+// none of its own, and a public page could send the browser anywhere (found by the final review).
+check('commands\' proxy: a loopback proxy the user set is not it', commandProxyFrom({ https_proxy: 'http://127.0.0.1:7890', HTTPS_PROXY: 'http://127.0.0.1:7890', http_proxy: 'http://localhost:7890' }) === null)
 
 // Keeping a session, without a browser. Never through a link: the agent can leave one at the file's name, or make its
 // directory one, and --login writes as the person, outside the sandbox (found by review: a link at the name made a run
@@ -219,13 +222,22 @@ if (ready.code !== 0) {
   // and its refusals stand: a page on this machine, which the tool alone opens, is refused by a public-only one, and said
   // as the agent's network rather than the site's 403; it is opened through a local one.
   const publicOnly = await startPolicyProxy(false)
-  const throughPublic = await run([`${base}/js`], { https_proxy: `http://127.0.0.1:${publicOnly.port}` })
+  const throughPublic = await run([`${base}/js`], { DEEPBOT_COMMAND_PROXY: `http://127.0.0.1:${publicOnly.port}` })
   check('commands\' proxy: its refusal stands, and is said as the agent\'s network', throughPublic.code === 4 && /refused by the agent's network \(commandNetwork\)/.test(throughPublic.err) && publicOnly.blocked.some((b) => b.includes(`${base}/js`)), (throughPublic.out + throughPublic.err).slice(0, 240))
   const localToo = await startPolicyProxy(true)
-  const throughLocal = await run([`${base}/js`], { https_proxy: `http://127.0.0.1:${localToo.port}` })
+  const throughLocal = await run([`${base}/js`], { DEEPBOT_COMMAND_PROXY: `http://127.0.0.1:${localToo.port}` })
   check('commands\' proxy: what it allows is read through it', throughLocal.code === 0 && throughLocal.out.includes('NEBULA-41c7'), (throughLocal.out + throughLocal.err).slice(0, 240))
   await publicOnly.close()
   await localToo.close()
+  // A loopback proxy of the user's own, named the usual way: the tool does not send the browser through it.
+  let userProxyHits = 0
+  const userProxy = createServer((_req, res) => { userProxyHits++; res.writeHead(502).end() })
+  userProxy.on('connect', (_req, socket) => { userProxyHits++; socket.destroy() })
+  await new Promise<void>((done) => userProxy.listen(0, '127.0.0.1', done))
+  const userPort = (userProxy.address() as { port: number }).port
+  const besideUser = await run([`${base}/js`], { https_proxy: `http://127.0.0.1:${userPort}`, HTTPS_PROXY: `http://127.0.0.1:${userPort}`, http_proxy: `http://127.0.0.1:${userPort}` })
+  check('a loopback proxy the user set is not gone through: the tool runs its own', besideUser.code === 0 && besideUser.out.includes('NEBULA-41c7') && userProxyHits === 0, `${besideUser.code} hits ${userProxyHits} ${(besideUser.out + besideUser.err).slice(0, 160)}`)
+  userProxy.close()
   const heldFrom = Date.now()
   const held = await run([`${base}/held`])
   const heldFor = Date.now() - heldFrom
