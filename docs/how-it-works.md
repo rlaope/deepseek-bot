@@ -1021,7 +1021,9 @@ step failed, 2 on setup problems. Flags: `--timeout <s>`, `--seed <file>`, `--du
 Named shortcuts exist for the common ones (`pnpm test:doc`, `test:vision`, `test:isolation`,
 `test:approval-gate`, `test:interrupt`, `test:immediate`, ...; the full list is in
 `package.json`). `service/run-scenarios.sh` runs the set unattended, writes
-`$DSH_HOME/slack-state/scenario-report.txt`, takes a lock so two runs cannot share state, and runs
+`$DSH_HOME/slack-state/scenario-report.txt`, takes a lock so two runs cannot share state, starts the page
+server of the browser, browser-js, browser-session and command-network scenarios on port 8899 and stops whatever holds that port after it (a port something else
+holds fails that scenario and is left alone), and runs
 `--quick` (interrupt and approval-gate) when asked. `service/install-scenarios.sh` makes it a daily
 launchd job (09:30 unless `HOUR`/`MINUTE` say otherwise); `install.sh` does not, since every scenario is
 a paid turn of a real model. The job starts node, which starts the script: macOS closes a checkout under

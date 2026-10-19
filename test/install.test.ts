@@ -8,7 +8,7 @@
  *
  * Run: node test/install.test.ts
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -488,6 +488,71 @@ if (/^if \[ "\$\{DEEPBOT_INSTALL_SOURCED:-0\}" = 1 \]; then return 0; fi$/m.test
   const order = ['check_time || exit 1', 'plist_xml > "$NEW"', 'plutil -lint "$NEW"', 'mv "$NEW" "$PLIST"'].map((step) => text.indexOf(step))
   check('scenarios: the time is checked, then the new plist, before it takes the installed one\'s place', order.every((i, n) => i !== -1 && (n === 0 || i > order[n - 1])), JSON.stringify(order))
   check('scenarios: node runs the checkout\'s script there, and its status is the job\'s', run.status === 3 && existsSync(out) && readFileSync(out, 'utf8').trim().endsWith('/scenarios-repo'), `status ${run.status}, cwd ${existsSync(out) ? readFileSync(out, 'utf8').trim() : '(none)'}`)
+}
+
+// The fixture servers of the daily run, on one port. Each was stopped by the pid its start reported, but the static
+// server's start (`cd … && python3 … &`, in a subshell) reported the shell that ran the list, with python its child:
+// python outlived its scenario, held the port, and browser-js read its 404 instead of the page server's values (found
+// in a daily report). Run here as the job runs it, with a node that stands in for the scenarios and asks the port
+// what a browser would. Not while the daily run itself is going, whose servers use the same port.
+if (process.platform !== 'darwin') console.log('  TODO  scenarios: the fixture server checks run on macOS only')
+else {
+  const PORT = 8899
+  const holders = () => spawnSync('/usr/sbin/lsof', ['-t', '-nP', `-iTCP:${PORT}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
+  const dailyPid = Number((() => { try { return readFileSync(join(process.env.HOME ?? '', '.dsh/slack-state/scenarios.lock/pid'), 'utf8') } catch { return '' } })())
+  const dailyRunning = dailyPid > 0 && (() => { try { process.kill(dailyPid, 0); return true } catch { return false } })()
+  if (dailyRunning) console.log('  TODO  scenarios: the daily run is going; the fixture server checks did not run')
+  else if (holders().length > 0) console.log(`  TODO  scenarios: port ${PORT} is in use here; the fixture server checks did not run`)
+  else {
+    const script = fileURLToPath(new URL('../service/run-scenarios.sh', import.meta.url))
+    const fixtures = fileURLToPath(new URL('./fixtures/', import.meta.url))
+    const repo = join(dir, 'fixture-repo')
+    mkdirSync(join(repo, 'dist'), { recursive: true })
+    mkdirSync(join(repo, 'test/scenarios'), { recursive: true })
+    mkdirSync(join(repo, 'test/fixtures'), { recursive: true })
+    writeFileSync(join(repo, 'dist/index.js'), '')
+    for (const file of ['page-server.mjs', 'page-js.html']) copyFileSync(join(fixtures, file), join(repo, 'test/fixtures', file))
+    for (const name of ['browser', 'browser-js']) writeFileSync(join(repo, `test/scenarios/${name}.json`), '{}')
+    // browser-js passes only when the page server answers a browser's request; browser, when the page is served.
+    const node = join(dir, 'fixture-node')
+    writeFileSync(node, `#!/bin/bash
+case "$1" in
+  -e) exit 0 ;;
+  test/run-scenario.ts)
+    if [[ "$2" == *browser-js.json ]]; then
+      v=$(/usr/bin/curl -s -m 5 -H 'Sec-Fetch-Mode: cors' http://127.0.0.1:${PORT}/codename)
+      [[ "$v" == ZENITH-* ]] && { echo '1/1 steps passed'; exit 0; }
+      echo "0/1 steps passed (the page server did not answer: \${v:0:40})"; exit 1
+    fi
+    code=$(/usr/bin/curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${PORT}/page-js.html)
+    [ "$code" = 200 ] && { echo '1/1 steps passed'; exit 0; }
+    echo "0/1 steps passed (status $code)"; exit 1 ;;
+  *) exec '${process.execPath}' "$@" ;;
+esac
+`)
+    chmodSync(node, 0o755)
+    const runDaily = (state: string) => {
+      mkdirSync(state, { recursive: true })
+      spawnSync('/bin/bash', [script, '--timeout', '30'], { encoding: 'utf8', timeout: 120_000, env: { ...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', DEEPBOT_REPO: repo, DEEPBOT_NODE: node, DEEPBOT_STATE_DIR: state } })
+      return existsSync(join(state, 'scenario-report.txt')) ? readFileSync(join(state, 'scenario-report.txt'), 'utf8') : ''
+    }
+    const report = runDaily(join(dir, 'fixture-state'))
+    const left = holders()
+    // browser passing is the control: its static server started, so it had a server to leave behind.
+    check('scenarios: browser-js gets its page server after browser\'s static one', /PASS {2}browser —/.test(report) && /PASS {2}browser-js/.test(report), report.split('\n').filter((l) => /browser/.test(l)).join(' | '))
+    check('scenarios: no fixture server is left holding the port', left.length === 0, left.join(' '))
+    for (const pid of left) { try { process.kill(Number(pid)) } catch { /* gone */ } }
+    // A port something else holds: that scenario fails and says so, and the holder is left alone.
+    rmSync(join(repo, 'test/scenarios/browser.json'))
+    const other = spawn(process.execPath, ['-e', `require('net').createServer().listen(${PORT}, '127.0.0.1')`], { stdio: 'ignore' })
+    try {
+      for (let i = 0; i < 50 && holders().length === 0; i++) await new Promise((done) => setTimeout(done, 100))
+      const busy = runDaily(join(dir, 'fixture-state-busy'))
+      check('scenarios: a port in use fails the scenario that needs it, and says so', /FAIL {2}browser-js — port 8899 is in use/.test(busy), busy.split('\n').filter((l) => /browser-js/.test(l)).join(' | '))
+      await new Promise((done) => setTimeout(done, 100))   // an exit the child had would be reported by now
+      check('scenarios: and what holds it is not stopped', other.exitCode === null && other.signalCode === null && holders().includes(String(other.pid)), `exit ${other.exitCode}/${other.signalCode}, holders ${holders().join(' ')}`)
+    } finally { other.kill() }
+  }
 }
 
 // The DeepSeek Harness app, when it is missing: offered from DeepSeek's own feed, for this Mac, and placed only

@@ -140,6 +140,15 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The daily run's browser-js read a leftover server.** Each scenario's page server was stopped by the pid its
+  start reported, but the static server's start, `cd … && python3 … &` in a subshell, reported the shell that ran
+  the list, with python its child (found by review; first taken for the python shim). Python outlived the browser
+  scenario and held port 8899, and browser-js read its 404 instead of the page server's values (in a daily
+  report; the model then started the right server elsewhere, and failed on another step). A server is now
+  stopped by the port it holds, and a port something else holds fails the scenario that needs it, which leaves
+  the holder alone. Checked in the install suite with the real script and a stand-in for the scenarios:
+  browser-js read the 404 and a server was left on the port before, neither now (three one-line mutants red).
+
 - **The terminal printed a wide table as its pipes and stars.** A table wider than the screen was left as
   written, so a model's usual comparison table (long sentences in its cells, `**bold**` in the first column)
   arrived as rows of `|` with the markers showing. Its widest columns are now narrowed and their cells wrap

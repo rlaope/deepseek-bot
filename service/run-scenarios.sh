@@ -62,27 +62,45 @@ fi
   echo "repo $REPO"
 } >> "$REPORT"
 
+# The fixture servers' port. A server is stopped by the port it holds, not by the pid its start reported: the
+# static server's start, `cd … && python3 … &` in a subshell, reported the pid of the shell that ran the list, with
+# python its child, so killing that pid left python holding the port, and browser-js read its 404 instead of the
+# page server's values (found in a daily report).
+FIXTURE_PORT=8899
+uses_fixture() { case "$1" in browser|browser-js|browser-session|command-network) return 0 ;; esac; return 1; }
+fixture_holders() { /usr/sbin/lsof -t -nP -iTCP:"$FIXTURE_PORT" -sTCP:LISTEN 2>/dev/null | tr '\n' ' '; }
+stop_fixture() {
+  for pid in $(fixture_holders); do kill "$pid" 2>/dev/null; done
+  for _ in 1 2 3 4 5; do [ -z "$(fixture_holders)" ] && return; sleep 1; done
+}
+
 failed=0
 for name in $LIST; do
   file="test/scenarios/$name.json"
   [ -f "$file" ] || { echo "  $name: no such scenario" | tee -a "$REPORT"; failed=$((failed + 1)); continue; }
+  # A port something else holds would answer in its place: the scenario fails, and what holds it is left alone.
+  if uses_fixture "$name"; then
+    holders=$(fixture_holders)
+    if [ -n "$holders" ]; then
+      echo "  FAIL  $name — port $FIXTURE_PORT is in use (pid ${holders% }), so its page server was not started" | tee -a "$REPORT"
+      failed=$((failed + 1))
+      continue
+    fi
+  fi
   # A local page for the browser scenario, started and stopped per run so a leftover server
   # cannot make a later run pass for the wrong reason.
   if [ "$name" = "browser" ] || [ "$name" = "command-network" ]; then
-    (cd test/fixtures && python3 -m http.server 8899 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > /tmp/deepbot-qa-server.pid)
+    (cd test/fixtures && python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &)
     sleep 2
   fi
   # The script-drawn page's server answers its values only to a browser.
   if [ "$name" = "browser-js" ] || [ "$name" = "browser-session" ]; then
-    ("$NODE" test/fixtures/page-server.mjs 8899 >/dev/null 2>&1 & echo $! > /tmp/deepbot-qa-server.pid)
+    ("$NODE" test/fixtures/page-server.mjs "$FIXTURE_PORT" >/dev/null 2>&1 &)
     sleep 2
   fi
   out=$("$NODE" test/run-scenario.ts "$file" --timeout "$TIMEOUT" 2>&1)
   status=$?
-  if { [ "$name" = "browser" ] || [ "$name" = "browser-js" ] || [ "$name" = "browser-session" ] || [ "$name" = "command-network" ]; } && [ -f /tmp/deepbot-qa-server.pid ]; then
-    kill "$(cat /tmp/deepbot-qa-server.pid)" 2>/dev/null
-    rm -f /tmp/deepbot-qa-server.pid
-  fi
+  if uses_fixture "$name"; then stop_fixture; fi
   last=$(echo "$out" | tail -1)
   if [ $status -eq 0 ]; then
     echo "  PASS  $name — $last" | tee -a "$REPORT"
