@@ -464,6 +464,39 @@ for (const resolved of [false, true]) {
   for (const dir of [dshHome, agentHome]) rmSync(dir, { recursive: true, force: true })
 }
 
+// The user's desktop is not the agent's (decided against: PLAN.md). Its commands scripted other apps (osascript,
+// automator, shortcuts), started them (open) and could take the screen (screencapture) unless the network was bounded,
+// and read and replaced what the user had copied, often a password, in every mode. None of it runs now, in any mode.
+{
+  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-home-'))
+  const agentHome = mkdtempSync(join(tmpdir(), 'agent-home-'))
+  const env = { ...process.env, DSH_HOME: dshHome, DEEPBOT_HOME: agentHome }
+  const policy = [...READ_ONLY, '--tmpfs', '/tmp', '--bind', agentHome, agentHome]
+  const text = execFileSync(RUNNER, ['--print-profile', ...policy, '--', 'true'], { encoding: 'utf8', env })
+  check('desktop: the network is not bounded here, so nothing below is the bound\'s doing', !/network-outbound \(remote ip/.test(text))
+  // Where no pasteboard can be reached (no login session) the behaviour below cannot be seen, so the rule is read too.
+  check('desktop: the pasteboard service is closed', text.includes('(deny mach-lookup (global-name-regex #"^com\\.apple\\.pasteboard\\."))'))
+  const run = (argv: string[], input = '') => spawnSync(RUNNER, [...policy, '--', ...argv], { encoding: 'utf8', env, input, timeout: 15_000 })
+  // Each with arguments that only print its usage, should the refusal be missing: nothing is scripted, started or taken.
+  // osacompile would make an app that scripts others (found by review): here it compiles a script into the home.
+  for (const argv of [['/usr/bin/osascript', '-e', 'return 1'], ['/usr/bin/osacompile', '-o', join(agentHome, 'probe.scpt'), '-e', 'return 1'], ['/usr/bin/automator'], ['/usr/bin/shortcuts'], ['/usr/bin/open'], ['/usr/sbin/screencapture', '-h']]) {
+    const tool = run(argv)
+    check(`desktop: ${argv[0]} does not run`, tool.status !== 0 && /not permitted/i.test(tool.stderr), `${tool.status} ${tool.stderr.trim().slice(0, 100)}`)
+  }
+  // The ruler pasteboard, which nothing uses, rather than the user's clipboard: the same service holds both.
+  const marker = `deepbot-${process.pid}-${Date.now()}`
+  const shown = () => spawnSync('/usr/bin/pbpaste', ['-pboard', 'ruler'], { encoding: 'utf8' }).stdout
+  const put = spawnSync('/usr/bin/pbcopy', ['-pboard', 'ruler'], { input: marker })
+  if (put.status === 0 && shown() === marker) {
+    const read = run(['/usr/bin/pbpaste', '-pboard', 'ruler'])
+    check('desktop: what the user copied is not read', !read.stdout.includes(marker), read.stdout.slice(0, 60))
+    run(['/usr/bin/pbcopy', '-pboard', 'ruler'], 'from the agent')
+    check('desktop: nor replaced', shown() === marker)
+    spawnSync('/usr/bin/pbcopy', ['-pboard', 'ruler'], { input: '' })
+  } else console.log('  TODO  desktop: no pasteboard here (no login session); the clipboard checks did not run')
+  for (const dir of [dshHome, agentHome]) rmSync(dir, { recursive: true, force: true })
+}
+
 // The user's credentials are not the agent's: its commands read ~/.ssh's private keys, the cloud CLIs' tokens and the
 // gh token, though the ssh-agent socket was already refused. A home of its own, so nothing real is touched.
 {

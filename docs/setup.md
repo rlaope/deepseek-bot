@@ -205,6 +205,11 @@ adding one. The server's tools reach the model as `mcp__<serverName>__<tool>`.
   whose name holds KEY, TOKEN, SECRET or PASSWORD unless `env:` names it, but that keeps the values out of
   its environment, not out of its reach. Add only servers you would run yourself, with tokens of the
   narrowest scope that does the job.
+- **A desktop-control server is that, with your screen.** One that sees the screen and moves the mouse
+  or types in other apps needs macOS's Accessibility and Screen Recording permissions; given them, it acts
+  with them outside the sandbox, for whoever can talk to the bot, in every conversation. deepseek-bot does
+  not support one (`PLAN.md`, Decided against), and none has been tried with it. If you add one
+  regardless, name its tools in `askTools`, so each call is asked for.
 - **The adapter's gates do not apply to its tools, unless `askTools` names them.** The approval gate
   reads shell commands (`approvalPatterns`), the read scope the file tools, the fetch allowlist
   `web_fetch`; a server's tools pass all three. They are shared by every conversation, tenants included.
@@ -277,6 +282,10 @@ them out to commands. With `~/.gnupg` refused, a `git commit` the agent makes fa
 config signs commits. Commands read other files outside without asking: to keep a directory from the
 agent altogether, add it to `DEEPBOT_DENY_READ` (absolute paths, colon-separated) before installing
 the services. To give it a file for good, put a copy in its home.
+
+Nor is your desktop the agent's: its commands cannot script or start other apps (`osascript`,
+`automator`, `shortcuts`, `open`), take the screen, or read or replace what you copied. Desktop control is
+decided against for now (`PLAN.md`).
 
 ## The agent's network
 

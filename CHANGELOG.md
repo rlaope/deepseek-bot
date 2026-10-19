@@ -7,6 +7,16 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **The agent's commands reached the user's desktop.** In every mode they read and replaced what the user had
+  copied, often a password, and could take the screen (`screencapture`); unless `commandNetwork` bounded them,
+  they scripted other apps (`osascript`, `automator`, `shortcuts`) and started them (`open`), and in every mode
+  `osacompile` made an app that would. The screen and the apps only as far as macOS's own permissions let them.
+  None of it runs now, in any mode: the runner refuses those tools and the pasteboard. Checked by the runner suite
+  with the network open: each tool ran before and none does now, and a marker on a pasteboard nothing uses was
+  read and replaced before and is neither now (four one-line mutants red). A program compiled to send Apple Events
+  or take the screen itself is still not stopped; macOS's own permissions are what stand in its way. With the
+  network open, `lsappinfo` still lists the apps the user has running.
+
 - **The agent's commands read the user's SSH keys and stored tokens.** The sandbox runner refused the ssh-agent
   socket, but not the key files behind it: `cat ~/.ssh/id_ed25519` worked, and so did the cloud CLIs' tokens, the gh
   token, the keychain files, `~/.netrc` and git's stored credentials. The runner now refuses `~/.ssh`, `~/.aws`,
@@ -41,6 +51,10 @@ the caveat about version numbers is at the bottom.
   is), and an agent home or workspace placed inside it.
 
 ### Changed
+
+- **Desktop control is decided against for now.** The harness has no tool for it, and an MCP server for it would
+  run outside the sandbox with the screen and the keyboard, for every conversation. `PLAN.md` records the
+  decision, `docs/limitations.md` the gap, and `docs/setup.md` what adding such a server costs.
 
 - **A drag copies anywhere on the terminal's screen, as in Claude Code.** Only the conversation could be
   selected: a drag in the input box moved the cursor, and one over the footer, a queued message or the

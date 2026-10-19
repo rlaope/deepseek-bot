@@ -301,14 +301,18 @@ profile() {
   for name in ${workspace_names[@]+"${workspace_names[@]}"}; do
     printf '(allow network-outbound (remote unix-socket (subpath %s)))\n' "$(sbpl "$name")"
   done
-  # The commands' network, bounded: the gateway's proxy only. Nor another app doing it for them (found by review): an
-  # app LaunchServices starts, or one Apple Events script, runs outside this sandbox. LaunchServices is closed and the
-  # tools that script or start apps do not run; a program compiled to send Apple Events itself is not stopped.
+  # The user's desktop is not the agent's: no app is scripted or started for it, which would also run outside this
+  # sandbox, nor made to script one (osacompile); the screen is not taken; what the user copied (a password, often) is
+  # neither read nor replaced. A copy of one of these tools is killed by macOS, but a program compiled to send Apple
+  # Events or take the screen itself is not stopped.
+  echo '(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/osacompile") (literal "/usr/bin/automator") (literal "/usr/bin/shortcuts") (literal "/usr/bin/open") (literal "/usr/sbin/screencapture"))'
+  echo '(deny mach-lookup (global-name-regex #"^com\.apple\.pasteboard\."))'
+  # The commands' network, bounded: the gateway's proxy only. Nor an app LaunchServices starts for them (found by
+  # review), which runs outside this sandbox: LaunchServices is closed.
   if [ -n "$net_file" ]; then
     echo '(deny network-outbound (remote ip))'
     if [ -n "$net_port" ]; then printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$net_port"; fi
     echo '(deny mach-lookup (global-name-regex #"^com\.apple\.coreservices\.launchservicesd") (global-name-regex #"^com\.apple\.lsd\."))'
-    echo '(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/automator") (literal "/usr/bin/shortcuts") (literal "/usr/bin/open"))'
   fi
 }
 

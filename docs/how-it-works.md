@@ -357,7 +357,14 @@ retired bot data, and for the user's credentials: `~/.ssh`, `~/.aws`, `~/.gnupg`
 ssh-agent socket alone was refused before, and the key files were one `cat` away). A tool that needs
 one of those fails: the agent's credentials are its own, in its home. Keychain items in an unlocked
 login keychain still reach a command through `security` and git's osxkeychain helper, which talk to the
-system's keychain service rather than read the files. Temp is `/tmp` and a directory of the workspace's own inside the user's temp
+system's keychain service rather than read the files. Nor is the user's desktop the agent's: a command
+cannot script or start another app (`osascript`, `automator`, `shortcuts`, `open`), compile a script into an
+app that would (`osacompile`), take the screen (`screencapture`), or read or replace what the user copied,
+often a password (the pasteboard service is closed). The clipboard and the screen were open to commands in
+every mode before, and other apps unless the network was bounded. A copy of one of those tools is killed by
+macOS; a program compiled to send Apple Events or take the screen itself is not stopped, though macOS's own
+permissions for each app and for the screen still apply to it. With the network open, LaunchServices is not
+closed, so `lsappinfo` lists the apps the user has running (it starts or scripts none). Temp is `/tmp` and a directory of the workspace's own inside the user's temp
 (`deepbot-cmd-<hash>`, made by the runner, never a link), where it points `TMPDIR`; the user's temp
 itself stays closed, since unconfined processes keep scripts and sockets there. Another workspace's
 temp directory cannot be read: a tenant's temp files are its own. macOS's `mktemp`
@@ -487,8 +494,9 @@ reached a local page around the proxy, seen live with `public`. `curl`, `git` ov
 and node's `fetch` go through it; what ignores a proxy (ssh, a raw socket, UDP, a database client to a
 local server) reaches nothing: Seatbelt refuses it at once (`EPERM`). Two other ways around it are shut
 (found by review): the system resolver's socket, since a name looked up carries data out in its labels,
-and other apps, which run outside the sandbox: LaunchServices is closed and `open`, `osascript`,
-`automator` and `shortcuts` do not run. A program compiled to send Apple Events itself is not stopped.
+and other apps, which run outside the sandbox: LaunchServices is closed, and `open`, `osascript`,
+`automator`, `shortcuts` and the other tools above do not run in any mode. A program compiled to send Apple
+Events itself is not stopped.
 The gateway writes the file closed (no port) before its proxy listens and again when it stops, and a
 file whose gateway is no longer running names no port to the runner: a file that is not there leaves
 commands open, so it is never removed while bounded, and a port a crashed gateway left may be another
@@ -1050,7 +1058,7 @@ Two things worth knowing before editing them:
 - **A browser for one page at a time.** `browse.js` keeps no tabs between runs, and a sign-in only in a session file
   you made for it (`--login`, `--state`).
 - **Not multi-tenant by default, and not voice or video.** One instance is one memory unless you
-  turn tenant isolation on. Images are supported; audio, video and computer use are not.
+  turn tenant isolation on. Images are supported; audio, video and desktop control are not (`PLAN.md`, Decided against).
 - **Not safe by construction, everywhere.** Read confinement is a policy boundary; the
   destructive-command gate does not resolve end to end yet; and the harness itself is a release
   candidate whose session API can change.

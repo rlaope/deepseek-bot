@@ -42,6 +42,8 @@ Order matters: when two conflict, the higher one wins.
 - Being a product for other teams' Slack workspaces.
 - A vector index (the model's choice covers paraphrase among the latest passages without one; older ones are
   matched by words).
+- Desktop control: the screen, and the mouse and keys in other apps. An MCP server for it would run unconfined
+  with what macOS gave it, for every conversation (`PLAN.md`, Decided against).
 
 ## 4. Users
 
