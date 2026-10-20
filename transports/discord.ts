@@ -20,6 +20,7 @@ import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 import { numberedParts } from './parts.js'
+import { reactionMarks, type MarkOutcome } from './marks.js'
 import type { ActionButton, ActionEvent, AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 
 interface DiscordHost {
@@ -168,6 +169,77 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
       return false
     }
   }
+
+  /**
+   * Progress on the person's message as the bot's reaction (`marks.ts`): eyes, a keycap digit, then a check, a cross or
+   * a stop. Discord allows about one reaction call per channel every quarter second, so a channel's calls go one at a
+   * time, each waiting out what the last one's headers said, and a 429 is waited out (up to two seconds) and asked
+   * again: refused, the digits a turn went through stayed beside its end. A wait longer than that is a failure, which
+   * the next mark, or the end's own retry, makes up for. Permissions are per channel: one where the bot may not react (Missing Access,
+   * Missing Permissions) is said once and not asked again until the gateway restarts; another 403 (the person blocked
+   * the bot) lets that message go. A token refused (401) stops every mark. Taking off a reaction that is not there is
+   * not a failure.
+   */
+  const noReactions = new Set<string>()
+  const reactionsFree = new Map<string, number>()
+  const reactionQueue = new Map<string, Promise<unknown>>()
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms).unref?.())
+  function reaction(method: 'PUT' | 'DELETE', channel: string, ts: string, name: string): Promise<MarkOutcome> {
+    const run = (reactionQueue.get(channel) ?? Promise.resolve()).then(() => reactionCall(method, channel, ts, name))
+    const settled = run.catch(() => {})
+    reactionQueue.set(channel, settled)
+    void settled.then(() => { if (reactionQueue.get(channel) === settled) reactionQueue.delete(channel) })
+    return run
+  }
+  async function reactionCall(method: 'PUT' | 'DELETE', channel: string, ts: string, name: string): Promise<MarkOutcome> {
+    for (let tries = 0; ; tries++) {
+      if (noReactions.has(channel)) return 'gone'
+      const free = (reactionsFree.get(channel) ?? 0) - Date.now()
+      if (free > 2000) return 'failed'
+      if (free > 0) await wait(free)
+      const res = await doFetch(`${API_BASE}/channels/${channel}/messages/${ts}/reactions/${encodeURIComponent(name)}/@me`, {
+        method, headers: { Authorization: `Bot ${requireToken()}` },
+      })
+      const header = (key: string) => Number(res.headers?.get?.(key) ?? NaN)
+      if (header('x-ratelimit-remaining') === 0 && header('x-ratelimit-reset-after') > 0) reactionsFree.set(channel, Date.now() + header('x-ratelimit-reset-after') * 1000)
+      if (res.ok) return 'ok'
+      const text = await res.text().catch(() => '')
+      let body: { code?: number; retry_after?: number } = {}
+      try { body = JSON.parse(text) } catch { /* not JSON */ }
+      if (res.status === 429 && tries < 3) {
+        const after = Number(body.retry_after ?? header('retry-after'))
+        reactionsFree.set(channel, Date.now() + (after > 0 ? after * 1000 : 250))
+        continue
+      }
+      if (res.status === 401) return 'refused'
+      if (res.status === 403) {
+        if (body.code !== 50001 && body.code !== 50013) return 'gone'
+        if (!noReactions.has(channel)) log(`progress marks: refused in channel ${channel} (HTTP 403) — the bot needs Add Reactions and Read Message History there; not asked again until the gateway restarts`)
+        noReactions.add(channel)
+        return 'gone'
+      }
+      if (res.status === 429 || res.status >= 500) { log(`progress marks: discord ${method} reaction failed: HTTP ${res.status}`); return 'failed' }
+      // 404 (the message is gone), 400 (too many reactions, an emoji Discord does not take): nothing more for this one.
+      if (method === 'DELETE') return 'ok'
+      log(`progress marks: discord reaction refused: HTTP ${res.status} ${text.slice(0, 120)}`)
+      return 'gone'
+    }
+  }
+  /** The marks of ours already on a message (a lost turn's, after a restart), or null when it cannot be read. */
+  async function heldReactions(channel: string, ts: string): Promise<string[] | null> {
+    if (noReactions.has(channel)) return null
+    const message = await rest<{ reactions?: Array<{ me?: boolean; emoji?: { name?: string; id?: string | null } }> }>(`/channels/${channel}/messages/${ts}`)
+    return (message.reactions ?? []).filter((r) => r.me === true && !r.emoji?.id && typeof r.emoji?.name === 'string').map((r) => r.emoji.name)
+  }
+  const mark = reactionMarks({
+    names: { seen: '👀', working: ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => `${d}\uFE0F\u20E3`), done: '✅', failed: '❌', stopped: '⏹\uFE0F' },
+    add: (channel, ts, name) => reaction('PUT', channel, ts, name),
+    remove: (channel, ts, name) => reaction('DELETE', channel, ts, name),
+    held: heldReactions,
+    log,
+    refusal: 'discord refused the token (HTTP 401)',
+    retryMs: Number(cfg.markRetryMs) > 0 ? Number(cfg.markRetryMs) : 3000,
+  })
 
   async function identity() {
     if (!ready()) await authenticate()
@@ -356,6 +428,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     hasSocket,
     startTyping,
     uploadFile,
+    mark,
     supportsButtons: true,
 
     async connect({ onMessage: handler, onAction: actionHandler }: {

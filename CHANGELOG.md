@@ -318,6 +318,18 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **Discord and Telegram show a turn's progress on the person's message, as Slack does.** Only Slack had the marks;
+  on the other two nothing on the message said it was taken or how it ended. Discord now reacts 👀, a keycap digit
+  while the turn runs, then ✅, ❌ or ⏹️, each added before the last comes off; Telegram, which allows a bot one
+  reaction from its own list, shows 👀, ✍ while it runs, then 👌, 😢 or 🫡. Discord's per-channel reaction limit
+  is kept: a channel's calls go one at a time and wait out its headers, and a 429's `retry_after`; refused, the
+  digits a turn went through stayed beside its end. After a restart the message is read, and only the bot's own marks come off. A channel that denies the
+  reaction is said once and not asked again until a restart; one person who blocked the bot does not silence the
+  channel; a refused token stops the marks; an end mark that failed is tried again after a pause. The invite link
+  `dsh gateway setup discord` makes now asks for *Add Reactions*. Checked in the Discord and Telegram suites
+  against fakes, the rate limit by a fake that refuses a call too soon after the last (red without either wait); not
+  yet against the platforms (PLAN.md). Found by review: the rate limit, the per-person 403, a full message.
+
 - **A file outside the agent's home can be read with the person's consent: `readOutside`.** A file tool's read
   outside the workspace was refused, and the agent could only ask for the file to be moved or pasted. With `ask`,
   the default, the read is held and the conversation asked, naming where it lands (a link with its target).

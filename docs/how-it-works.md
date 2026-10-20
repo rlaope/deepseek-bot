@@ -23,7 +23,10 @@ past a second or two also streams its text into the thread as it is written, whi
 answer then comes as a new message and the streamed one is deleted. On Slack the message
 that asked also carries a reaction: 👀 when taken, a digit while it runs (a guess from the time a turn
 usually takes, held while an approval waits), then ✅, ❌ or ⏹️ (it needs `reactions:write`, and
-`reactions:read` to tidy them after a restart).
+`reactions:read` to tidy them after a restart). Discord shows the same marks, the digit as a keycap (1️⃣ to 9️⃣;
+it needs *Add Reactions* in the channel). Telegram takes one reaction per message from its own short list, with no
+digits and no check mark: 👀, then ✍ while it runs, then 👌, 😢 or 🫡. A message that did not mention the bot
+gets no mark on any platform.
 
 ### Its language
 

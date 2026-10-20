@@ -130,6 +130,9 @@ Decided against:
 - Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
   `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
   rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.
+- Progress marks on Discord and Telegram against the platforms themselves: checked against fakes only. Whether
+  Discord takes the keycap digits and ⏹️ in the form sent (with U+FE0F), and the exact errors Telegram gives for a
+  chat that limits its reactions, are taken from the documentation, not seen.
 - Recall's related words on DeepSeek's own API, the default route: sent with reasoning off and a capped answer,
   as the harness's DeepSeek adapter takes them (read from its source), but neither its latency nor its answer was
   measured; the scenario ran on an OpenGateway route. A model that cannot turn reasoning off is sent its least

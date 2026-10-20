@@ -321,6 +321,152 @@ function message(overrides = {}) {
   check('authenticated as the bot', requests[0]?.auth === 'Bot discord-token')
 }
 
+// 11. Progress marks: the person's message carries the bot's reaction, eyes to a digit to the end, never bare.
+{
+  type Answer = number | { status: number; body?: unknown }
+  /** Discord's reactions on one message, as a set the calls change; `answer` can refuse a call instead. */
+  const reactionsOf = (answer: (method: string, emoji: string, n: number, since: number) => Answer, held?: unknown, headers: Record<string, string> = {}) => {
+    const api = fakeDiscord()
+    const calls = []
+    const present = new Map<string, Set<string>>()
+    const status429 = []
+    let last = 0
+    const fetchImpl = async (url, init: RequestInit = {}) => {
+      const path = String(url).replace('https://discord.com/api/v10', '')
+      const m = /^\/channels\/([^/]+)\/messages\/([^/]+)\/reactions\/([^/]+)\/@me$/.exec(path)
+      if (m === null) {
+        if (held !== undefined && /^\/channels\/[^/]+\/messages\/[^/?]+$/.test(path) && (init.method ?? 'GET') === 'GET') {
+          calls.push(`GET ${path}`)
+          if (held === 'refused') return { ok: false, status: 403, json: async () => ({}), text: async () => '{"code": 50001}' }
+          return { ok: true, status: 200, json: async () => ({ id: 'x', reactions: held }), text: async () => '' }
+        }
+        return api.fetchImpl(url, init)
+      }
+      const emoji = decodeURIComponent(m[3])
+      calls.push(`${init.method} ${emoji}@${m[1]}/${m[2]}`)
+      const now = Date.now()
+      const a = answer(String(init.method), emoji, calls.length, now - last)
+      last = now
+      const { status, body } = typeof a === 'number' ? { status: a, body: undefined } : a
+      if (status === 429) status429.push(calls.at(-1))
+      if (status < 300) {
+        const on = present.get(m[2]) ?? new Set()
+        if (init.method === 'PUT') on.add(emoji); else on.delete(emoji)
+        present.set(m[2], on)
+      }
+      return { ok: status < 300, status, headers: new Headers(status < 300 ? headers : {}), json: async () => body ?? {}, text: async () => (status === 204 ? '' : JSON.stringify(body ?? { code: 0 })) }
+    }
+    return { calls, status429, present: (ts: string) => [...(present.get(ts) ?? [])], fetchImpl, WebSocketImpl: api.WebSocketImpl }
+  }
+  const at = { channel: 'C1', threadTs: null }
+  const pause = () => sleep(30)
+  const k = (d: number) => `${d}\uFE0F\u20E3`
+  const made = async (api) => { const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')), { markRetryMs: 5 }); await t.identity(); return t }
+
+  const a = reactionsOf(() => 204)
+  const t = await made(a)
+  t.mark(at, '100', { kind: 'seen' }); await pause()
+  t.mark(at, '100', { kind: 'working', tenths: 3 }); await pause()
+  t.mark(at, '100', { kind: 'working', tenths: 3 }); await pause()
+  t.mark(at, '100', { kind: 'done' }); await pause()
+  check('marks: eyes, a keycap digit, then a check, each added before the last comes off',
+    JSON.stringify(a.calls) === JSON.stringify(['PUT 👀@C1/100', `PUT ${k(3)}@C1/100`, 'DELETE 👀@C1/100', 'PUT ✅@C1/100', `DELETE ${k(3)}@C1/100`]), JSON.stringify(a.calls))
+
+  for (const [kind, emoji] of [['failed', '❌'], ['stopped', '⏹\uFE0F']] as const) {
+    const b = reactionsOf(() => 204)
+    const tb = await made(b)
+    tb.mark(at, '101', { kind: 'seen' }); await pause()
+    tb.mark(at, '101', { kind }); await pause()
+    check(`marks: ${kind} is ${emoji}`, b.calls.includes(`PUT ${emoji}@C1/101`) && JSON.stringify(b.present('101')) === JSON.stringify([emoji]), JSON.stringify(b.calls))
+  }
+
+  // A burst is merged into its newest mark: no digit is put on only to come off.
+  const burst = reactionsOf(() => 204)
+  const tbu = await made(burst)
+  tbu.mark(at, '109', { kind: 'seen' })
+  tbu.mark(at, '109', { kind: 'working', tenths: 1 })
+  tbu.mark(at, '109', { kind: 'working', tenths: 2 })
+  tbu.mark(at, '109', { kind: 'done' })
+  await pause()
+  check('marks: a burst is merged into its newest mark', JSON.stringify(burst.calls) === JSON.stringify(['PUT 👀@C1/109', 'PUT ✅@C1/109', 'DELETE 👀@C1/109']), JSON.stringify(burst.calls))
+
+  // Discord's quarter-second bucket per channel: a call too soon after the last is refused with 429 and retry_after.
+  // Waited out, a turn ends with only its end mark, and no failure is logged.
+  const limited = reactionsOf((method, emoji, n, since) => (since < 15 ? { status: 429, body: { retry_after: 0.02, global: false } } : 204))
+  const tl = await made(limited)
+  tl.mark(at, '110', { kind: 'seen' }); await pause()
+  for (const tenths of [1, 2, 3, 4]) { tl.mark(at, '110', { kind: 'working', tenths }); await sleep(60) }
+  tl.mark(at, '110', { kind: 'done' }); await sleep(150)
+  check('marks: rate limited, each call waits and is asked again, and only the end mark stays',
+    JSON.stringify(limited.present('110')) === JSON.stringify(['✅']) && limited.calls.some((c, i) => i > 0 && c === limited.calls[i - 1]) && !tl.logs.some((l) => /reaction failed/.test(l)),
+    JSON.stringify([limited.present('110'), limited.calls.length, tl.logs.filter((l) => /marks/.test(l))]))
+
+  // With the bucket's headers, a channel's calls go one at a time and wait them out: none is refused, even for two
+  // messages' marks at once.
+  const paced = reactionsOf((method, emoji, n, since) => (since < 15 ? { status: 429, body: { retry_after: 0.02 } } : 204), undefined, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset-after': '0.02' })
+  const tp = await made(paced)
+  tp.mark(at, '115', { kind: 'seen' }); tp.mark(at, '116', { kind: 'seen' }); await sleep(80)
+  tp.mark(at, '115', { kind: 'done' }); tp.mark(at, '116', { kind: 'stopped' }); await sleep(200)
+  check('marks: the bucket\'s headers are waited out, one call at a time, and none is refused',
+    paced.status429.length === 0 && JSON.stringify([paced.present('115'), paced.present('116')]) === JSON.stringify([['✅'], ['⏹\uFE0F']]),
+    JSON.stringify([paced.status429, paced.calls]))
+
+  // A channel where the bot may not react: said once, and not asked again for that channel.
+  const c = reactionsOf(() => ({ status: 403, body: { code: 50013, message: 'Missing Permissions' } }))
+  const tc = await made(c)
+  tc.mark(at, '102', { kind: 'seen' }); await pause()
+  tc.mark(at, '102', { kind: 'done' }); await pause()
+  tc.mark(at, '103', { kind: 'seen' }); await pause()
+  tc.mark({ channel: 'C2', threadTs: null }, '104', { kind: 'seen' }); await pause()
+  check('marks: a channel that refuses reactions is asked once, another channel still is',
+    JSON.stringify(c.calls) === JSON.stringify(['PUT 👀@C1/102', 'PUT 👀@C2/104']) && tc.logs.filter((l) => /Add Reactions/.test(l)).length === 2, JSON.stringify([c.calls, tc.logs]))
+
+  // Another 403 (the person blocked the bot) is that message's, not the channel's.
+  const blocked = reactionsOf((method, emoji, n) => (n === 1 ? { status: 403, body: { code: 90001, message: 'Reaction blocked' } } : 204))
+  const tbl = await made(blocked)
+  tbl.mark(at, '111', { kind: 'seen' }); await pause()
+  tbl.mark(at, '112', { kind: 'seen' }); await pause()
+  check('marks: a reaction blocked by one person leaves the channel marked', JSON.stringify(blocked.calls) === JSON.stringify(['PUT 👀@C1/111', 'PUT 👀@C1/112']), JSON.stringify(blocked.calls))
+
+  // A message with too many reactions refuses the end: ours still come off, so no digit stays.
+  const full = reactionsOf((method, emoji) => (method === 'PUT' && emoji === '✅' ? { status: 400, body: { code: 30010, message: 'Maximum number of reactions reached (20)' } } : 204))
+  const tf = await made(full)
+  tf.mark(at, '113', { kind: 'seen' }); await pause()
+  tf.mark(at, '113', { kind: 'working', tenths: 5 }); await pause()
+  tf.mark(at, '113', { kind: 'done' }); await pause()
+  check('marks: refused for too many reactions, its own still come off', JSON.stringify(full.present('113')) === '[]', JSON.stringify(full.calls))
+
+  // A refused token stops every mark until a restart.
+  const d = reactionsOf(() => 401)
+  const td = await made(d)
+  td.mark(at, '105', { kind: 'seen' }); await pause()
+  td.mark({ channel: 'C2', threadTs: null }, '106', { kind: 'seen' }); await pause()
+  check('marks: a refused token stops every mark, said once', d.calls.length === 1 && td.logs.filter((l) => /no more marks/.test(l)).length === 1, JSON.stringify([d.calls, td.logs]))
+
+  // The end, failing on Discord's side, is tried again after a pause; a digit is not.
+  const e = reactionsOf((method, emoji, n) => (emoji === '✅' && n === 2 ? 502 : 204))
+  const te = await made(e)
+  te.mark(at, '107', { kind: 'seen' }); await pause()
+  te.mark(at, '107', { kind: 'done' }); await sleep(80)
+  check('marks: an end that failed is tried again, and the eyes come off after it',
+    JSON.stringify(e.calls) === JSON.stringify(['PUT 👀@C1/107', 'PUT ✅@C1/107', 'PUT ✅@C1/107', 'DELETE 👀@C1/107']), JSON.stringify(e.calls))
+
+  // After a restart, a turn's first mark is not "taken": the message is read, and what the lost turn left comes off —
+  // only the bot's own, and only marks.
+  const r = reactionsOf(() => 204, [{ me: true, emoji: { name: '👀' } }, { me: true, emoji: { name: k(5) } }, { me: false, emoji: { name: k(1) } }, { me: true, emoji: { name: '🎉' } }, { me: true, emoji: { name: '6\u20E3' } }])
+  const tr = await made(r)
+  tr.mark(at, '108', { kind: 'failed' }); await sleep(80)
+  check('marks: after a restart the message is read, and only its own marks come off, a keycap written either way',
+    JSON.stringify(r.calls) === JSON.stringify(['GET /channels/C1/messages/108', 'PUT ❌@C1/108', 'DELETE 👀@C1/108', `DELETE ${k(5)}@C1/108`, `DELETE ${k(6)}@C1/108`]), JSON.stringify(r.calls))
+
+  // Not read: every mark a turn can leave is taken off, and one that is not there is not a failure.
+  const u = reactionsOf((method) => (method === 'DELETE' ? 404 : 204), 'refused')
+  const tu = await made(u)
+  tu.mark(at, '114', { kind: 'failed' }); await sleep(80)
+  check('marks: after a restart, unread, eyes and every digit come off, and a missing one is not retried',
+    u.calls[1] === 'PUT ❌@C1/114' && u.calls.filter((x) => x.startsWith('DELETE')).length === 10 && u.calls.length === 12, JSON.stringify(u.calls))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

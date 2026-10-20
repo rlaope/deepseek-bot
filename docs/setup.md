@@ -136,7 +136,8 @@ bot can message it: list who may with `--users` — your numeric id is what
 
 Create an application at <https://discord.com/developers/applications>, add a bot, turn on the
 **Message Content** privileged intent, and invite it with the `bot` scope and the *Send Messages*,
-*Read Message History* and *Attach Files* permissions. Give `dsh gateway setup` the bot token; at a
+*Read Message History*, *Attach Files* and *Add Reactions* permissions (the last for the progress marks; a
+channel that denies it just goes without them). Give `dsh gateway setup` the bot token; at a
 terminal it checks the intent and makes the invite link for you. For `--users`: Developer Mode on, then
 right-click a name → Copy User ID.
 

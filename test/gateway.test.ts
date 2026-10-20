@@ -734,7 +734,7 @@ const slackReply = (bad = 'never') => (url: string, init: any) => (url.includes(
   const code = await gateway(['setup'], s.io)
   const lists = readProfile(s.profile()) as any
   check('guided Discord: the Message Content intent is checked, and checked again once turned on', s.out.filter((l) => l.includes('Message Content Intent is off')).length === 1 && reads === 2, s.text())
-  check('guided Discord: the invite link is made from the token, with the permissions it needs', s.opened.some((u) => u === 'https://discord.com/oauth2/authorize?client_id=777&scope=bot&permissions=274878008320'), JSON.stringify(s.opened))
+  check('guided Discord: the invite link is made from the token, with the permissions it needs', s.opened.some((u) => u === 'https://discord.com/oauth2/authorize?client_id=777&scope=bot&permissions=274878008384'), JSON.stringify(s.opened))
   check('guided Discord: "only me" is the application\'s owner, with nothing to type', code === 0 && lists.allowedUsers.join() === '42' && s.asked.length === 1, JSON.stringify({ users: lists.allowedUsers, asked: s.asked }))
   s.done()
 }

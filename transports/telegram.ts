@@ -20,6 +20,7 @@ import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 import { numberedParts } from './parts.js'
+import { reactionMarks, type MarkOutcome } from './marks.js'
 import type { AttachmentManifest, AttachmentRef, InboundMessage, PostedMessage, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 
 interface TelegramHost {
@@ -204,6 +205,35 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     }
   }
 
+  /**
+   * Progress on the person's message as the bot's reaction (`marks.ts`). A bot shows one reaction on a message, and
+   * each setMessageReaction replaces it; only Telegram's own list of emoji is taken, which has no digits and no check
+   * mark: eyes when taken, writing while it runs, then OK, a sad face or a salute. A chat that limits its reactions,
+   * or a message that is gone, is let go; a token refused stops every mark.
+   */
+  async function react(channel: string, ts: string, name: string): Promise<MarkOutcome> {
+    try {
+      await call('setMessageReaction', { chat_id: channel, message_id: Number(ts), reaction: [{ type: 'emoji', emoji: name }] })
+      return 'ok'
+    } catch (e) {
+      // Telegram's description only: the method's own name has "Reaction" in it.
+      const why = String((e as Error)?.message ?? e).replace(/^telegram setMessageReaction failed: /, '')
+      if (/^(Unauthorized|Not Found)$/.test(why)) return 'refused'
+      // A retried call that had landed the first time.
+      if (/NOT_MODIFIED/.test(why)) return 'ok'
+      if (/REACTION_|MESSAGE_ID_INVALID|message to react not found|message not found|chat not found|^Forbidden/.test(why)) return 'gone'
+      log(`progress marks: ${why}`)
+      return 'failed'
+    }
+  }
+  const mark = reactionMarks({
+    names: { seen: '👀', working: ['✍'], done: '👌', failed: '😢', stopped: '🫡' },
+    add: react,
+    log,
+    refusal: 'telegram refused setMessageReaction',
+    retryMs: Number(cfg.markRetryMs) > 0 ? Number(cfg.markRetryMs) : 3000,
+  })
+
   async function identity() {
     if (!ready()) await authenticate()
     const me = await call<TelegramUser>('getMe')
@@ -354,6 +384,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     hasSocket,
     startTyping,
     uploadFile,
+    mark,
 
     async connect(handlers: { onMessage: (message: InboundMessage) => void; onAction?: (action: ActionEvent) => void }) {
       onMessage = handlers.onMessage

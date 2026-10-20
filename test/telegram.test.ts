@@ -408,6 +408,81 @@ function groupMessage(overrides = {}) {
   check('italics still need a closing mark', toTelegramHtml('2 * 3 = 6') === '2 * 3 = 6', toTelegramHtml('2 * 3 = 6'))
 }
 
+// Progress marks: one reaction on the person's message, replaced as the turn goes, from Telegram's own list.
+{
+  const reacting = (answer: (emoji: string, n: number) => { ok: boolean; description?: string }) => {
+    const base = fakeApi()
+    const sets = []
+    const idTypes = []
+    const fetchImpl = async (url, init) => {
+      if (String(url).endsWith('/setMessageReaction')) {
+        const body = JSON.parse(String(init.body))
+        sets.push(`${body.reaction[0].emoji}@${body.chat_id}/${body.message_id}`)
+        idTypes.push(typeof body.message_id)
+        const r = answer(body.reaction[0].emoji, sets.length)
+        return { ok: r.ok, status: r.ok ? 200 : 400, json: async () => (r.ok ? { ok: true, result: true } : { ok: false, error_code: 400, description: r.description }) }
+      }
+      return base.fetchImpl(url, init)
+    }
+    return { calls: base.calls, sets, idTypes, fetchImpl }
+  }
+  const at = { channel: '7', threadTs: null }
+  const pause = () => sleep(30)
+
+  const a = reacting(() => ({ ok: true }))
+  const t = transportFor(a, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await t.identity()
+  t.mark(at, '10', { kind: 'seen' }); await pause()
+  t.mark(at, '10', { kind: 'working', tenths: 2 }); await pause()
+  t.mark(at, '10', { kind: 'working', tenths: 6 }); await pause()
+  t.mark(at, '10', { kind: 'done' }); await pause()
+  check('marks: eyes, writing once while it runs, then OK, each replacing the last', JSON.stringify(a.sets) === JSON.stringify(['👀@7/10', '✍@7/10', '👌@7/10']), JSON.stringify(a.sets))
+  check('marks: the message id is sent as a number', a.idTypes.length === 3 && a.idTypes.every((x) => x === 'number'), JSON.stringify(a.idTypes))
+
+  for (const [kind, emoji] of [['failed', '😢'], ['stopped', '🫡']] as const) {
+    const b = reacting(() => ({ ok: true }))
+    const tb = transportFor(b, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+    await tb.identity()
+    tb.mark(at, '11', { kind }); await pause()
+    check(`marks: ${kind} is ${emoji}, with nothing to take off first`, JSON.stringify(b.sets) === JSON.stringify([`${emoji}@7/11`]), JSON.stringify(b.sets))
+  }
+
+  // A chat that limits its reactions lets that message go, quietly; another message is still marked.
+  const c = reacting((emoji) => (emoji === '👀' ? { ok: false, description: 'Bad Request: REACTION_INVALID' } : { ok: true }))
+  const tc = transportFor(c, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await tc.identity()
+  tc.mark(at, '12', { kind: 'seen' }); await pause()
+  tc.mark(at, '12', { kind: 'working', tenths: 3 }); await pause()
+  tc.mark(at, '12', { kind: 'done' }); await pause()
+  tc.mark(at, '13', { kind: 'done' }); await pause()
+  check('marks: a reaction the chat does not take lets that message go', JSON.stringify(c.sets) === JSON.stringify(['👀@7/12', '👌@7/13']), JSON.stringify(c.sets))
+
+  // A retried call that had landed the first time is not a reason to let the message go.
+  const nm = reacting((emoji) => (emoji === '✍' ? { ok: false, description: 'Bad Request: REACTION_NOT_MODIFIED' } : { ok: true }))
+  const tnm = transportFor(nm, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await tnm.identity()
+  tnm.mark(at, '17', { kind: 'seen' }); await pause()
+  tnm.mark(at, '17', { kind: 'working', tenths: 2 }); await pause()
+  tnm.mark(at, '17', { kind: 'done' }); await pause()
+  check('marks: a reaction already there (not modified) keeps the message marked', JSON.stringify(nm.sets) === JSON.stringify(['👀@7/17', '✍@7/17', '👌@7/17']), JSON.stringify(nm.sets))
+
+  // A refused token stops every mark until a restart, said once.
+  const d = reacting(() => ({ ok: false, description: 'Unauthorized' }))
+  const td = transportFor(d, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await td.identity()
+  td.mark(at, '14', { kind: 'seen' }); await pause()
+  td.mark(at, '15', { kind: 'seen' }); await pause()
+  check('marks: a refused token stops every mark, said once', d.sets.length === 1 && td.logs.filter((l) => /no more marks/.test(l)).length === 1, JSON.stringify([d.sets, td.logs]))
+
+  // The end, rate limited, is tried again after a pause.
+  const e = reacting((emoji, n) => (n === 2 ? { ok: false, description: 'Too Many Requests: retry after 1' } : { ok: true }))
+  const te = transportFor(e, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await te.identity()
+  te.mark(at, '16', { kind: 'seen' }); await pause()
+  te.mark(at, '16', { kind: 'done' }); await sleep(80)
+  check('marks: an end that was rate limited is tried again', JSON.stringify(e.sets) === JSON.stringify(['👀@7/16', '👌@7/16', '👌@7/16']), JSON.stringify(e.sets))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

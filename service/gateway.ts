@@ -986,8 +986,8 @@ const ink = {
 const TITLE: Record<Platform, string> = { slack: '💬 Slack', telegram: '✈️  Telegram', discord: '🎮 Discord', local: '🖥️  Terminal (dsh)' }
 const ORDER: Platform[] = ['slack', 'telegram', 'discord', 'local']
 const STATE_HINT = { 'set up': '✅ set up', 'tokens missing': '⚠️  tokens missing', 'not set up': '⬜ not set up' }
-/** View channels, send messages, attach files, read message history, send messages in threads. */
-const DISCORD_PERMISSIONS = 1024 + 2048 + 32768 + 65536 + 2 ** 38
+/** Add reactions (the progress marks), view channels, send messages, attach files, read message history, send messages in threads. */
+const DISCORD_PERMISSIONS = 64 + 1024 + 2048 + 32768 + 65536 + 2 ** 38
 /** GATEWAY_MESSAGE_CONTENT and its _LIMITED form, in an application's flags. */
 const DISCORD_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 
