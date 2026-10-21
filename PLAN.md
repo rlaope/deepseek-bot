@@ -130,6 +130,10 @@ Decided against:
 - Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
   `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
   rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.
+- `dsh gateway mcp add` end to end on a real gateway: the row it writes composes (`--dump-config`), and the
+  row shape it writes reached a real model in the MCP scenario; a credential written to `~/.dsh/.env`
+  reaching the server through `!!js process.env.NAME` is read from the harness's source (dsh-app-boot loads
+  that file into the environment at start), not run. Neither the Notion server nor a hosted one was tried.
 - Progress marks on Discord and Telegram against the platforms themselves: checked against fakes only. Whether
   Discord takes the keycap digits and ⏹️ in the form sent (with U+FE0F), and the exact errors Telegram gives for a
   chat that limits its reactions, are taken from the documentation, not seen.

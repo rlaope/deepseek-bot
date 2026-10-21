@@ -1,0 +1,11 @@
+{
+  "_comment": "Asked to connect an MCP server, does the agent give the operator's command rather than try it, or say only that the profile is edited by hand? `dsh gateway mcp add` exists only in this project and the agent home holds no copy of its docs, so the command in the answer comes from what the adapter tells every session. The answer must name the command and how the credential is passed (an --env name, or --bearer for a hosted server).",
+  "steps": [
+    {
+      "session": "N",
+      "say": "노션 MCP 서버 연결해서 너가 내 노션 페이지 읽을 수 있게 해줘. 노션 통합 토큰은 나한테 있어.",
+      "expectContains": "dsh gateway mcp add",
+      "expectAnyOf": ["--env", "--bearer"]
+    }
+  ]
+}

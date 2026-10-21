@@ -12,8 +12,9 @@ import './dist-fresh.ts'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseEnv } from 'node:util'
 import { EventEmitter } from 'node:events'
-import { gateway, mergeIds, parseIds, readProfile, slackManifest, storeRefs, terminalSession, keyReader, writeProfile, envSet, envValue, type GatewayIO, type RunResult } from '../dist/service/gateway.js'
+import { gateway, mcpRows, mergeIds, parseIds, readProfile, slackManifest, storeRefs, terminalSession, keyReader, writeProfile, envSet, envValue, type GatewayIO, type RunResult } from '../dist/service/gateway.js'
 import { route, usage } from '../dist/tui/cli.js'
 
 const results = []
@@ -879,6 +880,240 @@ check('keys: a private-parameter sequence (SGR mouse) is one key, not Esc', (() 
   check('menu: Esc goes back, Ctrl+C quits', (await menu('\x1b')).value === 'back' && (await menu('\x03')).value === 'quit')
   check('menu: an arrow split over two reads is an arrow, not Esc', (await menu('\x1b', '[B', '\r')).value === 1)
   check('menu: an arrow and Enter in one read are two keys', (await menu('\x1b[B\r')).value === 1)
+}
+
+// 16. MCP servers: a row of the harness's MCP client, its credential in ~/.dsh/.env, its tools asked for.
+{
+  /** A scratch directory with programs in it, for PATH. */
+  const bin = mkdtempSync(join(tmpdir(), 'deepbot-bin-'))
+  for (const name of ['npx', 'node']) { writeFileSync(join(bin, name), '#!/bin/sh\n'); chmodSync(join(bin, name), 0o755) }
+  writeFileSync(join(bin, 'notes.txt'), 'not a program')
+  const vars = { PATH: `/nowhere:${bin}` }
+  const NOTION = ['mcp', 'add', 'notion', '--env', 'NOTION_TOKEN', '--', 'npx', '-y', '@notionhq/notion-mcp-server']
+
+  check('route: gateway mcp is the gateway CLI', route(['gateway', 'mcp', 'add', 'x']) === 'gateway')
+
+  // A local server, its credential from the environment.
+  {
+    const s = scene({ vars: { ...vars, NOTION_TOKEN: 'ntn_secret_1' } })
+    const before = s.profile()
+    const code = await gateway(NOTION, s.io)
+    const text = s.profile()
+    const block = text.slice(text.indexOf('\n# Added by'))
+    check('mcp add: exit 0 and the gateway restarted', code === 0 && s.launchctl().some((c) => c.startsWith('kickstart')), s.text())
+    check('mcp add: the profile before it is kept as it was, the askTools line aside',
+      text.startsWith(before.replace(/\n*$/, '\n').replace("    targetChannels: ['*']\n", "    targetChannels: ['*']\n    askTools: ['mcp__notion__*']\n")), JSON.stringify(text.slice(0, 80)))
+    check('mcp add: a row of the MCP client in an insert of its own, the program by its absolute path, its flags kept',
+      block === [
+        '',
+        '# Added by `dsh gateway mcp add notion`; `dsh gateway mcp remove notion` takes it out.',
+        '- insert:',
+        '    - id: mcp-notion',
+        "      name: '@deepseek-ai/dsh-mcp-client'",
+        '      config:',
+        "        serverName: 'notion'",
+        '        transport: stdio',
+        `        command: '${bin}/npx'`,
+        "        args: ['-y', '@notionhq/notion-mcp-server']",
+        '        env:',
+        `          PATH: '${bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'`,
+        `          NOTION_TOKEN: !!js "process.env.NOTION_TOKEN ?? ''"`,
+        '',
+      ].join('\n'), JSON.stringify(block))
+    check('mcp add: the credential is in ~/.dsh/.env, 600, and nowhere in the profile or the output',
+      envValue(s.env(), 'NOTION_TOKEN') === 'ntn_secret_1' && (statSync(s.envPath).mode & 0o777) === 0o600 && !text.includes('ntn_secret_1') && !s.text().includes('ntn_secret_1'), s.text())
+    check('mcp add: every tool of the server is asked for, said so', (readProfile(text) as any).platform !== undefined && s.text().includes('asked for: mcp__notion__*'), s.text())
+    const rows = mcpRows(text)
+    check('mcp add: read back as ours, with what it reads', rows.length === 1 && rows[0].serverName === 'notion' && rows[0].ours && rows[0].reads.join() === 'NOTION_TOKEN', JSON.stringify(rows))
+
+    // Listed, then removed: the profile is the one before, to the byte; the credential stays.
+    s.out.length = 0
+    check('mcp list: the server, what is asked for, and its credential set', await gateway(['mcp', 'list'], s.io) === 0
+      && s.text().includes(`notion  stdio  ${bin}/npx`) && s.text().includes('asked for: mcp__notion__*') && s.text().includes('NOTION_TOKEN: set (~/.dsh/.env)'), s.text())
+    check('mcp add: the same name again is refused, nothing written', await gateway(NOTION, s.io) === 2 && s.profile() === text && s.text().includes('already in profile agent'), s.text())
+    const removed = await gateway(['mcp', 'remove', 'notion'], s.io)
+    check('mcp remove: the profile is as it was before the add, to the byte', removed === 0 && s.profile() === before, JSON.stringify(s.profile().slice(-200)))
+    check('mcp remove: its credential stays, and it says so', envValue(s.env(), 'NOTION_TOKEN') === 'ntn_secret_1' && s.text().includes('its credentials stay where they are: NOTION_TOKEN'), s.text())
+    s.done()
+  }
+
+  // A credential the person has not given: refused without a terminal, asked for at one.
+  {
+    const s = scene({ vars })
+    const [profile, env] = [s.profile(), s.env()]
+    const code = await gateway(NOTION, s.io)
+    check('mcp add: a missing credential, without a terminal, is refused and nothing is written', code === 2 && s.profile() === profile && s.env() === env && s.text().includes('NOTION_TOKEN=… dsh gateway mcp add notion'), s.text())
+    s.done()
+  }
+  {
+    const s = scene({ vars, answers: ['ntn_typed'] })
+    const code = await gateway([...NOTION.slice(0, 5), '--no-restart', ...NOTION.slice(5)], s.io)
+    check('mcp add: at a terminal it is asked for, not shown, and saved', code === 0 && s.asked.some((q) => q.includes('NOTION_TOKEN') && q.includes('not shown')) && envValue(s.env(), 'NOTION_TOKEN') === 'ntn_typed', s.text())
+    check('mcp add: --no-restart does not restart', s.launchctl().length === 0 && s.text().includes('--no-restart'), JSON.stringify(s.launchctl()))
+    s.done()
+  }
+  {
+    // One already in ~/.dsh/.env is kept; one only in the app's store cannot reach a server, and is not copied.
+    const s = scene({ vars, env: 'DEEPSEEK_API_KEY=sk-test\nNOTION_TOKEN=ntn_kept\n' })
+    check('mcp add: a credential already in ~/.dsh/.env is kept as it is', await gateway(NOTION, s.io) === 0 && envValue(s.env(), 'NOTION_TOKEN') === 'ntn_kept' && s.text().includes('NOTION_TOKEN: already in ~/.dsh/.env, kept'), s.text())
+    s.done()
+    const t = scene({ vars, store: 'refs:\n  NOTION_TOKEN: ntn_in_app\n' })
+    const [profile, env, store] = [t.profile(), t.env(), t.store()]
+    const code = await gateway(NOTION, t.io)
+    check('mcp add: one only in the app\'s store is refused with why, the store unchanged and its value never copied',
+      code === 2 && t.profile() === profile && t.env() === env && t.store() === store && t.text().includes('DeepSeek Harness app holds a NOTION_TOKEN') && !t.text().includes('ntn_in_app'), t.text())
+    t.done()
+  }
+
+  // What is refused before anything is written.
+  for (const [label, argv, says] of [
+    ['a credential as an argument', ['mcp', 'add', 'gh', '--env', 'GITHUB_TOKEN=ghp_abc', '--', 'npx', 'x'], 'never as an argument'],
+    ['a token-shaped value under another name', ['mcp', 'add', 'sl', '--env', 'WORKSPACE=xoxb-1-2', '--', 'npx', 'x'], 'never as an argument'],
+    ['a name the harness takes only from its launch environment', ['mcp', 'add', 'x', '--env', 'DSH_TOKEN', '--', 'npx'], 'refuses in ~/.dsh/.env'],
+    ['a program not on PATH', ['mcp', 'add', 'x', '--', 'uvx', 'thing'], 'uvx: not found on PATH'],
+    ['a file that is not a program', ['mcp', 'add', 'x', '--', `${bin}/notes.txt`], 'not found, or not a program'],
+    ['neither a command nor a URL', ['mcp', 'add', 'x'], 'one of the two'],
+    ['both a command and a URL', ['mcp', 'add', 'x', '--url', 'https://mcp.example/mcp', '--', 'npx'], 'one of the two'],
+    ['a name that cannot prefix a tool', ['mcp', 'add', 'my server', '--', 'npx'], 'is not a server name'],
+    ['--bearer for a local server', ['mcp', 'add', 'x', '--bearer', 'T', '--', 'npx'], '--bearer is for a hosted server'],
+  ] as const) {
+    const s = scene({ vars: { ...vars, DSH_TOKEN: 'x', T: 'y' } })
+    const [profile, env] = [s.profile(), s.env()]
+    const code = await gateway([...argv], s.io)
+    check(`mcp add: ${label} is refused, nothing written`, code === 2 && s.profile() === profile && s.env() === env && s.text().includes(says) && !s.text().includes('ghp_abc'), s.text())
+    s.done()
+  }
+
+  // More that is refused before anything is written: each one stopped the gateway, or put a credential in the open.
+  const ghp = `ghp_${'a'.repeat(30)}`
+  const ntn = `ntn_${'b'.repeat(30)}`
+  for (const [label, argv, says, vars2] of [
+    ['an --ask the adapter refuses at start', ['mcp', 'add', 'x', '--ask', 'write *', '--', 'npx'], 'a tool\'s name', {}],
+    ['an empty --ask', ['mcp', 'add', 'x', '--ask', '', '--', 'npx'], 'a tool\'s name', {}],
+    ['an --ask with a line break', ['mcp', 'add', 'x', '--ask', "a'\nb", '--', 'npx'], 'a tool\'s name', {}],
+    ['--bearer with a value', ['mcp', 'add', 'w', '--url', 'https://mcp.example.com/mcp', '--bearer', `NOTION=${ntn}`], 'never as an argument', {}],
+    ['a name given twice', ['mcp', 'add', 'x', '--env', 'FOO', '--env', 'FOO=1', '--', 'npx'], 'FOO is given twice', { FOO: 'v' }],
+    ['a credential under a name not shaped like one', ['mcp', 'add', 'x', '--env', `GH=${ghp}`, '--', 'npx'], 'never as an argument', {}],
+    ['a credential name with PAT in it', ['mcp', 'add', 'x', '--env', 'GITHUB_PAT=abc', '--', 'npx'], 'never as an argument', {}],
+    ['a server argument after --token', ['mcp', 'add', 'x', '--', 'npx', 'server', '--token', 'abc'], 'argument 3', {}],
+    ['a server argument shaped like a token', ['mcp', 'add', 'x', '--', 'npx', ntn], 'argument 1', {}],
+    ['a URL with a key in it', ['mcp', 'add', 'w', '--url', 'https://mcp.example.com/mcp?api_key=k1'], 'the URL looks like a credential', {}],
+    ['a URL with a password in it', ['mcp', 'add', 'w', '--url', 'https://u:p@mcp.example.com/mcp'], 'the URL looks like a credential', {}],
+    ['a server name with __', ['mcp', 'add', 'a__b', '--', 'npx'], 'no __', {}],
+    ['a credential with a line break', ['mcp', 'add', 'x', '--env', 'X_TOKEN', '--', 'npx'], 'line break', { X_TOKEN: 'a\nINJECTED=1' }],
+    ['a placeholder for a credential', ['mcp', 'add', 'x', '--env', 'X_TOKEN', '--', 'npx'], 'is the placeholder', { X_TOKEN: '…' }],
+    ['the model key replaced from here', ['mcp', 'add', 'x', '--env', 'DEEPSEEK_API_KEY', '--', 'npx'], 'the bot\'s own', { DEEPSEEK_API_KEY: 'sk-other' }],
+    ['a server name ending in _', ['mcp', 'add', 'a_', '--', 'npx'], 'is not a server name', {}],
+    ['--ask with --no-ask', ['mcp', 'add', 'x', '--ask', 'send', '--no-ask', '--', 'npx'], 'one or the other', {}],
+    ['a server argument that is a URL with a password', ['mcp', 'add', 'pg', '--', 'npx', 'pg-server', 'postgresql://u:hunter2@db/x'], 'argument 2', {}],
+  ] as const) {
+    const s = scene({ vars: { ...vars, ...vars2 } })
+    const [profile, env] = [s.profile(), s.env()]
+    const code = await gateway([...argv], s.io)
+    check(`mcp add: ${label} is refused, nothing written`, code === 2 && s.profile() === profile && s.env() === env && s.text().includes(says) && !s.text().includes(ghp) && !s.text().includes(ntn) && !s.text().includes('hunter2'), s.text())
+    s.done()
+  }
+  // The control: flags and settings that only name a credential, or are about one, are not one.
+  {
+    const s = scene({ vars: { ...vars, X_TOKEN: 'tok' } })
+    const code = await gateway(['mcp', 'add', 'svc', '--env', 'KEYBOARD_LAYOUT=us', '--env', 'X_TOKEN', '--no-restart', '--', 'npx', 'svc', '--auth-mode', 'none', '--oauth', 'false', '--api-key-env', 'X_TOKEN'], s.io)
+    check('mcp add: --auth-mode none, --api-key-env NAME and KEYBOARD_LAYOUT are not credentials', code === 0 && s.profile().includes("args: ['svc', '--auth-mode', 'none', '--oauth', 'false', '--api-key-env', 'X_TOKEN']") && s.profile().includes("KEYBOARD_LAYOUT: 'us'"), s.text())
+    s.done()
+  }
+  // Nor typed at a terminal: the bot's own key is never asked for here.
+  {
+    const s = scene({ vars, env: '', answers: ['sk-typed'] })
+    const code = await gateway(['mcp', 'add', 'ds', '--env', 'DEEPSEEK_API_KEY', '--', 'npx'], s.io)
+    check('mcp add: the bot\'s own key is not asked for at a terminal either', code === 2 && s.asked.length === 0 && s.env() === '' && s.text().includes('the bot\'s own'), s.text())
+    s.done()
+  }
+  // A credential with a ' in it is kept as it is.
+  {
+    const s = scene({ vars: { ...vars, A_TOKEN: "it's", B_TOKEN: "it's #1" } })
+    const code = await gateway(['mcp', 'add', 'q', '--env', 'A_TOKEN', '--env', 'B_TOKEN', '--no-restart', '--', 'npx'], s.io)
+    check('mcp add: a credential with \' is written so .env reads it back the same', code === 0 && parseEnv(s.env()).A_TOKEN === "it's" && parseEnv(s.env()).B_TOKEN === "it's #1", s.env())
+    s.done()
+  }
+  // Removing one server leaves the entries of another whose name starts with it.
+  {
+    const s = scene({ vars })
+    await gateway(['mcp', 'add', 'a', '--no-restart', '--', 'npx'], s.io)
+    await gateway(['mcp', 'add', 'a-b', '--no-restart', '--', 'npx'], s.io)
+    await gateway(['mcp', 'remove', 'a', '--no-restart'], s.io)
+    check('mcp remove: another server\'s askTools entries stay', s.profile().includes("askTools: ['mcp__a-b__*']"), s.profile().split('\n').find((l) => l.includes('askTools')))
+    s.done()
+  }
+
+  // A credential with characters .env treats specially is written so the harness's own parser reads it back the same.
+  {
+    const s = scene({ vars: { ...vars, DB_PASSWORD: 'pa#ss word"x' } })
+    const code = await gateway(['mcp', 'add', 'db', '--env', 'DB_PASSWORD', '--no-restart', '--', 'npx', 'db-server'], s.io)
+    check('mcp add: a credential with # and spaces is read back the same by Node\'s .env parser', code === 0 && parseEnv(s.env()).DB_PASSWORD === 'pa#ss word"x' && parseEnv(s.env()).DEEPSEEK_API_KEY === 'sk-test', s.env())
+    s.done()
+  }
+  // At a terminal, a credential only in the app's store is explained before it is asked for.
+  {
+    const s = scene({ vars, answers: ['ntn_typed'], store: 'refs:\n  NOTION_TOKEN: ntn_in_app\n' })
+    await gateway([...NOTION.slice(0, 5), '--no-restart', ...NOTION.slice(5)], s.io)
+    const said = s.out.findIndex((l) => l.includes('DeepSeek Harness app holds a NOTION_TOKEN'))
+    check('mcp add: at a terminal, the app\'s copy is explained before the question', said !== -1 && s.asked.length === 1 && envValue(s.env(), 'NOTION_TOKEN') === 'ntn_typed' && !s.text().includes('ntn_in_app'), s.text())
+    s.done()
+  }
+  // Remove takes out only its block: blank lines elsewhere (inside a block of text) stay as they were.
+  {
+    const spaced = TEMPLATE.replace("- id: deepbot\n", "- id: notes-text\n  config:\n    text: |\n      one\n\n\n      two\n\n- id: deepbot\n")
+    const s = scene({ vars, profile: spaced })
+    await gateway(['mcp', 'add', 'a', '--no-restart', '--', 'npx'], s.io)
+    await gateway(['mcp', 'add', 'b', '--no-restart', '--', 'npx'], s.io)
+    await gateway(['mcp', 'remove', 'a', '--no-restart'], s.io)
+    await gateway(['mcp', 'remove', 'b', '--no-restart'], s.io)
+    check('mcp remove: two added and removed out of order leave the profile as it was, blank lines in text included', s.profile() === spaced, JSON.stringify(s.profile().slice(-300)))
+    s.done()
+  }
+  // list does not need the askTools line read.
+  {
+    const odd = TEMPLATE.replace("    targetChannels: ['*']\n", "    targetChannels: ['*']\n    askTools:\n      - mcp__mail__send   # mail\n")
+    const s = scene({ vars, profile: odd.replace("    - id: skill-office\n", "    - id: mcp-mail\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: mail\n        transport: stdio\n        command: /usr/bin/true\n\n    - id: skill-office\n") })
+    check('mcp list: an askTools line it cannot read shows as unknown, not a failure', await gateway(['mcp', 'list'], s.io) === 0 && s.text().includes('mail  stdio') && s.text().includes('asked for: ?'), s.text())
+    s.done()
+  }
+
+  // A setting that is not a secret goes into the row; --ask narrows what is asked for; --no-ask asks nothing.
+  {
+    const s = scene({ vars })
+    await gateway(['mcp', 'add', 'files', '--env', 'ROOT_DIR=/srv/docs', '--ask', 'write_*', '--ask', 'mcp__files__delete', '--no-restart', '--', 'node', '/opt/files-server.js'], s.io)
+    check('mcp add: a setting goes into the row as written', s.profile().includes("          ROOT_DIR: '/srv/docs'") && s.profile().includes(`        command: '${bin}/node'`) && s.profile().includes("        args: ['/opt/files-server.js']"), s.profile().slice(-400))
+    check('mcp add: --ask names only those tools, prefixed once', s.profile().includes("    askTools: ['mcp__files__write_*', 'mcp__files__delete']"), s.profile())
+    s.done()
+    const t = scene({ vars })
+    const before = t.profile()
+    await gateway(['mcp', 'add', 'files', '--no-ask', '--no-restart', '--', 'node'], t.io)
+    check('mcp add: --no-ask leaves askTools alone, and says its tools run without a question', !t.profile().includes('askTools:') && t.profile().startsWith(before.replace(/\n*$/, '\n')) && t.text().includes('run without a question'), t.text())
+    t.done()
+  }
+
+  // A hosted server: its URL, and a bearer credential as a header.
+  {
+    const s = scene({ vars: { MCP_TOKEN: 'tok_1' } })
+    const code = await gateway(['mcp', 'add', 'web', '--url', 'https://mcp.example.com/mcp', '--bearer', 'MCP_TOKEN', '--no-restart'], s.io)
+    check('mcp add: a hosted server is streamable-http with its URL and an Authorization header from the environment',
+      code === 0 && s.profile().endsWith(["        transport: streamable-http", "        url: 'https://mcp.example.com/mcp'", '        headers:', `          Authorization: !!js "'Bearer ' + (process.env.MCP_TOKEN ?? '')"`, ''].join('\n')) && envValue(s.env(), 'MCP_TOKEN') === 'tok_1', s.profile().slice(-300))
+    check('mcp add: and it says a browser sign-in is out of reach', s.text().includes('OAuth'), s.text())
+    s.done()
+  }
+
+  // A row written by hand, inside the template's own insert: listed, not removed.
+  {
+    const hand = TEMPLATE.replace("    - id: skill-office\n", "    - id: mcp-github\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: github\n        transport: stdio\n        command: /opt/homebrew/bin/npx\n        env:\n          GITHUB_TOKEN: !!js process.env.GITHUB_TOKEN ?? ''\n\n    - id: skill-office\n")
+    const s = scene({ profile: hand })
+    await gateway(['mcp', 'list'], s.io)
+    check('mcp list: a row written by hand is listed as such, with its credential missing', s.text().includes('github  stdio  /opt/homebrew/bin/npx  (written by hand)') && s.text().includes('GITHUB_TOKEN: missing'), s.text())
+    const code = await gateway(['mcp', 'remove', 'github'], s.io)
+    check('mcp remove: one written by hand is not taken out', code === 1 && s.profile() === hand && s.text().includes('take it out by hand'), s.text())
+    check('mcp add: nor added over', await gateway(['mcp', 'add', 'github', '--', 'npx'], s.io) === 2 && s.profile() === hand)
+    s.done()
+  }
+  rmSync(bin, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

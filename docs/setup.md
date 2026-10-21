@@ -169,9 +169,28 @@ switches one conversation between the models the routes list.
 ## MCP servers: tools from other programs
 
 The harness connects to MCP servers itself, with its `@deepseek-ai/dsh-mcp-client` package; deepseek-bot
-adds nothing of its own. A server is one row in the profile's `cordis.patch.yml`, inside the `- insert:`
-list the template already has (the office rows are there), at the same indent. Restart the gateway after
-adding one. The server's tools reach the model as `mcp__<serverName>__<tool>`.
+adds nothing of its own. A server is one row in the profile's `cordis.patch.yml`. The server's tools reach
+the model as `mcp__<serverName>__<tool>`.
+
+**One command does it.** Run it in your own terminal; the bot gives you the line filled in when you ask it to
+connect one, and cannot run it itself (its sandbox does not write the profile or `~/.dsh/.env`):
+
+```sh
+dsh gateway mcp add notion --env NOTION_TOKEN -- npx -y @notionhq/notion-mcp-server   # asks for NOTION_TOKEN, not shown
+dsh gateway mcp add web --url https://mcp.example.com/mcp --bearer MCP_TOKEN   # a hosted server
+dsh gateway mcp list                                                          # what is connected, and each credential
+dsh gateway mcp remove notion
+```
+
+It writes what the points below are about: the program by its absolute path and a PATH beside it, the
+credential to `~/.dsh/.env` (asked for at a terminal, not shown, or read from the variable of its name in a
+script; one already there is kept unless another is given, and the bot's own keys are never replaced from here), the row reading it with `!!js process.env.NAME`, and `askTools` asking for every
+call of the server's tools (`--ask <tool>` for only the ones that act, `--no-ask` for none). Then it restarts
+the gateway. A credential only in the app's store is explained, then asked for (without a terminal, refused with why): a
+server reads the gateway's environment, which `~/.dsh/.env` fills and the store does not. `--env NAME=value` passes a setting that is not
+a secret; a name, a value, a server argument or a URL that looks like a credential is refused as an argument. `remove` takes out only a row
+`add` wrote, and every askTools entry for that server's tools (`mcp__<name>__…`, one written by hand included); the profile is then as it was (a profile ending in a newline, byte for byte). By hand, the row goes in an
+`- insert:` list (the template's own has the office rows), at the same indent, and the gateway is restarted:
 
 ```yaml
 - insert:

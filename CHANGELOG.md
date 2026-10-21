@@ -327,6 +327,24 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **`dsh gateway mcp add`: an MCP server in one command, and the bot says which.** Connecting one meant
+  editing the profile by hand: a row at the right indent, the program by its absolute path (launchd's PATH
+  finds no `npx`), the credential in `~/.dsh/.env` and read with `!!js process.env.NAME` (the app's store is
+  not in the gateway's environment), `askTools` in the deepbot row, and a restart. Asked to connect Notion,
+  the bot could only say the operator edits the profile, or try something in its own home. Now
+  `dsh gateway mcp add <server> --env NAME -- <command>` (or `--url … --bearer NAME`) writes all of it, asks
+  for every call of the server's tools unless `--ask` narrows that, and restarts; `mcp list` shows the servers
+  and whether each credential is set; `mcp remove` takes out one it added, leaving the profile as it was. A
+  credential is asked for at the terminal, not shown, and never taken as an argument (a value, a server
+  argument or a URL shaped like one is refused); one only in the app's store is explained; the bot's own keys
+  are not replaced from here. A name the harness refuses in `~/.dsh/.env` (`PATH`, `DSH_*`), a name given
+  twice, an `--ask` the adapter would refuse at start, and a value `~/.dsh/.env` cannot hold as it is are
+  refused before anything is written: each of those stopped the gateway or reached the server changed (found
+  by review). The bot is told the command, to fill it in, and to leave the credential's value to the operator.
+  Checked in the gateway suite; the written row composed by the harness itself (`--dump-config`) on a copy of
+  a live profile and removed back to the same bytes; and a real model reached a fixture server through the
+  row's shape, its credential arriving only by the row's `!!js process.env` line (a control without it failed).
+
 - **Discord and Telegram show a turn's progress on the person's message, as Slack does.** Only Slack had the marks;
   on the other two nothing on the message said it was taken or how it ended. Discord now reacts 👀, a keycap digit
   while the turn runs, then ✅, ❌ or ⏹️, each added before the last comes off; Telegram, which allows a bot one

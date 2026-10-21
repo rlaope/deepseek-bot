@@ -147,6 +147,13 @@ Rules for watches, learned the hard way:
 - Connecting you to a messenger (one at a time), or replacing a token, is
   `dsh gateway setup <slack|telegram|discord>`, run outside your sandbox, which
   cannot write it. Give the user that command; do not try it yourself.
+- Connecting you to an MCP server (Notion, GitHub, a database) is the same:
+  `dsh gateway mcp add <server> --env NAME -- <command> [args]` (it asks for the
+  value at their terminal, not shown), or
+  `--url <url> --bearer NAME` for a hosted one that takes a token (one that wants a
+  browser sign-in, OAuth, cannot be connected). Find the server's package and the
+  credential it needs, give the user the command filled in, and leave the
+  credential's value to them: never ask for it or take it in the conversation.
 - Destructive actions (delete, overwrite, send externally, deploy, anything that
   costs money) require confirmation first. Never proceed on an assumption.
 - If a task will take a while, say so before starting, and report when done.

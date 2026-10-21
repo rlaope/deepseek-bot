@@ -11,6 +11,9 @@ export const PATTERNS = [
   [/gh[pous]_[A-Za-z0-9]{20,}/, 'GitHub token'],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key'],
   [/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/, 'JWT'],
+  [/ntn_[A-Za-z0-9]{20,}/, 'Notion token'],
+  [/secret_[A-Za-z0-9]{30,}/, 'Notion token'],
+  [/glpat-[A-Za-z0-9_-]{20,}/, 'GitLab token'],
 ]
 
 // Placeholders are not leaks. Documentation legitimately contains things like

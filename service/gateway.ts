@@ -8,6 +8,9 @@
  *   dsh gateway start | stop | restart
  *   dsh gateway status [--json] [--profile <name>]
  *   dsh gateway manifest slack
+ *   dsh gateway mcp add <name> [--env NAME[=value]]... [--ask <tool>]... [--no-ask] -- <command> [args...]
+ *   dsh gateway mcp add <name> --url <url> [--bearer NAME] [--ask <tool>]... [--no-ask]
+ *   dsh gateway mcp list | remove <name>
  *
  * At a terminal `setup` is a guided setup: menus chosen with ↑↓ and Enter, the browser opened where a
  * token is made, each token checked as it is pasted. Without a terminal — an agent, a script — every
@@ -16,7 +19,8 @@
  * written. A token is never taken as an argument: arguments show in `ps` and in shell history.
  *
  * What it writes: tokens to ~/.dsh/.env (mode 600), and the platform, channel and people lines of the
- * profile's deepbot row. Nothing else in either file changes. The bot's own agent cannot set up or
+ * profile's deepbot row; `mcp add` also a row of its own for the server and its askTools entries. Nothing
+ * else in either file changes. The bot's own agent cannot set up or
  * remove a platform: its commands may not write those files, and that is intended. Its sandbox confines
  * writes only, though, so start, stop and restart — calls to launchd — are not kept from it.
  */
@@ -26,8 +30,9 @@ import { homedir } from 'node:os'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, join, resolve } from 'node:path'
 import { stringWidth } from '../tui/render/width.js'
+import { findSecrets } from '../tools/secret-patterns.js'
 
-export const GATEWAY_COMMANDS = new Set(['setup', 'remove', 'start', 'stop', 'restart', 'status', 'manifest'])
+export const GATEWAY_COMMANDS = new Set(['setup', 'remove', 'start', 'stop', 'restart', 'status', 'manifest', 'mcp'])
 const GATEWAY_LABEL = 'ai.deepbot.gateway'
 const HEALTH_LABEL = 'ai.deepbot.health'
 const LAUNCHCTL = '/bin/launchctl'
@@ -253,7 +258,7 @@ const failed = (x: unknown): x is { error: string } => typeof x === 'object' && 
 
 // ── The profile's deepbot row ─────────────────────────────────────────────────
 
-type ListKey = 'platform' | 'targetChannels' | 'allowedUsers'
+type ListKey = 'platform' | 'targetChannels' | 'allowedUsers' | 'askTools'
 interface ListField { values: string[]; style: 'scalar' | 'flow' | 'block'; line: number; end: number; indent: string; itemIndent: string; comment: string }
 export interface DeepbotLists { platform: string[]; targetChannels: string[]; allowedUsers: string[] }
 
@@ -395,11 +400,11 @@ export function readProfile(text: string): DeepbotLists | { error: string } {
  * The profile text with the lists changed, every other line as it was. A list keeps the way it was
  * written; allowedUsers, when absent, is put right after targetChannels.
  */
-export function writeProfile(text: string, next: Partial<DeepbotLists>): string | { error: string } {
+export function writeProfile(text: string, next: Partial<DeepbotLists> & { askTools?: string[] }): string | { error: string } {
   const readable = readProfile(text)
   if (failed(readable)) return readable
   let lines = text.split('\n')
-  for (const key of ['platform', 'targetChannels', 'allowedUsers'] as const) {
+  for (const key of ['platform', 'targetChannels', 'allowedUsers', 'askTools'] as const) {
     const values = next[key]
     if (values === undefined) continue
     const row = deepbotRow(lines)
@@ -629,7 +634,11 @@ async function discordApp(fetch: Fetch, token: string): Promise<DiscordApp> {
 
 // ── Arguments ─────────────────────────────────────────────────────────────────
 
-interface Options { positional: string[]; profile?: string; channels?: string; users?: string; verify: boolean; restart: boolean; json: boolean; help: boolean }
+interface Options {
+  positional: string[]; profile?: string; channels?: string; users?: string; verify: boolean; restart: boolean; json: boolean; help: boolean
+  /** mcp add: the server's command line (after --), its environment, a URL instead, and the tools asked for. */
+  command: string[] | null; env: string[]; url?: string; bearer?: string; ask: string[]; noAsk: boolean
+}
 
 const ALLOWED: Record<string, string[]> = {
   setup: ['--profile', '--channels', '--users', '--no-verify', '--no-restart'],
@@ -637,22 +646,27 @@ const ALLOWED: Record<string, string[]> = {
   start: [], stop: [], restart: [],
   status: ['--profile', '--json'],
   manifest: [],
+  mcp: ['--profile', '--no-restart', '--env', '--url', '--bearer', '--ask', '--no-ask'],
 }
 
 function parseOptions(command: string, argv: string[]): Options | { error: string } {
-  const o: Options = { positional: [], verify: true, restart: true, json: false, help: false }
+  const o: Options = { positional: [], verify: true, restart: true, json: false, help: false, command: null, env: [], ask: [], noAsk: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
+    // What follows -- is the server's own command line, its flags included.
+    if (a === '--' && command === 'mcp') { o.command = argv.slice(i + 1); break }
     if (a === '-h' || a === '--help') { o.help = true; continue }
     if (!a.startsWith('-')) { o.positional.push(a); continue }
     if (!ALLOWED[command].includes(a)) return { error: `${command}: unknown option ${a}` }
     if (a === '--no-verify') o.verify = false
     else if (a === '--no-restart') o.restart = false
     else if (a === '--json') o.json = true
+    else if (a === '--no-ask') o.noAsk = true
     else {
       const value = argv[i + 1]
       if (value === undefined || value.startsWith('--')) return { error: `${a} needs a value` }
-      o[a.slice(2) as 'profile' | 'channels' | 'users'] = value
+      if (a === '--env' || a === '--ask') o[a.slice(2) as 'env' | 'ask'].push(value)
+      else o[a.slice(2) as 'profile' | 'channels' | 'users' | 'url' | 'bearer'] = value
       i++
     }
   }
@@ -667,6 +681,10 @@ const GATEWAY_USAGE = `dsh gateway — connect the bot to a messenger, and run i
   dsh gateway start | stop | restart
   dsh gateway status [--json] [--profile <name>]
   dsh gateway manifest slack
+  dsh gateway mcp add <name> [--env NAME[=value]]... [--ask <tool>]... [--no-ask] [--profile <name>] [--no-restart] -- <command> [args...]
+  dsh gateway mcp add <name> --url <url> [--bearer NAME] [--ask <tool>]... [--no-ask] [--profile <name>] [--no-restart]
+  dsh gateway mcp list [--profile <name>]
+  dsh gateway mcp remove <name> [--profile <name>] [--no-restart]
 
   setup       at a terminal, a guided setup: the browser opens where each token is made, each token is
               checked as it is pasted, and a restart is offered at the end. Without a terminal (an
@@ -686,6 +704,17 @@ const GATEWAY_USAGE = `dsh gateway — connect the bot to a messenger, and run i
   stop        stops the gateway and its health probe, until the next login or start
   status      exit 0 when the gateway runs, is connected and has its tokens; --json for a program
   manifest    a Slack app manifest: api.slack.com/apps → Create New App → From a manifest
+  mcp add     connects an MCP server, whose tools the agent then has as mcp__<name>__<tool>: a row for it in
+              the profile, its credentials in ~/.dsh/.env, and a restart. A local server is the command
+              after --, found on PATH and written by its absolute path (the gateway's PATH is launchd's);
+              a hosted one is --url. --env NAME passes a credential, read from the environment variable
+              of that name (or asked for at a terminal), never taken as an argument; NAME=value passes a
+              setting that is not a secret, written into the profile. --bearer NAME sends one as
+              "Authorization: Bearer". Every call of its tools is asked for in the conversation, as a
+              destructive command is; --ask <tool> asks for only those (a trailing * names every tool
+              that starts with it), --no-ask for none.
+  mcp list    the MCP servers in the profile, and whether each credential they read is set
+  mcp remove  takes out a server mcp add put in, and its askTools entries; its credentials stay
 
   Exit: 0 done; 1 failed, not connected, or a platform that could not be reached; 2 a missing or
   invalid answer (nothing written); 130 cancelled.
@@ -930,6 +959,287 @@ function status(io: GatewayIO, p: Paths, o: Options): number {
   return s.healthy ? 0 : 1
 }
 
+// ── MCP servers ───────────────────────────────────────────────────────────────
+//
+// A server is a row of the harness's own MCP client in the profile (docs/setup.md, MCP servers). What makes one
+// by hand go wrong is what this writes for you: the program by its absolute path, since launchd's PATH finds no
+// npx; a credential in ~/.dsh/.env, which the harness loads into its environment at start, read by the row with
+// !!js process.env.NAME — the app's store is not in that environment, and the agent home's .env is refused; and
+// askTools, without which the server's tools pass every gate the adapter has.
+
+const MCP_CLIENT = '@deepseek-ai/dsh-mcp-client'
+// The harness's own pattern, without `__` or an `_` at either end: one server's mcp__a__ prefix would otherwise cover
+// another's tools (mcp__a__b__…, mcp__a___…).
+const SERVER_NAME = /^(?!_)(?!.*__)(?!.*_$)[A-Za-z0-9_-]{1,32}$/
+const ENV_NAME = /^(?!__)[A-Za-z_][A-Za-z0-9_]*$/
+/** A name that holds a credential, by its words: GITHUB_TOKEN, DB_PASSWORD, api_key — not KEYBOARD_LAYOUT. */
+const SECRET_NAME = /(^|[_-])(KEY|APIKEY|TOKEN|SECRET|PASS|PASSWORD|PASSWD|AUTH|CREDENTIALS?|PRIVATE|COOKIE|SESSION|PAT)([_-]|$)/i
+/** A server flag that takes a credential as its value: `--token abc`, `--api-key=abc`. */
+const SECRET_FLAG = /^--?(token|api-?key|key|secret|password|passwd|access-token|auth-token|bearer)$/i
+/** A value that is a credential by its shape. */
+const looksSecret = (value: string) => TOKEN_SHAPED.test(value) || findSecrets(value).length > 0
+/** A value left as the placeholder it was copied from: `…`, `...`, `<token>`. */
+const PLACEHOLDER = /^(…|\.\.\.|<[^>]*>)$|…/
+const CONTROL = /[\u0000-\u001f\u007f]/
+/** A tool name after its server's prefix, as askTools takes it: a trailing * names every tool that starts with it. */
+const TOOL_PATTERN = /^[A-Za-z0-9_-]*\*?$/
+/** What a row this command wrote starts with, so `mcp remove` takes out only those. */
+const MCP_MARK = (name: string) => `# Added by \`dsh gateway mcp add ${name}\`; \`dsh gateway mcp remove ${name}\` takes it out.`
+/**
+ * Names the harness refuses from a .env file, and refuses to start with (dsh-app-boot's isBootstrapOnly; the
+ * proxy names alone are allowed in ~/.dsh/.env). A credential under one of them cannot go there.
+ */
+const BOOTSTRAP_ONLY = new Set(['PATH', 'HOME', 'USERPROFILE', 'SHELL', 'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'LD_PRELOAD',
+  'LD_LIBRARY_PATH', 'LD_AUDIT', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'PERL5OPT', 'PERL5LIB', 'PYTHONSTARTUP', 'PYTHONPATH',
+  'RUBYOPT', 'RUBYLIB', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'PYTHONHOME', 'GIT_SSH', 'GIT_SSH_COMMAND',
+  'GIT_EXTERNAL_DIFF', 'GIT_PAGER', 'GIT_EDITOR', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG_COUNT', 'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_SEARCH_BASE_URL', 'SSL_CERT_FILE',
+  'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_TLS_REJECT_UNAUTHORIZED'])
+const bootstrapOnly = (name: string) => BOOTSTRAP_ONLY.has(name.toUpperCase()) || /^(DSH_|XDG_|DYLD_|BASH_FUNC_)/i.test(name)
+
+/** One MCP client row of the profile, wherever it is: as this command writes it, or by hand. */
+export interface McpRow { id: string; serverName: string | null; transport: string | null; target: string | null; reads: string[]; start: number; end: number; ours: boolean }
+
+/** The profile's MCP client rows. `start`/`end` are the row's lines; for one of ours, its whole block, mark included. */
+export function mcpRows(text: string): McpRow[] {
+  const lines = text.split('\n')
+  const rows: McpRow[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const head = /^(\s*)- id:\s*['"]?([^'"\s#]+)['"]?\s*(#.*)?$/.exec(lines[i])
+    if (head === null) continue
+    let end = i + 1
+    while (end < lines.length && (blankOrComment(lines[end]) || indentOf(lines[end]).length > head[1].length)) end++
+    while (end > i + 1 && blankOrComment(lines[end - 1])) end--
+    const body = lines.slice(i + 1, end)
+    const field = (key: string) => {
+      for (const line of body) {
+        const m = new RegExp(`^\\s+${key}:\\s*(.*?)\\s*(#.*)?$`).exec(line)
+        if (m !== null) { const v = scalar(m[1]); return failed(v) ? m[1] : v }
+      }
+      return null
+    }
+    if (field('name') !== MCP_CLIENT) continue
+    const reads = [...new Set(body.join('\n').match(/process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g) ?? [])].map((r) => r.slice('process.env.'.length))
+    // Ours: the mark, its insert, and this row alone in it — what follows is the next top-level row, or nothing.
+    const next = lines.slice(end).find((line) => !blankOrComment(line))
+    const ours = head[1] === '    ' && lines[i - 1] === '- insert:' && lines[i - 2] === MCP_MARK(String(field('serverName'))) && (next === undefined || /^[^\s#]/.test(next))
+    rows.push({ id: head[2], serverName: field('serverName'), transport: field('transport'), target: field('command') ?? field('url'), reads, start: ours ? i - 2 : i, end, ours })
+  }
+  return rows
+}
+
+/** A program on PATH (or a path), as an absolute path; null when there is none that runs. */
+function executable(io: GatewayIO, name: string): string | null {
+  const runs = (path: string) => { try { const st = statSync(path); return st.isFile() && (st.mode & 0o111) !== 0 } catch { return false } }
+  if (name.includes('/')) { const path = resolve(name); return runs(path) ? path : null }
+  for (const dir of (io.env.PATH ?? '').split(':')) if (dir.startsWith('/') && runs(join(dir, name))) return join(dir, name)
+  return null
+}
+
+/** The askTools entries a server's --ask, or its default (every tool), names. */
+function askedTools(name: string, o: Options): string[] | { error: string } {
+  if (o.noAsk) return []
+  if (o.ask.length === 0) return [`mcp__${name}__*`]
+  const tools = o.ask.map((tool) => tool.startsWith(`mcp__${name}__`) ? tool.slice(`mcp__${name}__`.length) : tool)
+  const bad = tools.find((tool) => tool === '' || !TOOL_PATTERN.test(tool))
+  if (bad !== undefined) return { error: `--ask ${JSON.stringify(bad)}: a tool's name, letters, digits, - and _, or the start of one followed by * (a tool with other characters in its name is renamed by the harness: name it with *)` }
+  return tools.map((tool) => `mcp__${name}__${tool}`)
+}
+
+/** A credential as ~/.dsh/.env holds it, read back the same by the harness's parser; null when it cannot be. */
+function envEncoded(value: string): string | null {
+  if (CONTROL.test(value)) return null
+  if (!/[#"`\\$\s]/.test(value) && !/^'/.test(value)) return value
+  // Single quotes are read as they are; double quotes expand \n, so they are used only without a backslash or a ".
+  if (!value.includes("'")) return `'${value}'`
+  return value.includes('"') || value.includes('\\') ? null : `"${value}"`
+}
+
+/** The deepbot row's askTools, read as setup reads its lists; [] when it has none. */
+function askToolsOf(text: string): string[] | { error: string } {
+  const lines = text.split('\n')
+  const row = deepbotRow(lines)
+  if ('error' in row) return row
+  const field = readList(lines, row, 'askTools')
+  if (failed(field)) return field
+  return field === null ? [] : field.values
+}
+
+/** The text without the deepbot row's askTools line (or list). */
+function dropAskTools(text: string): string | { error: string } {
+  const lines = text.split('\n')
+  const row = deepbotRow(lines)
+  if ('error' in row) return row
+  const field = readList(lines, row, 'askTools')
+  if (failed(field)) return field
+  return field === null ? text : [...lines.slice(0, field.line), ...lines.slice(field.end)].join('\n')
+}
+
+async function mcp(io: GatewayIO, p: Paths, o: Options): Promise<number> {
+  const [sub, name] = o.positional
+  if (sub !== 'add' && sub !== 'list' && sub !== 'remove') { io.err(`mcp: add, list or remove\n\n${GATEWAY_USAGE}`); return 2 }
+  if (sub === 'list' ? name !== undefined : name === undefined) { io.err(sub === 'list' ? 'mcp list: takes no name' : `mcp ${sub}: which server? a name of letters, digits, - and _`); return 2 }
+  if (sub !== 'add' && (o.command !== null || o.env.length > 0 || o.url !== undefined || o.bearer !== undefined || o.ask.length > 0 || o.noAsk)) { io.err(`mcp ${sub}: takes only --profile${sub === 'remove' ? ' and --no-restart' : ''}`); return 2 }
+  const profile = loadProfile(io, p, o.profile)
+  if ('error' in profile) { io.err(profile.error); return profile.code }
+  const rows = mcpRows(profile.text)
+  const asks = askToolsOf(profile.text)
+  const envText = readText(p.env)
+  // Listing does not need askTools read: an entry this cannot parse shows as unknown.
+  if (sub === 'list') return mcpList(io, p, profile, rows, failed(asks) ? null : asks, envText)
+  if (failed(asks)) { io.err(`${tilde(io, profile.path)}: ${asks.error}. Edit the deepbot row by hand.`); return 1 }
+  if (!SERVER_NAME.test(name)) { io.err(`mcp ${sub}: ${name} is not a server name: letters, digits, - and _ (no __), up to 32 (its tools are mcp__<name>__<tool>)`); return 2 }
+  if (sub === 'remove') return mcpRemove(io, p, o, profile, rows, asks, name)
+
+  // ── add: every answer is gathered and checked before anything is written.
+  const nothing = 'Nothing was written.'
+  const taken = rows.find((r) => r.serverName === name || r.id === `mcp-${name}`)
+  if (taken !== undefined) { io.err(`${name} is already in profile ${profile.name} (line ${taken.start + 1}): dsh gateway mcp remove ${name} first${taken.ours ? '' : ', or edit that row by hand'}. ${nothing}`); return 2 }
+  if ((o.command === null || o.command.length === 0) === (o.url === undefined)) { io.err(`mcp add: the server's command after --, or --url for a hosted one (one of the two)\n\n${GATEWAY_USAGE}`); return 2 }
+  if (o.url !== undefined && o.env.length > 0) { io.err('--env is for a local server, which runs with an environment; a hosted one takes its credential as --bearer NAME'); return 2 }
+  if (o.url === undefined && o.bearer !== undefined) { io.err('--bearer is for a hosted server (--url); a local one takes its credential as --env NAME'); return 2 }
+  // A credential is never an argument: arguments show in `ps` and in shell history, and the profile is no credential file.
+  const asArgument = (where: string) => `${where} looks like a credential: give it by name, --env NAME (or --bearer NAME), its value from the environment or asked for at a terminal — never as an argument. ${nothing}`
+  if (o.url !== undefined) {
+    let url: URL | null = null
+    try { url = new URL(o.url) } catch { /* refused below */ }
+    if (url === null || !/^https?:$/.test(url.protocol) || CONTROL.test(o.url) || /['"\s]/.test(o.url)) { io.err('--url: an http(s) address'); return 2 }
+    if (url.username !== '' || url.password !== '' || [...url.searchParams.keys()].some((k) => SECRET_NAME.test(k)) || looksSecret(o.url)) { io.err(asArgument('the URL')); return 2 }
+  } else {
+    const args = o.command.slice(1)
+    if (o.command.some((a) => CONTROL.test(a))) { io.err(`mcp add: an argument with a line break or a control character. ${nothing}`); return 2 }
+    // `--token abc`, `--api-key=abc`, a URL with a password in it, or a value shaped like a token anywhere.
+    const withPassword = (a: string) => { try { const u = new URL(a); return u.password !== '' } catch { return false } }
+    const flagged = args.findIndex((a, i) => looksSecret(a) || withPassword(a) || SECRET_FLAG.test(a.split('=')[0]) && a.includes('=') || (i > 0 && SECRET_FLAG.test(args[i - 1])))
+    if (flagged !== -1) { io.err(asArgument(`the server's argument ${flagged + 1}`)); return 2 }
+  }
+  const settings: Array<[string, string]> = []
+  const secrets: string[] = []
+  for (const entry of o.env) {
+    const [key, ...rest] = entry.split('=')
+    if (!ENV_NAME.test(key)) { io.err(`--env: ${key} is not a variable name`); return 2 }
+    if (rest.length === 0) { secrets.push(key); continue }
+    const value = rest.join('=')
+    if (SECRET_NAME.test(key) || looksSecret(value)) { io.err(asArgument(`--env ${key}=…`)); return 2 }
+    if (CONTROL.test(value)) { io.err(`--env ${key}: a value with a line break or a control character. ${nothing}`); return 2 }
+    settings.push([key, value])
+  }
+  if (o.bearer !== undefined) {
+    if (!ENV_NAME.test(o.bearer)) { io.err(`--bearer: the name of the variable that holds it (got ${o.bearer.includes('=') ? `${o.bearer.split('=')[0]}=…` : JSON.stringify(o.bearer)}); its value comes from the environment, never as an argument. ${nothing}`); return 2 }
+    secrets.push(o.bearer)
+  }
+  const names = [...settings.map(([k]) => k), ...secrets]
+  const twice = names.find((k, i) => names.indexOf(k) !== i)
+  if (twice !== undefined) { io.err(`${twice} is given twice. ${nothing}`); return 2 }
+  for (const key of secrets) if (bootstrapOnly(key)) { io.err(`${key} is a name the harness takes only from the environment it is started in, and refuses in ~/.dsh/.env — it would not start. Use another name. ${nothing}`); return 2 }
+  if (o.noAsk && o.ask.length > 0) { io.err(`--ask and --no-ask together: one or the other. ${nothing}`); return 2 }
+  const ask = askedTools(name, o)
+  if (failed(ask)) { io.err(`${ask.error}. ${nothing}`); return 2 }
+  let program: string | null = null
+  if (o.url === undefined) {
+    program = executable(io, o.command[0])
+    if (program === null) { io.err(`${o.command[0]}: not found${o.command[0].includes('/') ? ', or not a program' : ' on PATH'}. Give its absolute path. ${nothing}`); return 2 }
+  }
+
+  // Credentials: from the environment, or kept where they are, or asked for at a terminal. One the bot or its model
+  // route reads is not replaced from here: that is `dsh gateway setup`'s, or the app's.
+  const store = storeEntries(readText(p.store))
+  const own = new Set([...ORDER.flatMap(tokenKeys), 'DEEPSEEK_API_KEY', ...routeKeys(profile.text)])
+  const values: TokenAnswer[] = []
+  for (const key of secrets) {
+    const given = io.env[key]?.trim()
+    const held = envValue(envText, key)
+    const inStore = store.has(key) ? `The DeepSeek Harness app holds a ${key} (${tilde(io, p.store)}), but a server reads the gateway's environment, which ${tilde(io, p.env)} fills and the app's store does not: it is needed there too. The store is not changed.` : ''
+    if (given) {
+      if (given === held) { io.out(`${key}: already in ${tilde(io, p.env)}, kept`); continue }
+      // One the bot or its model route reads, written here, could change how the harness reaches its model.
+      if (own.has(key)) { io.err(`${key} is the bot's own: it is not written from here${held !== undefined ? ', and the one there is kept' : ''}. ${held !== undefined ? 'Unset it in this shell to use the one there.' : `Put it where the bot's setup does (dsh gateway setup, or the DeepSeek Harness app).`} ${nothing}`); return 2 }
+      values.push({ key, value: given, from: held === undefined ? 'from the environment' : 'from the environment, in place of the one there' })
+      continue
+    }
+    if (held !== undefined) { io.out(`${key}: already in ${tilde(io, p.env)}, kept`); continue }
+    if (own.has(key)) { io.err(`${key} is the bot's own: it is not written from here. Put it where the bot's setup does (dsh gateway setup, or the DeepSeek Harness app). ${nothing}`); return 2 }
+    if (io.ask === undefined) { io.err(`missing: ${key}. Run this at a terminal, where it is asked for and not shown, or give it in the environment: ${key}=… dsh gateway mcp add ${name} …${inStore ? ` ${inStore}` : ''} ${nothing}`); return 2 }
+    if (inStore) io.out(inStore)
+    const asked = await io.ask(`${key} for ${name} (not shown, saved to ${tilde(io, p.env)}): `, true)
+    if (asked === null) return 130
+    if (!asked.trim()) { io.err(`missing: ${key}. ${nothing}`); return 2 }
+    values.push({ key, value: asked.trim(), from: 'entered' })
+  }
+  for (const v of values) {
+    if (PLACEHOLDER.test(v.value)) { io.err(`${v.key}: "${v.value}" is the placeholder, not the credential. ${nothing}`); return 2 }
+    if (envEncoded(v.value) === null) { io.err(`${v.key}: a value with a line break, a control character, or a ' beside characters that need quoting cannot be put in ${tilde(io, p.env)} as it is. ${nothing}`); return 2 }
+  }
+
+  // The row, at the end of the profile in an insert of its own; and what it asks for.
+  const lines = [MCP_MARK(name), '- insert:', `    - id: mcp-${name}`, `      name: '${MCP_CLIENT}'`, '      config:', `        serverName: ${quoted(name)}`]
+  const fromEnv = (key: string) => `!!js "process.env.${key} ?? ''"`
+  if (program !== null) {
+    lines.push('        transport: stdio', `        command: ${quoted(program)}`)
+    if (o.command.length > 1) lines.push(`        args: [${o.command.slice(1).map(quoted).join(', ')}]`)
+    // The program's own directory first: npx runs node, uvx runs python, from beside it.
+    const path = [...new Set([dirname(program), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'])].join(':')
+    lines.push('        env:', `          PATH: ${quoted(settings.find(([k]) => k === 'PATH')?.[1] ?? path)}`)
+    for (const [key, value] of settings) if (key !== 'PATH') lines.push(`          ${key}: ${quoted(value)}`)
+    for (const key of secrets) lines.push(`          ${key}: ${fromEnv(key)}`)
+  } else {
+    lines.push('        transport: streamable-http', `        url: ${quoted(o.url)}`)
+    if (o.bearer !== undefined) lines.push('        headers:', `          Authorization: !!js "'Bearer ' + (process.env.${o.bearer} ?? '')"`)
+  }
+  const nextAsks = [...asks, ...ask.filter((t) => !asks.includes(t))]
+  const withAsks = nextAsks.length === asks.length ? profile.text : writeProfile(profile.text, { askTools: nextAsks })
+  if (typeof withAsks !== 'string') { io.err(`${tilde(io, profile.path)}: ${withAsks.error}. ${nothing}`); return 1 }
+  // One blank line, then the block: what `mcp remove` takes out again.
+  const text = `${withAsks}${withAsks.endsWith('\n') ? '' : '\n'}\n${lines.join('\n')}\n`
+  let env = envText
+  for (const v of values) env = envSet(env, v.key, envEncoded(v.value))
+  if (env !== envText) writeFile(p.env, env, 0o600, true)
+  writeFile(profile.path, text, 0o644)
+
+  for (const v of values) io.out(`${v.key}: saved to ${tilde(io, p.env)} (${v.from})`)
+  io.out(`profile ${profile.name}: MCP server ${name} — ${program !== null ? [program, ...o.command.slice(1)].join(' ') : o.url}`)
+  io.out(`  its tools: mcp__${name}__<tool>`)
+  io.out(ask.length === 0 ? '  asked for: none — its tools run without a question (--no-ask)' : `  asked for: ${ask.join(', ')} — each call, in the conversation; --ask narrows it to the tools that act`)
+  if (o.url !== undefined) io.out('  note: a server that wants a browser sign-in (OAuth) is out of reach: the harness sends fixed headers')
+  io.out(`  note: a server is trusted code, outside the sandbox: ${DOCS}#mcp-servers-tools-from-other-programs`)
+  return applyChange(io, p, o, profile.lists.platform)
+}
+
+function mcpList(io: GatewayIO, p: Paths, profile: Loaded, rows: McpRow[], asks: string[] | null, envText: string): number {
+  if (rows.length === 0) { io.out(`profile ${profile.name}: no MCP servers — dsh gateway mcp add <name> -- <command>`); return 0 }
+  const held = storeRefs(readText(p.store))
+  io.out(`profile ${profile.name}:`)
+  for (const r of rows) {
+    const name = r.serverName ?? '?'
+    const asked = asks?.filter((t) => t.startsWith(`mcp__${name}__`)) ?? null
+    io.out(`  ${name}  ${r.transport ?? '?'}  ${r.target ?? ''}${r.ours ? '' : '  (written by hand)'}`)
+    io.out(`    asked for: ${asked === null ? '? (the deepbot row\'s askTools could not be read)' : asked.length === 0 ? 'none' : asked.join(', ')}`)
+    for (const key of r.reads) {
+      const set = envValue(envText, key) !== undefined
+      io.out(`    ${key}: ${set ? `set (${tilde(io, p.env)})` : held.includes(key) ? `missing — only in the DeepSeek Harness app, which a server does not read: put it in ${tilde(io, p.env)}` : 'missing'}`)
+    }
+  }
+  return 0
+}
+
+async function mcpRemove(io: GatewayIO, p: Paths, o: Options, profile: Loaded, rows: McpRow[], asks: string[], name: string): Promise<number> {
+  const row = rows.find((r) => r.serverName === name)
+  if (row === undefined) { io.out(`${name} is not in profile ${profile.name}; nothing changed`); return 0 }
+  if (!row.ours) { io.err(`${name} (line ${row.start + 1} of ${tilde(io, profile.path)}) was not added by dsh gateway mcp add: take it out by hand. Nothing was written.`); return 1 }
+  const lines = profile.text.split('\n')
+  // The block, and the one blank line add put before it; nothing else in the file changes.
+  const from = row.start > 0 && lines[row.start - 1] === '' ? row.start - 1 : row.start
+  const kept = [...lines.slice(0, from), ...lines.slice(row.end)].join('\n')
+  const nextAsks = asks.filter((t) => !t.startsWith(`mcp__${name}__`))
+  // Emptied, the line goes: none is the default, and the profile is then the one before the add.
+  const text = nextAsks.length === asks.length ? kept : nextAsks.length === 0 ? dropAskTools(kept) : writeProfile(kept, { askTools: nextAsks })
+  if (typeof text !== 'string') { io.err(`${tilde(io, profile.path)}: ${text.error}. Nothing was written.`); return 1 }
+  writeFile(profile.path, text, 0o644)
+  io.out(`profile ${profile.name}: MCP server ${name} taken out${nextAsks.length === asks.length ? '' : ', and its askTools entries'}`)
+  if (row.reads.length > 0) io.out(`  its credentials stay where they are: ${row.reads.join(', ')}`)
+  return applyChange(io, p, o, profile.lists.platform)
+}
+
 /** `dsh gateway <argv>`: the exit status. */
 export async function gateway(argv: string[], io: GatewayIO): Promise<number> {
   const [command, ...rest] = argv
@@ -942,7 +1252,7 @@ export async function gateway(argv: string[], io: GatewayIO): Promise<number> {
     io.out(JSON.stringify(slackManifest(), null, 2))
     return 0
   }
-  if (o.positional.length > (command === 'setup' || command === 'remove' ? 1 : 0)) { io.err(`${command}: unexpected ${o.positional.join(' ')}\n\n${GATEWAY_USAGE}`); return 2 }
+  if (o.positional.length > (command === 'mcp' ? 2 : command === 'setup' || command === 'remove' ? 1 : 0)) { io.err(`${command}: unexpected ${o.positional.join(' ')}\n\n${GATEWAY_USAGE}`); return 2 }
   // The services, the probe and the runner read ~/.dsh; tokens and profiles anywhere else would not be read.
   if (io.env.DSH_HOME && resolve(io.env.DSH_HOME) !== join(io.home, '.dsh')) {
     io.err(`DSH_HOME=${io.env.DSH_HOME} is not supported: the services read ${join(io.home, '.dsh')}`)
@@ -953,6 +1263,7 @@ export async function gateway(argv: string[], io: GatewayIO): Promise<number> {
     case 'setup': return setup(io, p, o)
     case 'remove': return remove(io, p, o)
     case 'status': return status(io, p, o)
+    case 'mcp': return mcp(io, p, o)
     case 'stop': return stop(io, p)
   }
   // start and restart wait for a connection only where a messenger is served; an unreadable profile counts as one.
