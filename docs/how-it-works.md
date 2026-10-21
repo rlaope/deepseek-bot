@@ -374,7 +374,7 @@ temp directory cannot be read: a tenant's temp files are its own. macOS's `mktem
 with no template writes to that closed directory: a command names `$TMPDIR` (`mktemp
 "$TMPDIR/x.XXXXXX"`), as Node and Python do on their own.
 Package managers' caches get a directory of the workspace's own in the user's cache directory
-(`/var/folders/…/C/deepbot-cache-<hash>`, made and closed to other workspaces as the temp one is; not in temp,
+(`/var/folders/…/C/deepbot-cache-<hash>`, made and closed to other workspaces, and to read-only commands, as the temp one is; not in temp,
 where macOS deletes files unused for days, which could leave a uv or go entry half there): `npm_config_cache`,
 `pnpm_config_store_dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`,
 `BUN_INSTALL_CACHE_DIR`, `YARN_CACHE_FOLDER`, `YARN_GLOBAL_FOLDER`, `COREPACK_HOME`, replacing whatever was given:

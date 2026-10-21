@@ -22,7 +22,7 @@
 
 import './dist-fresh.ts'   // a scenario must not run a stale build
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -91,7 +91,17 @@ console.log()
 mkdirSync(TEST_HOME, { recursive: true })
 // A run with commandNetwork bounded leaves the gateway's file for this home, closed, as a stop does: the home goes at
 // exit, and the file with it. Keyed as the gateway keys it, by the real path, read now while the home is there.
-const NETWORK_FILE = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'deepbot', 'command-network', `${createHash('sha256').update(realpathSync(TEST_HOME)).digest('hex').slice(0, 16)}.json`)
+const HOME_KEY = createHash('sha256').update(realpathSync(TEST_HOME)).digest('hex').slice(0, 16)
+const NETWORK_FILE = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'deepbot', 'command-network', `${HOME_KEY}.json`)
+// The runner gives each workspace a temp and a cache directory of its own, outside it, keyed by the same hash. A fresh
+// home per run left both behind: macOS prunes the temp one in time, never the cache one, which holds what the run's
+// installs fetched. Read from the system as the runner reads it; none where getconf has no answer.
+const RUNNER_DIRS = [['DARWIN_USER_TEMP_DIR', 'deepbot-cmd-'], ['DARWIN_USER_CACHE_DIR', 'deepbot-cache-']].flatMap(([name, prefix]) => {
+  try {
+    const dir = execFileSync('/usr/bin/getconf', [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return dir === '' ? [] : [join(dir, `${prefix}${HOME_KEY}`)]
+  } catch { return [] }
+})
 
 // A scenario may need a file to exist before the plugin boots — a large MEMORY.md, for instance,
 // which a fresh home never has. Without this the note-hygiene path could not be exercised at all,
@@ -167,6 +177,11 @@ const AGENTS_HOME = mkdtempSync(join(homedir(), '.dsh', 'deepbot', 'agents-home-
 process.on('exit', () => {
   rmSync(AGENTS_HOME, { recursive: true, force: true })
   if (!keep) rmSync(NETWORK_FILE, { force: true })
+  // Go keeps its module cache read-only, so it is made writable before it goes.
+  for (const dir of keep ? [] : RUNNER_DIRS.filter((d) => existsSync(d))) {
+    try { execFileSync('/bin/chmod', ['-R', 'u+w', dir], { stdio: 'ignore' }); rmSync(dir, { recursive: true, force: true }) }
+    catch (e) { console.error(`could not remove ${dir}: ${String(e?.message ?? e)}`) }
+  }
   // The index outlives the fresh home otherwise, one directory per run under ~/.dsh/recall.
   if (!keep) rmSync(dirname(RECALL_INDEX), { recursive: true, force: true })
   for (const [path] of outsideFiles) rmSync(path, { force: true })

@@ -85,29 +85,34 @@ cmd_cache=""
 cmd_cache_real=""
 user_cache=""
 user_cache_real=""
+# The user's temp and cache directories are read in every mode: a read-only command is kept out of every workspace's
+# directories there (they hold what a tenant fetched), and only a workspace-write one gets directories of its own.
+user_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+user_temp="${user_temp%/}"
+if [[ $user_temp =~ ^(/private)?/var/folders/[^/]+/[^/]+/T$ ]] && [ -d "$user_temp" ] && [ ! -L "$user_temp" ]; then
+  user_temp_real="$(cd "$user_temp" 2>/dev/null && pwd -P || true)"
+else
+  user_temp=""
+fi
+user_cache="$(/usr/bin/getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
+user_cache="${user_cache%/}"
+if [[ $user_cache =~ ^(/private)?/var/folders/[^/]+/[^/]+/C$ ]] && [ -d "$user_cache" ] && [ ! -L "$user_cache" ]; then
+  user_cache_real="$(cd "$user_cache" 2>/dev/null && pwd -P || true)"
+else
+  user_cache=""
+fi
 if [ "$mode" = "workspace-write" ] && [ -n "$workspace_root" ]; then
-  user_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
-  user_temp="${user_temp%/}"
-  if [[ $user_temp =~ ^(/private)?/var/folders/[^/]+/[^/]+/T$ ]] && [ -d "$user_temp" ] && [ ! -L "$user_temp" ]; then
-    user_temp_real="$(cd "$user_temp" 2>/dev/null && pwd -P || true)"
-    hash="$(printf '%s' "${workspace_real:-$workspace_root}" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-16)"
-    # Without a hash every workspace would share one directory: none, then.
-    if [[ $hash =~ ^[0-9a-f]{16}$ ]]; then
+  hash="$(printf '%s' "${workspace_real:-$workspace_root}" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-16)"
+  # Without a hash every workspace would share one directory: none, then.
+  if [[ $hash =~ ^[0-9a-f]{16}$ ]]; then
+    if [ -n "$user_temp" ]; then
       cmd_temp="$user_temp/deepbot-cmd-$hash"
       if [ -n "$user_temp_real" ]; then cmd_temp_real="$user_temp_real/deepbot-cmd-$hash"; fi
     fi
-  else
-    user_temp=""
-  fi
-  user_cache="$(/usr/bin/getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
-  user_cache="${user_cache%/}"
-  hash="$(printf '%s' "${workspace_real:-$workspace_root}" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-16)"
-  if [[ $user_cache =~ ^(/private)?/var/folders/[^/]+/[^/]+/C$ ]] && [ -d "$user_cache" ] && [ ! -L "$user_cache" ] && [[ $hash =~ ^[0-9a-f]{16}$ ]]; then
-    user_cache_real="$(cd "$user_cache" 2>/dev/null && pwd -P || true)"
-    cmd_cache="$user_cache/deepbot-cache-$hash"
-    if [ -n "$user_cache_real" ]; then cmd_cache_real="$user_cache_real/deepbot-cache-$hash"; fi
-  else
-    user_cache=""
+    if [ -n "$user_cache" ]; then
+      cmd_cache="$user_cache/deepbot-cache-$hash"
+      if [ -n "$user_cache_real" ]; then cmd_cache_real="$user_cache_real/deepbot-cache-$hash"; fi
+    fi
   fi
 fi
 
@@ -389,9 +394,12 @@ if [ -n "$cmd_temp" ]; then
   fi
 fi
 # The cache directory likewise. Replaced, as TMPDIR is: one given would be shared between workspaces, or be in the
-# project. Not covered, because npm warns on every command about an npm_config_* it does not know: pnpm before 11
+# project. Without the directory they are left as given. Not covered, because npm warns on every command about an npm_config_* it does not know: pnpm before 11
 # (npm_config_store_dir) and node-gyp's headers (npm_config_devdir).
 if [ -n "$cmd_cache" ]; then
+  # A link at its name (a command can replace the directory it may write) is removed, not followed: the name is the
+  # runner's own, and a workspace left without its caches could not remove the link itself.
+  if [ -L "$cmd_cache" ]; then /bin/rm -f "$cmd_cache" 2>/dev/null || true; fi
   /bin/mkdir -p -m 700 "$cmd_cache" 2>/dev/null || true
   if [ -d "$cmd_cache" ] && [ ! -L "$cmd_cache" ] && [ -O "$cmd_cache" ]; then
     export npm_config_cache="$cmd_cache/npm" pnpm_config_store_dir="$cmd_cache/pnpm-store" PIP_CACHE_DIR="$cmd_cache/pip" \

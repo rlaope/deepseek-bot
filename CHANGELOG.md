@@ -81,13 +81,15 @@ the caveat about version numbers is at the bottom.
   Package managers keep their caches in the user's home, which a command cannot write: npm failed with EPERM,
   uv and go stopped, pip turned its cache off, and pnpm put its store in the project. The runner now points them
   into a cache directory of the workspace's own (`/var/folders/…/C/deepbot-cache-<hash>`), closed to other
-  workspaces and outside the project; pnpm before 11 and node-gyp's headers are not covered, since npm warns on
-  every command about a variable it does not know. The agent is also told which sandbox its commands run in, and that a write it refuses is the sandbox,
-  not the file's owner or mode: it says so instead of suggesting `sudo`, `chown` or `chmod`. Checked in the runner
-  suite (npm and pnpm read the new paths, npm warns about nothing, another workspace cannot read or write them; red
-  before) and the core suite (the identity names the sandbox under
-  workspace-write and read-only, and none under danger-full-access; red before); seen in a real-model coding QA,
-  where the agent blamed root-owned files that `~/.npm` did not have.
+  workspaces and to read-only commands, and outside the project; pnpm before 11 and node-gyp's headers are not covered, since npm warns on
+  every command about a variable it does not know. A scenario's fresh home left its runner directories behind
+  (952 temp ones were found here); the scenario runner now removes them at exit, the cache one included. The
+  agent is also told which sandbox its commands run in, and that a write it refuses is the sandbox, not the
+  file's owner or mode: it says so instead of suggesting `sudo`, `chown` or `chmod`. Checked in the runner suite
+  (npm and pnpm read the new paths, npm warns about nothing, another workspace cannot read or write them; red
+  before) and the core suite (the identity names the sandbox under workspace-write and read-only, and none under
+  danger-full-access; red before); seen in a real-model coding QA, where the agent blamed root-owned files that
+  `~/.npm` did not have.
 
 - **Desktop control is decided against for now.** The harness has no tool for it, and an MCP server for it would
   run outside the sandbox with the screen and the keyboard, for every conversation. `PLAN.md` records the
