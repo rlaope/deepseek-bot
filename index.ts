@@ -2297,7 +2297,7 @@ export function apply(ctx, config) {
    * the turn went ahead; and the entry was deleted by key, so a turn ending late removed a newer
    * one's. The per-conversation queue made both reachable; found by its review.
    */
-  async function runTurn(prompt: string, existingSessionId: string | undefined, origin: Origin | null = null, historyText = '', attachmentText = '', sessionKey: string | null = null, images: unknown[] = []): Promise<TurnOutcome> {
+  async function runTurn(prompt: string, existingSessionId: string | undefined, origin: Origin | null = null, historyText = '', attachmentText = '', sessionKey: string | null = null, images: unknown[] = [], onGone?: () => Promise<string>): Promise<TurnOutcome> {
     const sessionId = existingSessionId ?? `${sessionPrefixFor(origin)}-${randomUUID()}`   // stands in for brandString(...)
     const turnKey = sessionKey ?? sessionId ?? ''
     const turnState: TurnState = {
@@ -2307,7 +2307,22 @@ export function apply(ctx, config) {
     }
     runningTurns.set(turnKey, turnState)
     try {
-      const outcome = await runRegisteredTurn({ sessionId, turnKey, turnState }, prompt, existingSessionId, origin, historyText, attachmentText, sessionKey, images)
+      let outcome: TurnOutcome
+      try {
+        outcome = await runRegisteredTurn({ sessionId, turnKey, turnState }, prompt, existingSessionId, origin, historyText, attachmentText, sessionKey, images)
+      } catch (e) {
+        // The session's log is gone (removed by hand, or by a cleanup of the harness's sessions): resuming it failed
+        // every later turn. The caller forgets it and gives the thread whole; the turn then runs in a new session,
+        // still this turn — a stop said meanwhile is this turn's.
+        if (onGone === undefined || existingSessionId === undefined || (e as { sessionGone?: string })?.sessionGone !== existingSessionId) throw e
+        const history = await onGone()
+        if (turnState.cause !== null) {
+          const cancelled: TurnOutcome = { text: '', reason: { kind: 'cancelled', cause: turnState.cause }, toolsUsed: [], sessionId: '' }
+          return turnState.reported === true ? { ...cancelled, reported: true } : cancelled
+        }
+        const fresh = `${sessionPrefixFor(origin)}-${randomUUID()}`
+        outcome = { ...(await runRegisteredTurn({ sessionId: fresh, turnKey, turnState }, prompt, undefined, origin, history, attachmentText, sessionKey, images)), sessionLost: true }
+      }
       return turnState.reported === true ? { ...outcome, reported: true } : outcome
     } finally {
       if (runningTurns.get(turnKey) === turnState) runningTurns.delete(turnKey)
@@ -2491,6 +2506,10 @@ export function apply(ctx, config) {
     try {
       handle = await adopt(existingSessionId)
     } catch (e) {
+      // The harness's own error for a session with no log (SessionPersistenceNotFoundError), for this session only.
+      if (existingSessionId !== undefined && String((e as Error)?.message ?? e).includes(`session "${existingSessionId}" not found`) && typeof e === 'object' && e !== null) {
+        (e as { sessionGone?: string }).sessionGone = existingSessionId
+      }
       activeTurns.delete(sessionId)
       liveOrigins.delete(sessionId)
       // AsyncDisposable yields a PromiseLike, which has no .catch: resolve it first rather
@@ -3306,7 +3325,25 @@ export function apply(ctx, config) {
           // that never gets that far.
           const backstopMs = cfg.runTimeoutMs + Math.min(60000, cfg.runTimeoutMs)
           if (!quiet) ticking = tickMarks(replyTarget, ts, key)
-          r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs, user: message.user, ...(quiet ? { quiet: true } : {}) }, historyText, attachmentText, key, attachmentImages), backstopMs)
+          const existing = state.sessions[key]
+          // Its session's log gone: forget it, and give the new session the thread whole, standing block included.
+          const onGone = async () => {
+            log(`session ${existing} for ${key} is gone (its log was removed) — starting a new one with the whole thread`)
+            delete state.sessions[key]
+            delete state.standing[key]
+            delete state.history[key]
+            saveState()
+            try {
+              const hist = await transport.fetchHistory({ channel, threadTs }, { currentTs: ts, sinceTs: null, limit: cfg.historyLimit, maxChars: cfg.historyMaxChars })
+              historyText = hist.text
+              historyLastTs = hist.lastTs
+            } catch (e) { log(`history fetch threw: ${String(e?.message ?? e)}`) }
+            return historyText
+          }
+          r = await withTimeout(runTurn(prompt, existing, { channel, threadTs, user: message.user, ...(quiet ? { quiet: true } : {}) }, historyText, attachmentText, key, attachmentImages, onGone), backstopMs)
+          // Said with the answer, so it reads before it and keeps the platform's working status (a message of its own
+          // ended Slack's). A quiet turn says nothing: it may answer nothing at all.
+          if (r.sessionLost === true && !quiet && typeof r.text === 'string' && r.text !== '') r = { ...r, text: `${say.sessionLost}\n\n${r.text}` }
           // Advance the thread pointer only after the turn succeeded, so a failed
           // turn does not swallow messages it never delivered.
           if (historyLastTs !== null && r.reason?.kind === 'completed') {

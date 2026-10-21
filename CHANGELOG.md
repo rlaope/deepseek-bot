@@ -165,6 +165,15 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A thread whose session log was gone failed every turn.** A cleanup of the harness's sessions removed their logs,
+  and the bot went on resuming each thread's session: the harness answered `session "…" not found`, and the person
+  saw "The run failed" on every message in that thread. Now the same turn starts a new session with the whole thread
+  and the standing block, says with its answer that the earlier record could not be found (a quiet turn says
+  nothing), and remembers the new session; a stop said meanwhile still stops it. Only the harness's not-found for
+  that session counts: any other failure is reported as before. Checked in the core suite, red before, with
+  controls for another failure and a quiet turn; the harness's own error was seen by resuming a session id with no
+  log in a real gateway. Found by review: the retry first ran as a second turn, which a stop could miss.
+
 - **The daily run's browser-js read a leftover server.** Each scenario's page server was stopped by the pid its
   start reported, but the static server's start, `cd … && python3 … &` in a subshell, reported the shell that ran
   the list, with python its child (found by review; first taken for the python shim). Python outlived the browser

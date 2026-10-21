@@ -7,6 +7,7 @@ import { LANGUAGES, type Language } from './i18n.js'
 
 const en = {
   restartLost: 'A restart cut off what I was working on. Could you say it again?',
+  sessionLost: 'I could not find the earlier record of this conversation, so I started a new one. If something said before matters, tell me again.',
   alreadyHandled: 'That request was already handled.',
   notYours: 'Only the person who asked can decide this one. Please answer it yourself.',
   approved: 'Allowed. Carrying on.',
@@ -42,6 +43,7 @@ export type Messages = typeof en
 
 const ko: Messages = {
   restartLost: '재시작하느라 하던 작업이 끊겼어. 다시 말해줄래?',
+  sessionLost: '이 대화의 이전 기록을 찾을 수 없어서 새로 시작했어. 앞에서 한 얘기가 필요하면 다시 알려줘.',
   alreadyHandled: '이미 처리된 요청이야.',
   notYours: '이 요청을 승인할 사람이 아니야 — 요청한 사람이 직접 답해줘.',
   approved: '허용했어 — 계속할게.',
@@ -74,6 +76,7 @@ const ko: Messages = {
 
 const zh: Messages = {
   restartLost: '重启打断了正在进行的工作。能再说一遍吗？',
+  sessionLost: '找不到这段对话之前的记录，所以重新开始了。之前说过的内容如果需要，请再告诉我一次。',
   alreadyHandled: '这个请求已经处理过了。',
   notYours: '只有提出请求的人才能决定这一项，请由本人回复。',
   approved: '已允许，继续执行。',

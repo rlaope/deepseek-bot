@@ -26,6 +26,8 @@ export interface TurnOutcome extends TurnSummary {
   sessionId: string
   /** A stop for this turn was already reported to the conversation, so the turn says nothing more. */
   reported?: boolean
+  /** The conversation's session log was gone, and the turn ran in a new session. */
+  sessionLost?: boolean
 }
 
 /** Where a message came from: the transport's idea of a conversation. */

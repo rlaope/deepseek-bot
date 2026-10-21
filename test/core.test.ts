@@ -44,10 +44,12 @@ interface BootOptions {
   answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number } | null
   /** The harness's model-call service (`llm`), when a test gives one: its `stream`. */
   llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
+  /** Sessions whose log is gone: resuming one fails as the harness fails it. */
+  gone?: string[]
 }
 
 /** Boot the plugin with a fake transport and a state file we control. */
-function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null }: BootOptions & { workspace?: boolean } = {}) {
+function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [] }: BootOptions & { workspace?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-core-'))
   writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({
     sessions: {}, seen: {}, standing: {}, history: {}, ...state,
@@ -115,6 +117,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
       },
       // A conversation that has a session resumes it: the agents that answer do so the same way either way.
       resume: async (options) => {
+        if (gone.includes(options?.resumeSessionId)) throw new Error(`session "${options.resumeSessionId}" not found`)
         if (agent === 'answer' || agent === 'ready') return (stubs.agents as { create: (o: unknown) => Promise<unknown> }).create(options)
         throw new Error('fake: agents.resume is not implemented')
       },
@@ -2141,6 +2144,43 @@ for (const remove of [false, true]) {
   check('root: a worktree\'s .git file is left as it is, and the turn runs', repoRan && readFileSync(join(repo, '.git'), 'utf8') === 'gitdir: /elsewhere/.git/worktrees/x\n')
   r.done()
   for (const dir of [bare, above, outside, repo]) rmSync(dir, { recursive: true, force: true })
+}
+
+// A conversation whose session log is gone (removed by hand, or by a cleanup): the turn starts a new session with the
+// whole thread, says the earlier record is gone with its answer, and remembers the new session. It failed every turn.
+{
+  const key = 'C_ALLOWED:t1'
+  const gone = { sessions: { [key]: 'slack-gone' }, standing: { [key]: 'old' }, history: { [key]: '100.000' } }
+  const t = boot({ agent: 'answer', answer: { text: '새로 시작한 답' }, gone: ['slack-gone'], state: gone })
+  await sleep(60)
+  t.transport.deliver(t.transport.message({ text: '안녕', target: { channel: 'C_ALLOWED', threadTs: 't1' } }))
+  await sleep(500)
+  const texts = t.transport.posted.map((p) => p.text)
+  check('a gone session: the turn is answered in a new session, the notice before the answer in one message',
+    texts.some((x) => x.startsWith('이 대화의 이전 기록을 찾을 수 없어') && x.endsWith('새로 시작한 답')) && t.created.length === 1, JSON.stringify({ texts, created: t.created.length }))
+  const state = t.read()
+  check('a gone session: the new session is remembered, not the gone one', typeof state.sessions[key] === 'string' && state.sessions[key] !== 'slack-gone', JSON.stringify(state.sessions))
+  check('a gone session: the thread is given whole to the new session', t.transport.historyCalls.at(-1)?.sinceTs === null && t.transport.historyCalls.length === 2, JSON.stringify(t.transport.historyCalls.map((c) => c.sinceTs)))
+  check('a gone session: the standing block is sent again', /\[this conversation\]/.test(textOf(t.followups[0])), textOf(t.followups[0]).slice(0, 200))
+  check('a gone session: said in the log', t.logs.some((l) => /slack-gone .*gone/.test(l)), JSON.stringify(t.logs.filter((l) => /gone|not found/.test(l))))
+  t.done()
+
+  // Control: a resume that fails another way still fails, and the session is kept.
+  const other = boot({ agent: 'throw', state: gone })
+  await sleep(60)
+  other.transport.deliver(other.transport.message({ text: '안녕', target: { channel: 'C_ALLOWED', threadTs: 't1' } }))
+  await sleep(400)
+  check('a gone session: another failure is still a failure, and the session is kept',
+    other.transport.posted.some((p) => p.text.startsWith('실행에 실패했어')) && !other.transport.posted.some((p) => p.text.includes('이전 기록')) && other.read().sessions[key] === 'slack-gone', JSON.stringify(other.transport.posted.map((p) => p.text)))
+  other.done()
+
+  // A message that did not mention it: a new session as well, and no notice, in a thread where nobody asked the bot.
+  const q = boot({ agent: 'answer', answer: { text: '[no reply]' }, gone: ['slack-gone'], home: mkdtempSync(join(tmpdir(), 'deepbot-quiet-')), config: { replyMode: 'thread', fake: { typing: true, remove: true } }, state: { ...gone, touched: { [key]: Date.now() - 3600_000 } } })
+  await sleep(80)
+  q.transport.deliver(q.transport.message({ addressed: false, text: '점심 뭐 먹지', target: { channel: 'C_ALLOWED', threadTs: 't1' } }))
+  await sleep(400)
+  check('a gone session: a quiet turn moves to a new session and posts nothing', q.transport.posted.length === 0 && q.created.length === 1 && q.read().sessions[key] !== 'slack-gone', JSON.stringify({ posted: q.transport.posted.map((p) => p.text), created: q.created.length }))
+  q.done()
 }
 
 const failed = results.filter((r) => !r.ok)
