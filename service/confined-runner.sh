@@ -394,12 +394,12 @@ if [ -n "$cmd_temp" ]; then
   fi
 fi
 # The cache directory likewise. Replaced, as TMPDIR is: one given would be shared between workspaces, or be in the
-# project. Without the directory they are left as given. Not covered, because npm warns on every command about an npm_config_* it does not know: pnpm before 11
-# (npm_config_store_dir) and node-gyp's headers (npm_config_devdir).
+# project. Without the directory they are left as given. Not covered, because npm warns on every command about an
+# npm_config_* it does not know: pnpm before 11 (npm_config_store_dir) and node-gyp's headers (npm_config_devdir).
 if [ -n "$cmd_cache" ]; then
-  # A link at its name (a command can replace the directory it may write) is removed, not followed: the name is the
-  # runner's own, and a workspace left without its caches could not remove the link itself.
-  if [ -L "$cmd_cache" ]; then /bin/rm -f "$cmd_cache" 2>/dev/null || true; fi
+  # A link or a file at its name (a command can replace the directory it may write) is removed, not followed: the
+  # name is the runner's own, and a workspace left without its caches could not remove it itself.
+  if [ -L "$cmd_cache" ] || { [ -e "$cmd_cache" ] && [ ! -d "$cmd_cache" ]; }; then /bin/rm -f "$cmd_cache" 2>/dev/null || true; fi
   /bin/mkdir -p -m 700 "$cmd_cache" 2>/dev/null || true
   if [ -d "$cmd_cache" ] && [ ! -L "$cmd_cache" ] && [ -O "$cmd_cache" ]; then
     export npm_config_cache="$cmd_cache/npm" pnpm_config_store_dir="$cmd_cache/pnpm-store" PIP_CACHE_DIR="$cmd_cache/pip" \

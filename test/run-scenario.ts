@@ -95,7 +95,8 @@ const HOME_KEY = createHash('sha256').update(realpathSync(TEST_HOME)).digest('he
 const NETWORK_FILE = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'deepbot', 'command-network', `${HOME_KEY}.json`)
 // The runner gives each workspace a temp and a cache directory of its own, outside it, keyed by the same hash. A fresh
 // home per run left both behind: macOS prunes the temp one in time, never the cache one, which holds what the run's
-// installs fetched. Read from the system as the runner reads it; none where getconf has no answer.
+// installs fetched. Read from the system as the runner reads it; none where getconf has no answer. A tenant's
+// directory under the home hashes apart, and its directories are left behind.
 const RUNNER_DIRS = [['DARWIN_USER_TEMP_DIR', 'deepbot-cmd-'], ['DARWIN_USER_CACHE_DIR', 'deepbot-cache-']].flatMap(([name, prefix]) => {
   try {
     const dir = execFileSync('/usr/bin/getconf', [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()

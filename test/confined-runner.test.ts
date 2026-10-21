@@ -426,13 +426,18 @@ for (const resolved of [false, true]) {
   // Nor does a read-only command, in a workspace or none: the caches are never pruned, and hold what a tenant fetched.
   const probeFile = join(ownCache(ws), 'npm', '_logs', 'probe')
   const readOnlyRead = spawnSync(RUNNER, [...READ_ONLY, '--', '/bin/cat', probeFile], { encoding: 'utf8' })
-  check('nor a read-only command', readOnlyRead.status !== 0 && !readOnlyRead.stdout.includes('ok'), (readOnlyRead.stdout + readOnlyRead.stderr).trim().slice(0, 120))
+  check('nor a read-only command', readOnlyRead.status !== 0 && !readOnlyRead.stdout.includes('ok') && readOnlyRead.stderr.includes('Operation not permitted'), (readOnlyRead.stdout + readOnlyRead.stderr).trim().slice(0, 120))
   // A command may replace the directory it can write with a link. The runner removes the link, not following it, and
   // makes the directory again: otherwise the workspace had no caches, and could not remove the link itself.
   rmSync(ownCache(ws3), { recursive: true, force: true })
   symlinkSync(elsewhere, ownCache(ws3))
   const relinked = inside(ws3, 'echo "$npm_config_cache"; mkdir -p "$npm_config_cache" && touch "$npm_config_cache/x"')
   check('a link left at the cache directory\'s name is replaced, not followed', relinked !== null && !lstatSync(ownCache(ws3)).isSymbolicLink() && cachedIn(String(relinked), ws3) && !existsSync(join(elsewhere, 'npm')), String(relinked))
+  // And a file: removed, and the directory made again.
+  rmSync(ownCache(ws3), { recursive: true, force: true })
+  writeFileSync(ownCache(ws3), 'not a directory')
+  const refiled = inside(ws3, 'echo "$npm_config_cache"')
+  check('so is a file left there', refiled !== null && lstatSync(ownCache(ws3)).isDirectory() && cachedIn(String(refiled), ws3), String(refiled))
   // The tool itself takes it: npm reads npm_config_cache over its own ~/.npmrc, and says nothing about it. npm warns on
   // every command about an npm_config_* it does not know (pnpm 10's store-dir, node-gyp's devdir), which the model
   // would then set out to fix. Skipped where npm is not installed.
