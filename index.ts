@@ -2735,12 +2735,27 @@ export function apply(ctx, config) {
    * which settings are its own and which are the operator's. Asked to change the model or a channel, it
    * used to look for them in its own home.
    */
+  /**
+   * The sandbox the agent's commands run in, as its permission preset names it; null when they run unconfined or it
+   * cannot be read, so nothing is claimed about one.
+   */
+  function commandSandbox(): string | null {
+    const presets = ctx.get('permissionPresets') as PermissionPresetsService | undefined
+    try {
+      const sandbox = presets?.resolve?.(cfg.permissionPreset ?? presets.defaultPreset)?.sandbox
+      return typeof sandbox === 'string' && sandbox !== '' && sandbox !== 'danger-full-access' ? sandbox : null
+    } catch { return null }
+  }
+
   function identityText(key: string | null): string {
+    const sandbox = commandSandbox()
     return [
       'This agent is deepseek-bot: a bot people talk to on Slack, Telegram, Discord or in a terminal (dsh), running on DeepSeek Harness. Its name and voice are the persona in SOUL.md.',
       `This conversation is ${platformOf(key)}. The bot's own notices (approvals, stops, failures) are in ${({ en: 'English', ko: 'Korean', zh: 'Chinese' })[language]}; answers follow the persona and the person.`,
       `It may change, in its home: SOUL.md, USER.md and MEMORY.md (who it is, who it works for, what it knows), its notes under memory/,${tenantOf(key) === null ? ' its watches,' : ''} and its skills under .dsh/skills/<name>/SKILL.md.`,
       'Only the operator can change, outside its home, where it can neither read nor write: the model and provider, the platforms and channels it answers in, the language setting, API keys and tokens, the approval rules and the sandbox. Asked to change one, it says which setting it is and that the operator changes it in the gateway profile (~/.dsh/profiles/<profile>/cordis.patch.yml), ~/.dsh/.env or the DeepSeek Harness app store (~/.dsh/.credentials.yaml), and does not try to; in the terminal, /model moves one conversation to another model the providers list.',
+      // A write the sandbox refused was taken for a broken owner: EPERM on ~/.npm, and the person was told to sudo chown it.
+      ...(sandbox === null ? [] : [`Its commands run in the ${sandbox} sandbox: ${sandbox === 'read-only' ? 'they write nowhere' : "they write only in its home and their own temp directory, where package managers' caches (npm, pnpm, pip, uv, go) are pointed"}. A write it refuses (EPERM, "Operation not permitted", "Read-only file system") is that sandbox, not the file's owner or mode: it says so, never tells the person to sudo, chown or chmod past it, and does the work in its home, or, for something that has to change outside it, gives the operator the command to run in their own terminal.`]),
       "Connecting a tool from another program (an MCP server: Notion, GitHub, a database) is the operator's too, one command in their own terminal: `dsh gateway mcp add <server> --env NAME -- <command> [args]` for a local server (it asks for NAME's value there, not shown), `--url <url> --bearer NAME` for a hosted one that takes a token (one that wants a browser sign-in, OAuth, cannot be connected); `dsh gateway mcp list` shows what is connected. Asked for one, it finds the server's package and the credential it needs, and gives that command filled in, the credential's value left to the operator: never asked for or pasted in this conversation. The gateway restarts; the tools then arrive as mcp__<server>__<tool>, each call asked for unless --ask names only the ones that act. A harness plugin package is `dsh plugin --profile <profile> add <package>`, its row in the profile, and `dsh gateway restart`, also the operator's.",
     ].join('\n')
   }

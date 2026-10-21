@@ -46,10 +46,12 @@ interface BootOptions {
   llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
   /** Sessions whose log is gone: resuming one fails as the harness fails it. */
   gone?: string[]
+  /** The sandbox the permission presets name (workspace-write unless a test says otherwise). */
+  sandbox?: string
 }
 
 /** Boot the plugin with a fake transport and a state file we control. */
-function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [] }: BootOptions & { workspace?: boolean } = {}) {
+function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [], sandbox = 'workspace-write' }: BootOptions & { workspace?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-core-'))
   writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({
     sessions: {}, seen: {}, standing: {}, history: {}, ...state,
@@ -133,7 +135,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
     permissionPresets: {
       resolve: (name) => {
         if (name !== 'standard' && name !== 'read-only' && name !== 'attended') throw new Error(`unknown preset ${name}`)
-        return { sandbox: 'workspace-write', approval: 'ask' }
+        return { sandbox, approval: 'ask' }
       },
       set: (session, name) => { permissionSets.push({ session, name }) },
       defaultPreset: 'standard',
@@ -1869,7 +1871,25 @@ for (const remove of [false, true]) {
   check('identity: it says it is deepseek-bot, on DeepSeek Harness, and that this conversation is on Slack', /deepseek-bot/.test(text) && /DeepSeek Harness/.test(text) && /This conversation is on Slack/.test(text), text.split('\n')[1])
   check('identity: it names what it may change itself', /SOUL\.md/.test(text) && /memory\//.test(text) && /\.dsh\/skills\//.test(text) && /watch/.test(text))
   check('identity: and what only the operator can, and where, without trying', /operator/.test(text) && /model/.test(text) && /provider/.test(text) && /language/.test(text) && /cordis\.patch\.yml/.test(text) && /\.env/.test(text) && /\.credentials\.yaml/.test(text) && /does not try/.test(text))
+  // A write its sandbox refused was taken for a broken file owner: `npm install` failed with EPERM on ~/.npm and the
+  // agent told the person to `sudo chown -R` their ~/.npm. It is told which sandbox its commands run in, and what a
+  // refusal outside its home means.
+  check('identity: it knows its commands run in the workspace-write sandbox, writing only in its home and their temp', /workspace-write sandbox/.test(text) && /only in its home/.test(text) && /caches/.test(text), text.split('\n').find((l) => /sandbox:/.test(l)) ?? '(no sandbox line)')
+  check('identity: and that EPERM outside it is the sandbox, never to be got past with sudo or chown', /EPERM/.test(text) && /Operation not permitted/.test(text) && /never tells the person to sudo, chown or chmod/.test(text))
   t.done()
+
+  // Read-only commands write nowhere; unconfined ones are not told about a sandbox they do not have.
+  for (const [sandbox, expect] of [['read-only', /read-only sandbox: they write nowhere/], ['danger-full-access', null]] as const) {
+    const b = boot({ agent: 'answer', answer: { text: '응' }, sandbox })
+    await sleep(60)
+    b.transport.deliver(b.transport.message({ text: '너는 누구야?' }))
+    for (let i = 0; i < 100 && b.created.length === 0; i++) await sleep(10)
+    const got = []
+    await b.created[0]?.setup?.({ systemPrompt: { section: (s) => { got.push(s); return () => {} } } })
+    const said = String(got.find((s) => s.name === 'deepbot:identity')?.text ?? '')
+    check(`identity: under ${sandbox}, ${expect === null ? 'no sandbox is claimed' : 'it is told it writes nowhere'}`, said !== '' && (expect === null ? !/sandbox:|EPERM/.test(said) : expect.test(said)), said.split('\n').find((l) => /sandbox:/.test(l)) ?? '(no sandbox line)')
+    b.done()
+  }
 
   // A turn with no conversation (the self-test diagnostic) gets the section too, instead of a TypeError in setup.
   const selfTest = boot({ agent: 'ready', config: { selfTest: 'are you there?' } })

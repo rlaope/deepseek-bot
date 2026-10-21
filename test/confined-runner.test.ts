@@ -23,7 +23,7 @@ if (process.platform !== 'darwin') {
 import { fileURLToPath } from 'node:url'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 const RUNNER = fileURLToPath(new URL('../service/confined-runner.sh', import.meta.url))
 const HOME = process.env.HOME ?? ''
@@ -405,6 +405,32 @@ for (const resolved of [false, true]) {
   symlinkSync(elsewhere, own(ws3))
   check('a link left at its name is not used', inside(ws3, `mktemp '${elsewhere}/runner-probe.XXXXXX'`) === null && !String(inside(ws3, 'echo "$TMPDIR"')).startsWith(own(ws3)))
   rmSync(own(ws3), { force: true })
+  // Package managers keep their caches in the user's home (~/.npm, ~/.cache/uv, ~/Library/Caches/go-build), which a
+  // command cannot write: `npm install` failed with EPERM, and the model, seeing EPERM, told the person to `sudo chown`
+  // their ~/.npm. pip turned its cache off, and pnpm put its store in the project. They are pointed into the command's
+  // own temp directory: writable, its workspace's alone, and outside the project, so no cache lands in a commit.
+  const caches = ['npm_config_cache', 'npm_config_store_dir', 'pnpm_config_store_dir', 'PIP_CACHE_DIR', 'UV_CACHE_DIR', 'XDG_CACHE_HOME', 'GOCACHE', 'GOMODCACHE', 'BUN_INSTALL_CACHE_DIR', 'YARN_CACHE_FOLDER', 'COREPACK_HOME']
+  const given = Object.fromEntries(caches.map((name) => [name, join(elsewhere, name)]))
+  const shown = inside(ws, caches.map((name) => `echo "${name}=$${name}"`).join('; '), given)
+  const values = Object.fromEntries(String(shown ?? '').split('\n').map((line) => line.split('=')))
+  // `<its temp>/cache/<tool>`, compared by the directory that exists: the tool's own is made when the tool first runs.
+  const cachedIn = (value, workspace) => dirname(dirname(value)) !== '.' && real(dirname(dirname(value))) === real(own(workspace)) && basename(dirname(value)) === 'cache'
+  const misplaced = caches.filter((name) => !cachedIn(String(values[name] ?? ''), ws))
+  check('package managers\' caches are in the command\'s own temp directory, whatever was given', shown !== null && misplaced.length === 0, misplaced.map((name) => `${name}=${values[name] ?? '(unset)'}`).join(' '))
+  check('and a command writes there', inside(ws, 'mkdir -p "$npm_config_cache/_logs" && echo ok > "$npm_config_cache/_logs/probe" && cat "$npm_config_cache/_logs/probe"') === 'ok')
+  check('another workspace has its own', cachedIn(String(inside(ws2, 'echo "$npm_config_cache"')), ws2))
+  // The tool itself takes it: npm reads npm_config_cache over its own ~/.npmrc. Skipped where npm is not installed.
+  const npm = ['/opt/homebrew/bin/npm', '/usr/local/bin/npm'].find((p) => existsSync(p))
+  const npmCache = npm === undefined ? '' : String(inside(ws, `'${npm}' config get cache`))
+  if (npm === undefined) console.log('  TODO  npm is not installed here: npm\'s own reading of npm_config_cache is unchecked')
+  else check('npm itself uses it', cachedIn(npmCache, ws), npmCache.replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  const pnpm = ['/opt/homebrew/bin/pnpm', '/usr/local/bin/pnpm'].find((p) => existsSync(p))
+  const pnpmStore = pnpm === undefined ? '' : String(inside(ws, `'${pnpm}' store path`))
+  if (pnpm === undefined) console.log('  TODO  pnpm is not installed here: pnpm\'s own reading of its store variable is unchecked')
+  else check('and pnpm keeps its store there, not in the project', cachedIn(dirname(pnpmStore), ws), pnpmStore.replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  // A read-only command gets none: there is nowhere of its own to point them at.
+  const readOnly = execFileSync(RUNNER, [...READ_ONLY, '--', '/bin/sh', '-c', 'echo "$npm_config_cache"'], { encoding: 'utf8', env: { ...process.env, npm_config_cache: given.npm_config_cache } }).trim()
+  check('a read-only command\'s caches are left as they were', readOnly === given.npm_config_cache, readOnly)
   for (const dir of [ws, ws2, ws3, elsewhere, own(ws), own(ws2)]) rmSync(dir, { recursive: true, force: true })
 }
 

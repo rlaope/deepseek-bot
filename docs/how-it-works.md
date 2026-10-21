@@ -373,6 +373,11 @@ itself stays closed, since unconfined processes keep scripts and sockets there. 
 temp directory cannot be read: a tenant's temp files are its own. macOS's `mktemp`
 with no template writes to that closed directory: a command names `$TMPDIR` (`mktemp
 "$TMPDIR/x.XXXXXX"`), as Node and Python do on their own.
+Package managers' caches are pointed into that directory too (`cache/` under it: `npm_config_cache`,
+`pnpm_config_store_dir` and `npm_config_store_dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `XDG_CACHE_HOME`, `GOCACHE`,
+`GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `YARN_CACHE_FOLDER`, `COREPACK_HOME`), replacing whatever was given, as
+`TMPDIR` is: in the user's home a command cannot write them, and in the project they would land in a commit. The
+agent is told which sandbox its commands run in, and that a write it refuses is the sandbox, not a file's owner.
 
 ```yaml
 - id: sandbox

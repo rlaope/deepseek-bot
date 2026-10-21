@@ -352,6 +352,14 @@ if [ -n "$cmd_temp" ]; then
   /bin/mkdir -p -m 700 "$cmd_temp" 2>/dev/null || true
   if [ -d "$cmd_temp" ] && [ ! -L "$cmd_temp" ] && [ -O "$cmd_temp" ]; then
     export TMPDIR="$cmd_temp/"
+    # Package managers' caches, which they keep in the user's home, where a command cannot write: `npm install` failed
+    # with EPERM on ~/.npm, uv and go stopped, pip turned its cache off, and pnpm put its store in the project (pnpm 11
+    # reads pnpm_config_*, earlier ones npm_config_*). Here they are the workspace's own and outside the project, so
+    # none lands in a commit. Replaced, as TMPDIR is: one given elsewhere is a place a command cannot write.
+    cmd_cache="${cmd_temp}/cache"
+    export npm_config_cache="$cmd_cache/npm" npm_config_store_dir="$cmd_cache/pnpm-store" pnpm_config_store_dir="$cmd_cache/pnpm-store" PIP_CACHE_DIR="$cmd_cache/pip" \
+      UV_CACHE_DIR="$cmd_cache/uv" XDG_CACHE_HOME="$cmd_cache/xdg" GOCACHE="$cmd_cache/go-build" GOMODCACHE="$cmd_cache/go-mod" \
+      BUN_INSTALL_CACHE_DIR="$cmd_cache/bun" YARN_CACHE_FOLDER="$cmd_cache/yarn" COREPACK_HOME="$cmd_cache/corepack"
   else
     cmd_temp=""
   fi
