@@ -23,7 +23,7 @@ if (process.platform !== 'darwin') {
 import { fileURLToPath } from 'node:url'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const RUNNER = fileURLToPath(new URL('../service/confined-runner.sh', import.meta.url))
 const HOME = process.env.HOME ?? ''
@@ -407,23 +407,32 @@ for (const resolved of [false, true]) {
   rmSync(own(ws3), { force: true })
   // Package managers keep their caches in the user's home (~/.npm, ~/.cache/uv, ~/Library/Caches/go-build), which a
   // command cannot write: `npm install` failed with EPERM, and the model, seeing EPERM, told the person to `sudo chown`
-  // their ~/.npm. pip turned its cache off, and pnpm put its store in the project. They are pointed into the command's
-  // own temp directory: writable, its workspace's alone, and outside the project, so no cache lands in a commit.
-  const caches = ['npm_config_cache', 'npm_config_store_dir', 'pnpm_config_store_dir', 'PIP_CACHE_DIR', 'UV_CACHE_DIR', 'XDG_CACHE_HOME', 'GOCACHE', 'GOMODCACHE', 'BUN_INSTALL_CACHE_DIR', 'YARN_CACHE_FOLDER', 'COREPACK_HOME']
+  // their ~/.npm. pip turned its cache off, and pnpm put its store in the project. They are pointed into a cache
+  // directory of the workspace's own in the user's cache directory (not its temp, which macOS prunes file by file):
+  // writable, its workspace's alone, and outside the project, so no cache lands in a commit.
+  const ownCache = (workspace) => join(userCache, `deepbot-cache-${createHash('sha256').update(realpathSync(workspace)).digest('hex').slice(0, 16)}`)
+  const caches = ['npm_config_cache', 'pnpm_config_store_dir', 'PIP_CACHE_DIR', 'UV_CACHE_DIR', 'XDG_CACHE_HOME', 'GOCACHE', 'GOMODCACHE', 'BUN_INSTALL_CACHE_DIR', 'YARN_CACHE_FOLDER', 'YARN_GLOBAL_FOLDER', 'COREPACK_HOME']
   const given = Object.fromEntries(caches.map((name) => [name, join(elsewhere, name)]))
   const shown = inside(ws, caches.map((name) => `echo "${name}=$${name}"`).join('; '), given)
   const values = Object.fromEntries(String(shown ?? '').split('\n').map((line) => line.split('=')))
-  // `<its temp>/cache/<tool>`, compared by the directory that exists: the tool's own is made when the tool first runs.
-  const cachedIn = (value, workspace) => dirname(dirname(value)) !== '.' && real(dirname(dirname(value))) === real(own(workspace)) && basename(dirname(value)) === 'cache'
+  // `<its cache directory>/<tool>`, compared by the directory that exists: the tool's own is made when the tool first runs.
+  const cachedIn = (value, workspace) => value.startsWith('/') && real(dirname(value)) === real(ownCache(workspace))
   const misplaced = caches.filter((name) => !cachedIn(String(values[name] ?? ''), ws))
-  check('package managers\' caches are in the command\'s own temp directory, whatever was given', shown !== null && misplaced.length === 0, misplaced.map((name) => `${name}=${values[name] ?? '(unset)'}`).join(' '))
+  check('package managers\' caches are in the workspace\'s own cache directory, whatever was given', shown !== null && misplaced.length === 0, misplaced.map((name) => `${name}=${values[name] ?? '(unset)'}`).join(' '))
   check('and a command writes there', inside(ws, 'mkdir -p "$npm_config_cache/_logs" && echo ok > "$npm_config_cache/_logs/probe" && cat "$npm_config_cache/_logs/probe"') === 'ok')
   check('another workspace has its own', cachedIn(String(inside(ws2, 'echo "$npm_config_cache"')), ws2))
-  // The tool itself takes it: npm reads npm_config_cache over its own ~/.npmrc. Skipped where npm is not installed.
+  check('and cannot read this one\'s', inside(ws2, `cat '${join(ownCache(ws), 'npm', '_logs', 'probe')}'`) === null && inside(ws, `cat '${join(ownCache(ws), 'npm', '_logs', 'probe')}'`) === 'ok')
+  check('nor write it', inside(ws2, `mktemp '${ownCache(ws)}/planted.XXXXXX'`) === null)
+  // The tool itself takes it: npm reads npm_config_cache over its own ~/.npmrc, and says nothing about it. npm warns on
+  // every command about an npm_config_* it does not know (pnpm 10's store-dir, node-gyp's devdir), which the model
+  // would then set out to fix. Skipped where npm is not installed.
   const npm = ['/opt/homebrew/bin/npm', '/usr/local/bin/npm'].find((p) => existsSync(p))
-  const npmCache = npm === undefined ? '' : String(inside(ws, `'${npm}' config get cache`))
-  if (npm === undefined) console.log('  TODO  npm is not installed here: npm\'s own reading of npm_config_cache is unchecked')
-  else check('npm itself uses it', cachedIn(npmCache, ws), npmCache.replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+  const npmRun = npm === undefined ? null : spawnSync(RUNNER, ['--ro-bind', '/', '/', '--die-with-parent', '--tmpfs', '/tmp', '--bind', ws, ws, '--', npm, 'config', 'get', 'cache'], { encoding: 'utf8' })
+  if (npmRun === null) console.log('  TODO  npm is not installed here: npm\'s own reading of npm_config_cache is unchecked')
+  else {
+    check('npm itself uses it', cachedIn(npmRun.stdout.trim(), ws), npmRun.stdout.trim().replace(/\/var\/folders\/[^/]+\/[^/]+/, '/var/folders/…'))
+    check('and warns about nothing', npmRun.status === 0 && npmRun.stderr.trim() === '', npmRun.stderr.trim().slice(0, 160))
+  }
   const pnpm = ['/opt/homebrew/bin/pnpm', '/usr/local/bin/pnpm'].find((p) => existsSync(p))
   const pnpmStore = pnpm === undefined ? '' : String(inside(ws, `'${pnpm}' store path`))
   if (pnpm === undefined) console.log('  TODO  pnpm is not installed here: pnpm\'s own reading of its store variable is unchecked')
@@ -431,7 +440,7 @@ for (const resolved of [false, true]) {
   // A read-only command gets none: there is nowhere of its own to point them at.
   const readOnly = execFileSync(RUNNER, [...READ_ONLY, '--', '/bin/sh', '-c', 'echo "$npm_config_cache"'], { encoding: 'utf8', env: { ...process.env, npm_config_cache: given.npm_config_cache } }).trim()
   check('a read-only command\'s caches are left as they were', readOnly === given.npm_config_cache, readOnly)
-  for (const dir of [ws, ws2, ws3, elsewhere, own(ws), own(ws2)]) rmSync(dir, { recursive: true, force: true })
+  for (const dir of [ws, ws2, ws3, elsewhere, own(ws), own(ws2), ownCache(ws), ownCache(ws2), ownCache(ws3)]) rmSync(dir, { recursive: true, force: true })
 }
 
 // The agent's commands' network (commandNetwork). With the gateway's proxy written for this home, a command connects out

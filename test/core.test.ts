@@ -135,7 +135,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
     permissionPresets: {
       resolve: (name) => {
         if (name !== 'standard' && name !== 'read-only' && name !== 'attended') throw new Error(`unknown preset ${name}`)
-        return { sandbox, approval: 'ask' }
+        return { sandbox: name === 'read-only' ? 'read-only' : sandbox, approval: 'ask' }
       },
       set: (session, name) => { permissionSets.push({ session, name }) },
       defaultPreset: 'standard',
@@ -1874,7 +1874,7 @@ for (const remove of [false, true]) {
   // A write its sandbox refused was taken for a broken file owner: `npm install` failed with EPERM on ~/.npm and the
   // agent told the person to `sudo chown -R` their ~/.npm. It is told which sandbox its commands run in, and what a
   // refusal outside its home means.
-  check('identity: it knows its commands run in the workspace-write sandbox, writing only in its home and their temp', /workspace-write sandbox/.test(text) && /only in its home/.test(text) && /caches/.test(text), text.split('\n').find((l) => /sandbox:/.test(l)) ?? '(no sandbox line)')
+  check('identity: it knows its commands run in the workspace-write sandbox, writing only in its home and their temp', /workspace-write sandbox/.test(text) && /only in its home, \/tmp/.test(text) && /caches/.test(text), text.split('\n').find((l) => /sandbox:/.test(l)) ?? '(no sandbox line)')
   check('identity: and that EPERM outside it is the sandbox, never to be got past with sudo or chown', /EPERM/.test(text) && /Operation not permitted/.test(text) && /never tells the person to sudo, chown or chmod/.test(text))
   t.done()
 
@@ -1890,6 +1890,16 @@ for (const remove of [false, true]) {
     check(`identity: under ${sandbox}, ${expect === null ? 'no sandbox is claimed' : 'it is told it writes nowhere'}`, said !== '' && (expect === null ? !/sandbox:|EPERM/.test(said) : expect.test(said)), said.split('\n').find((l) => /sandbox:/.test(l)) ?? '(no sandbox line)')
     b.done()
   }
+  // The preset the deployment names is the one asked, not the harness's default.
+  const named = boot({ agent: 'answer', answer: { text: '응' }, config: { permissionPreset: 'read-only' } })
+  await sleep(60)
+  named.transport.deliver(named.transport.message({ text: '너는 누구야?' }))
+  for (let i = 0; i < 100 && named.created.length === 0; i++) await sleep(10)
+  const namedSections = []
+  await named.created[0]?.setup?.({ systemPrompt: { section: (s) => { namedSections.push(s); return () => {} } } })
+  const namedText = String(namedSections.find((s) => s.name === 'deepbot:identity')?.text ?? '')
+  check('identity: the sandbox is the named permission preset\'s, not the default\'s', /read-only sandbox: they write nowhere/.test(namedText), namedText.split('\n').find((l) => /sandbox:/.test(l)) ?? '(no sandbox line)')
+  named.done()
 
   // A turn with no conversation (the self-test diagnostic) gets the section too, instead of a TypeError in setup.
   const selfTest = boot({ agent: 'ready', config: { selfTest: 'are you there?' } })

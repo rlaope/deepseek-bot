@@ -373,11 +373,19 @@ itself stays closed, since unconfined processes keep scripts and sockets there. 
 temp directory cannot be read: a tenant's temp files are its own. macOS's `mktemp`
 with no template writes to that closed directory: a command names `$TMPDIR` (`mktemp
 "$TMPDIR/x.XXXXXX"`), as Node and Python do on their own.
-Package managers' caches are pointed into that directory too (`cache/` under it: `npm_config_cache`,
-`pnpm_config_store_dir` and `npm_config_store_dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `XDG_CACHE_HOME`, `GOCACHE`,
-`GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `YARN_CACHE_FOLDER`, `COREPACK_HOME`), replacing whatever was given, as
-`TMPDIR` is: in the user's home a command cannot write them, and in the project they would land in a commit. The
-agent is told which sandbox its commands run in, and that a write it refuses is the sandbox, not a file's owner.
+Package managers' caches get a directory of the workspace's own in the user's cache directory
+(`/var/folders/…/C/deepbot-cache-<hash>`, made and closed to other workspaces as the temp one is; not in temp,
+where macOS deletes files unused for days, which could leave a uv or go entry half there): `npm_config_cache`,
+`pnpm_config_store_dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`,
+`BUN_INSTALL_CACHE_DIR`, `YARN_CACHE_FOLDER`, `YARN_GLOBAL_FOLDER`, `COREPACK_HOME`, replacing whatever was given:
+in the user's home a command cannot write them, and in the project they would land in a commit. Not covered,
+because npm warns on every command about an `npm_config_*` it does not know: pnpm before 11 (`npm_config_store_dir`)
+and node-gyp's headers (`npm_config_devdir`), so a native module with no prebuilt binary still fails until
+`~/Library/Caches/node-gyp` has that Node's headers; nor Playwright's, Puppeteer's, Cypress's or Electron's
+downloads. What a tool keeps under `XDG_CACHE_HOME` in the user's home (Hugging Face models, for one) is not seen,
+and is fetched again. The directories are never pruned: clear one with `rm -rf` (Go's module cache is read-only:
+`chmod -R u+w` it first). The agent is told which sandbox its commands run in, and that a write it refuses is the
+sandbox, not a file's owner.
 
 ```yaml
 - id: sandbox

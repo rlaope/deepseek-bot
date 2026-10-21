@@ -76,6 +76,15 @@ cmd_temp=""
 cmd_temp_real=""
 user_temp=""
 user_temp_real=""
+# Package managers' caches, which they keep in the user's home, where a command cannot write: `npm install` failed
+# with EPERM on ~/.npm, uv and go stopped, pip turned its cache off, and pnpm put its store in the project. Each
+# workspace gets a cache directory of its own, made and opened as the temp one is, in the user's cache directory
+# (/var/folders/…/C) rather than its temp: macOS deletes files in T unused for days, which could leave a uv or go
+# cache entry half there. Outside the project, so no cache lands in a commit.
+cmd_cache=""
+cmd_cache_real=""
+user_cache=""
+user_cache_real=""
 if [ "$mode" = "workspace-write" ] && [ -n "$workspace_root" ]; then
   user_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
   user_temp="${user_temp%/}"
@@ -89,6 +98,16 @@ if [ "$mode" = "workspace-write" ] && [ -n "$workspace_root" ]; then
     fi
   else
     user_temp=""
+  fi
+  user_cache="$(/usr/bin/getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
+  user_cache="${user_cache%/}"
+  hash="$(printf '%s' "${workspace_real:-$workspace_root}" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-16)"
+  if [[ $user_cache =~ ^(/private)?/var/folders/[^/]+/[^/]+/C$ ]] && [ -d "$user_cache" ] && [ ! -L "$user_cache" ] && [[ $hash =~ ^[0-9a-f]{16}$ ]]; then
+    user_cache_real="$(cd "$user_cache" 2>/dev/null && pwd -P || true)"
+    cmd_cache="$user_cache/deepbot-cache-$hash"
+    if [ -n "$user_cache_real" ]; then cmd_cache_real="$user_cache_real/deepbot-cache-$hash"; fi
+  else
+    user_cache=""
   fi
 fi
 
@@ -134,6 +153,10 @@ profile() {
     if [ -n "$cmd_temp" ]; then
       printf '(allow file-write* (subpath %s))\n' "$(sbpl "$cmd_temp")"
       if [ -n "$cmd_temp_real" ] && [ "$cmd_temp_real" != "$cmd_temp" ]; then printf '(allow file-write* (subpath %s))\n' "$(sbpl "$cmd_temp_real")"; fi
+    fi
+    if [ -n "$cmd_cache" ]; then
+      printf '(allow file-write* (subpath %s))\n' "$(sbpl "$cmd_cache")"
+      if [ -n "$cmd_cache_real" ] && [ "$cmd_cache_real" != "$cmd_cache" ]; then printf '(allow file-write* (subpath %s))\n' "$(sbpl "$cmd_cache_real")"; fi
     fi
     printf '(allow file-write* (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/dtracehelper"))\n'
     # Except the workspace's .env: the harness's credential chain reads <cwd>/.env before the
@@ -291,6 +314,15 @@ profile() {
       printf '(allow file-read* (subpath %s))\n' "$(sbpl "$own")"
     done
   fi
+  # And their caches: a tenant could otherwise read what another's installs fetched, or plant a package for it.
+  if [ -n "$user_cache" ]; then
+    for root in "$user_cache" ${user_cache_real:+"$user_cache_real"}; do
+      printf '(deny file-read* (regex #"^%s/deepbot-cache-"))\n' "$(printf '%s' "$root" | sed 's/[][\\.*^$+?(){}|"]/\\&/g')"
+    done
+    for own in ${cmd_cache:+"$cmd_cache"} ${cmd_cache_real:+"$cmd_cache_real"}; do
+      printf '(allow file-read* (subpath %s))\n' "$(sbpl "$own")"
+    done
+  fi
   # Unix sockets: no agent of the user's — ssh-agent (measured: `ssh-add -l` inside this runner listed
   # the keys), 1Password's, gpg-agent's, docker's. Name resolution goes through mDNSResponder's socket,
   # without which nothing resolves a host, and a workspace may run a local server it talks to.
@@ -352,16 +384,22 @@ if [ -n "$cmd_temp" ]; then
   /bin/mkdir -p -m 700 "$cmd_temp" 2>/dev/null || true
   if [ -d "$cmd_temp" ] && [ ! -L "$cmd_temp" ] && [ -O "$cmd_temp" ]; then
     export TMPDIR="$cmd_temp/"
-    # Package managers' caches, which they keep in the user's home, where a command cannot write: `npm install` failed
-    # with EPERM on ~/.npm, uv and go stopped, pip turned its cache off, and pnpm put its store in the project (pnpm 11
-    # reads pnpm_config_*, earlier ones npm_config_*). Here they are the workspace's own and outside the project, so
-    # none lands in a commit. Replaced, as TMPDIR is: one given elsewhere is a place a command cannot write.
-    cmd_cache="${cmd_temp}/cache"
-    export npm_config_cache="$cmd_cache/npm" npm_config_store_dir="$cmd_cache/pnpm-store" pnpm_config_store_dir="$cmd_cache/pnpm-store" PIP_CACHE_DIR="$cmd_cache/pip" \
-      UV_CACHE_DIR="$cmd_cache/uv" XDG_CACHE_HOME="$cmd_cache/xdg" GOCACHE="$cmd_cache/go-build" GOMODCACHE="$cmd_cache/go-mod" \
-      BUN_INSTALL_CACHE_DIR="$cmd_cache/bun" YARN_CACHE_FOLDER="$cmd_cache/yarn" COREPACK_HOME="$cmd_cache/corepack"
   else
     cmd_temp=""
+  fi
+fi
+# The cache directory likewise. Replaced, as TMPDIR is: one given would be shared between workspaces, or be in the
+# project. Not covered, because npm warns on every command about an npm_config_* it does not know: pnpm before 11
+# (npm_config_store_dir) and node-gyp's headers (npm_config_devdir).
+if [ -n "$cmd_cache" ]; then
+  /bin/mkdir -p -m 700 "$cmd_cache" 2>/dev/null || true
+  if [ -d "$cmd_cache" ] && [ ! -L "$cmd_cache" ] && [ -O "$cmd_cache" ]; then
+    export npm_config_cache="$cmd_cache/npm" pnpm_config_store_dir="$cmd_cache/pnpm-store" PIP_CACHE_DIR="$cmd_cache/pip" \
+      UV_CACHE_DIR="$cmd_cache/uv" XDG_CACHE_HOME="$cmd_cache/xdg" GOCACHE="$cmd_cache/go-build" GOMODCACHE="$cmd_cache/go-mod" \
+      BUN_INSTALL_CACHE_DIR="$cmd_cache/bun" YARN_CACHE_FOLDER="$cmd_cache/yarn" YARN_GLOBAL_FOLDER="$cmd_cache/yarn-berry" \
+      COREPACK_HOME="$cmd_cache/corepack"
+  else
+    cmd_cache=""
   fi
 fi
 # Pointed at the proxy, in every spelling the common tools read; node reads them only when told to. Nothing is exempt
