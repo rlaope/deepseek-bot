@@ -609,10 +609,11 @@ for (const resolved of [false, true]) {
   // A credential made after a command started (npm login, docker login while it runs) is refused too: the rules used
   // to be written only for files that were there.
   rmSync(join(fakeHome, '.npmrc'), { force: true })
-  const late = spawn(RUNNER, [...policy, '--', '/bin/sh', '-c', `sleep 1; cat '${join(fakeHome, '.npmrc')}'`], { env })
+  // Written once the command says it started: its profile is applied by then, however long building it took.
+  const late = spawn(RUNNER, [...policy, '--', '/bin/sh', '-c', `echo started; sleep 1; cat '${join(fakeHome, '.npmrc')}'`], { env })
   let lateOut = ''
-  late.stdout.on('data', (d) => { lateOut += d })
-  await new Promise((r) => setTimeout(r, 300))
+  const started = new Promise((r) => late.stdout.on('data', (d) => { lateOut += d; if (lateOut.includes('started')) r(undefined) }))
+  await started
   writeFileSync(join(fakeHome, '.npmrc'), 'secret-9f1')
   const lateStatus = await new Promise((r) => late.on('close', r))
   check('credentials: one made after the command started is not read either', !lateOut.includes('secret-9f1'), `exit ${lateStatus}`)

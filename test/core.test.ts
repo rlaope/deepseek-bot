@@ -23,7 +23,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, basename, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apply } from '../dist/index.js'
+import { apply, credentialFiles } from '../dist/index.js'
 import { recallIndexPath } from '../dist/recallContext.js'
 import { createFakeTransport, type FakeTransportOptions } from './fake-transport.ts'
 
@@ -736,6 +736,8 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   // The runner's list, as it is written there (service/confined-runner.sh, credential_files).
   const runnerCredentials = (readFileSync(new URL('../service/confined-runner.sh', import.meta.url), 'utf8').match(/^credential_files=\(\n([\s\S]*?)\n\)/m)?.[1] ?? '')
     .match(/"[^"]+"|\S+/g)?.map((w) => w.replace(/^"|"$/g, '')) ?? []
+  const onlyHere = credentialFiles.filter((rel) => !runnerCredentials.includes(rel))
+  check('readOutside: every credential the file tools refuse, the agent\'s commands are refused too', onlyHere.length === 0, onlyHere.join(' '))
   check('readOutside: the runner\'s credential list is read', runnerCredentials.length > 40 && runnerCredentials.includes('.npmrc') && runnerCredentials.includes('Library/Application Support/com.vercel.cli/auth.json'), String(runnerCredentials.length))
   // The harness home by its usual name: the suites' own (DSH_HOME) is under temp, which is readable anyway.
   for (const secret of [join(homedir(), '.ssh', 'id_ed25519'), join(homedir(), '.aws', 'credentials'), join(homedir(), '.gnupg', 'secring.gpg'), join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),

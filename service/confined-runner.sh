@@ -308,13 +308,17 @@ profile() {
   # are held to the same list (credentialPath in index.ts, checked against this one by the core suite). Emitted
   # whether or not the file is there yet, by HOME's name and its real one: a file made after a command starts (npm
   # login, docker login) was readable to it. A link that is there is denied where it points, too.
-  home_real="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+  # No fork per entry (each command pays for this profile): sbpl is a shell function, and realpath runs only for an
+  # entry that is there, the one it could resolve.
+  local user_home_real rel resolved
+  user_home_real="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
   for rel in "${credential_files[@]}"; do
-    for denied in "$HOME/$rel" ${home_real:+"$home_real/$rel"}; do
-      printf '(deny file-read* (subpath %s))\n' "$(sbpl "$denied")"
-    done
-    resolved="$(/bin/realpath "$HOME/$rel" 2>/dev/null || true)"
-    if [ -n "$resolved" ] && [ "$resolved" != "$HOME/$rel" ]; then printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"; fi
+    printf '(deny file-read* (subpath %s))\n' "$(sbpl "$HOME/$rel")"
+    if [ "$user_home_real" != "$HOME" ]; then printf '(deny file-read* (subpath %s))\n' "$(sbpl "$user_home_real/$rel")"; fi
+    if [ -e "$HOME/$rel" ] || [ -L "$HOME/$rel" ]; then
+      resolved="$(/bin/realpath "$HOME/$rel" 2>/dev/null || true)"
+      if [ -n "$resolved" ] && [ "$resolved" != "$HOME/$rel" ]; then printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"; fi
+    fi
   done
   # Other workspaces' temp directories: a tenant's temp files are its own, as its directory is. Its own stays readable.
   if [ -n "$user_temp" ]; then
@@ -374,7 +378,7 @@ credential_files=(
   .config/github-copilot
 )
 
-sbpl() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+sbpl() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"; }
 
 # Whether a directory above $1 (an absolute path) has a .git: the harness's loader would climb to it.
 root_above() {
@@ -433,7 +437,8 @@ fi
 # Hugging Face's library raises on a token file it may not read (the user's is refused above) instead of going on
 # without it, so every hub call failed in a read-only command. With the caches redirected it looks in the
 # workspace's own; without, it is pointed at a name that is never there, and goes on anonymous.
-if [ -z "$cmd_cache" ]; then export HF_TOKEN_PATH=/var/empty/deepbot-no-token; fi
+# One the caller set is kept: it names a token of the agent's own.
+if [ -z "$cmd_cache" ] && [ -z "${HF_TOKEN_PATH:-}" ]; then export HF_TOKEN_PATH=/var/empty/deepbot-no-token; fi
 # Pointed at the proxy, in every spelling the common tools read; node reads them only when told to. Nothing is exempt
 # (no NO_PROXY): a request for this machine goes through the proxy too, which decides by its mode. Without a port,
 # whatever proxy was set is dropped: there is none to reach. DEEPBOT_COMMAND_PROXY names it to the browse tool, and
