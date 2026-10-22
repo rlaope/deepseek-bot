@@ -51,6 +51,8 @@ export interface Agent {
   cancel?(cause?: string | { kind: string }, options?: { keepInbox?: boolean }): void
   /** Resolves when the agent has nothing left to do. */
   whenIdle(): Promise<void>
+  /** 'running' from the moment a followup wakes it, until it is idle again. */
+  status?: 'idle' | 'running'
   /** The agent's id, which is its session's. */
   id?: string
   /**

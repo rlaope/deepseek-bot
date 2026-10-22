@@ -28,8 +28,9 @@ export interface TurnOutcome extends TurnSummary {
   reported?: boolean
   /** The conversation's session log was gone, and the turn ran in a new session. */
   sessionLost?: boolean
-  /** The turn's agent owned a background job and could not be kept (maxKeptAgents): released, the job stopped with it. */
-  jobsStopped?: boolean
+  /** The turn's agent owned a background job and could not be kept (maxKeptAgents, or past backgroundKeepMs): released,
+   * the job stopped with it. What to tell the conversation, after the answer. */
+  jobsStopped?: string
 }
 
 /** Where a message came from: the transport's idea of a conversation. */

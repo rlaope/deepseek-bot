@@ -41,9 +41,10 @@ interface BootOptions {
   config?: { fake?: FakeTransportOptions; [key: string]: unknown }
   agent?: 'throw' | 'ready' | 'answer'
   home?: string | null
-  /** `job`: the turn starts a background job with that label, still running when the turn ends. `woken`: what the agent
-   * answers when the job's notice wakes it, a turn of `wakeMs`. */
-  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number } | null
+  /** `job`: the agent's first turn starts a background job with that label, still running when the turn ends. `woken`:
+   * what the agent answers when the job's notice wakes it, a turn of `wakeMs`. `turnMs`: each turn takes that long
+   * after its message, and a cancel meanwhile ends it cancelled. */
+  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number; turnMs?: number } | null
   /** The harness's model-call service (`llm`), when a test gives one: its `stream`. */
   llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
   /** Sessions whose log is gone: resuming one fails as the harness fails it. */
@@ -52,10 +53,12 @@ interface BootOptions {
   sandbox?: string
   /** The harness's jobs service (dsh-jobs-local, with dsh-tool-jobs' wake), which a test drives. */
   jobs?: boolean
+  /** The jobs finish while the turn's log is flushed, after its last wait. */
+  flushSettles?: boolean
 }
 
 /** Boot the plugin with a fake transport and a state file we control. */
-function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [], sandbox = 'workspace-write', jobs = false }: BootOptions & { workspace?: boolean } = {}) {
+function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [], sandbox = 'workspace-write', jobs = false, flushSettles = false }: BootOptions & { workspace?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-core-'))
   writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({
     sessions: {}, seen: {}, standing: {}, history: {}, ...state,
@@ -83,6 +86,8 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   const liveAgents = new Map<string, { status: string; followup: (message: unknown) => void }>()
   // The agents' request listeners (agent/request), as an agent's own context takes them.
   const requestListeners: Array<(payload: unknown, next: () => Promise<Record<string, unknown>>) => Promise<Record<string, unknown>>> = []
+  // What a test runs where the adapter sets a session's permission preset: after the agent is adopted, before its message.
+  const hooks: { adopted?: () => void } = {}
   const stubs: Record<string, unknown> = {
     agents: {
       create: async (options) => {
@@ -96,26 +101,41 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
           const failThis = created.length === 1 && answer?.failFirst === true
           // The session the agent is on: its jobs' owner.
           const owner = options?.sessionId ?? options?.resumeSessionId ?? 's1'
-          // A turn the job's notice woke it for, while it runs.
+          // A turn the job's notice woke it for, and one of `turnMs`, while each runs; the cause of a cancel meanwhile.
           let woken: Promise<void> | null = null
+          let busy: Promise<void> | null = null
+          let cancelled: unknown = null
+          let jobbed = false
           const self = {
               session: { header: { id: options?.sessionId ?? 's1' }, get seq() { return events.length }, eventAt: (i) => events[i] },
-              get status() { return woken === null ? 'idle' : 'running' },
+              get status() { return woken === null && busy === null ? 'idle' : 'running' },
               ctx: { on: (name, listener) => { if (name === 'agent/request') requestListeners.push(listener) } },
               followup: (message) => {
                 // dsh-tool-jobs' notice: a turn of the agent's own, its answer an assistant message on the session.
                 if (message?.source?.kind === 'tool-jobs') {
+                  cancelled = null
                   woken = sleep(Number(answer?.wakeMs ?? 0)).then(() => {
+                    woken = null
+                    if (cancelled !== null) { events.push({ type: 'turn/start' }, { type: 'turn/end', data: { reason: { kind: 'cancelled' } } }); return }
                     const said = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer?.woken ?? '' }] } } }
                     events.push({ type: 'turn/start' }, said, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
                     for (const handler of listeners['session/event'] ?? []) handler({ header: { id: owner } }, said)
-                    woken = null
                   })
                   return
                 }
                 followups.push(message)
                 followedBy.push(self)
-                if (typeof answer?.job === 'string') jobRows.push({ id: `bash-${jobRows.length + 1}`, kind: 'bash', label: answer.job, owner, status: 'running' })
+                if (typeof answer?.job === 'string' && !jobbed) { jobbed = true; jobRows.push({ id: `bash-${jobRows.length + 1}`, kind: 'bash', label: answer.job, owner, status: 'running' }) }
+                if (Number(answer?.turnMs) > 0) {
+                  cancelled = null
+                  busy = sleep(Number(answer.turnMs)).then(() => {
+                    busy = null
+                    events.push({ type: 'turn/start' })
+                    if (cancelled !== null) { events.push({ type: 'turn/end', data: { reason: { kind: 'cancelled' } } }); return }
+                    events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer?.text ?? '' }] } } }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+                  })
+                  return
+                }
                 for (const [path, body] of Object.entries(answer?.files ?? {})) {
                   mkdirSync(dirname(join(home, path)), { recursive: true })
                   writeFileSync(join(home, path), body)
@@ -132,8 +152,8 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
               },
               // failFirst: the first turn dies after its prompt was sent — the second wait throws.
               // answer.delayMs: the turn takes that long, so a mark can be watched while it runs.
-              whenIdle: async () => { if (woken !== null) await woken; if (Number(answer?.delayMs) > 0) await sleep(Number(answer.delayMs)); if (failThis && events.length > 0) throw new Error('fake: the turn died') },
-              cancel: () => {},
+              whenIdle: async () => { if (woken !== null) await woken; if (busy !== null) await busy; if (Number(answer?.delayMs) > 0) await sleep(Number(answer.delayMs)); if (failThis && events.length > 0) throw new Error('fake: the turn died') },
+              cancel: (cause) => { cancelled = cause ?? 'cancelled' },
           }
           liveAgents.set(owner, self)
           return {
@@ -142,6 +162,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
             dispose: async () => {
               disposed.push(owner)
               liveAgents.delete(owner)
+              self.cancel('disposed')
               for (const job of jobRows.filter((j) => j.owner === owner)) {
                 if (job.status === 'running') { job.status = 'killed'; emitJob({ type: 'settled', job: { ...job }, cause: 'teardown', awaited: false }) }
                 jobRows.splice(jobRows.indexOf(job), 1)
@@ -169,7 +190,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
         throw new Error('fake: agents.resume is not implemented')
       },
     },
-    sessions: { flush: async () => {} },
+    sessions: { flush: async () => { if (flushSettles) for (const job of jobRows.filter((j) => j.status === 'running')) settleJob(job.id) } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'fake', model: 'fake' }) },
     ...(llm !== null ? { llm } : {}),
     agentPresets: {
@@ -182,7 +203,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
         if (name !== 'standard' && name !== 'read-only' && name !== 'attended') throw new Error(`unknown preset ${name}`)
         return { sandbox: name === 'read-only' ? 'read-only' : sandbox, approval: 'ask' }
       },
-      set: (session, name) => { permissionSets.push({ session, name }) },
+      set: (session, name) => { permissionSets.push({ session, name }); hooks.adopted?.() },
       defaultPreset: 'standard',
     },
   }
@@ -235,7 +256,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   /** Fire an approval request the way the harness would, and get the outcome back. */
   const askApproval = (sessionId = 'slack-abc', reason = 'escalate sandbox to danger-full-access') =>
     listeners['approval/request'][0]({ agent: { session: { header: { id: sessionId } } }, reason })
-  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, followedBy, resumed, disposed, jobRows, settleJob, requestListeners, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, followedBy, resumed, disposed, jobRows, settleJob, requestListeners, hooks, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
 /** The text of a user message the core handed to the agent. */
 const textOf = (message) => (message?.content ?? []).map((block) => block?.text ?? '').join('')
@@ -2289,9 +2310,9 @@ for (const remove of [false, true]) {
 {
   const key = 'C_ALLOWED:t1'
   const at = (threadTs: string, ts: string, text = '테스트 돌려줘') => ({ text, ts, target: { channel: 'C_ALLOWED', threadTs } })
-  const kept = (config: Record<string, unknown> = {}, answer: Record<string, unknown> = {}, jobs = true) =>
-    // A platform with its own working status, so what is posted is the answers and the notices.
-    boot({ agent: 'answer', jobs, home: mkdtempSync(join(tmpdir(), 'deepbot-jobs-')), config: { fake: { typing: true }, ...config }, answer: { text: '돌려둘게. 끝나면 알려줄게.', job: 'npm test', woken: '테스트 다 통과했어.', wakeMs: 300, ...answer } })
+  const kept = (config: Record<string, unknown> = {}, answer: Record<string, unknown> = {}, jobs = true, more: Partial<BootOptions> = {}) =>
+    // A platform with its own working status, and no working message, so what is posted is the answers and the notices.
+    boot({ ...more, agent: 'answer', jobs, home: mkdtempSync(join(tmpdir(), 'deepbot-jobs-')), config: { fake: { typing: true }, progressAfterMs: 60_000, ...config }, answer: { text: '돌려둘게. 끝나면 알려줄게.', job: 'npm test', woken: '테스트 다 통과했어.', wakeMs: 300, ...answer } })
 
   // Control: a turn that owns no job ends as before, its agent disposed.
   const none = kept({}, { job: undefined })
@@ -2308,16 +2329,17 @@ for (const remove of [false, true]) {
   const session = t.read().sessions[key]
   check('jobs: a turn whose agent owns a running job does not dispose it', t.disposed.length === 0 && t.jobRows.length === 1 && t.jobRows[0].owner === session && t.transport.posted.some((p) => p.text.includes('끝나면 알려줄게')),
     JSON.stringify({ disposed: t.disposed, jobs: t.jobRows, posted: t.transport.posted.map((p) => p.text) }))
+  // Its first woken turn goes on the conversation's route as it is then, not the one the agent was made on.
+  const routed = t.requestListeners.length === 1 ? await t.requestListeners[0]({}, async () => ({ provider: 'old', model: 'old-model' })) : null
+  check('jobs: the kept agent follows the conversation\'s route', routed?.provider === 'fake' && routed?.model === 'fake', JSON.stringify({ listeners: t.requestListeners.length, routed }))
 
   // The conversation's next message: the turn runs in the kept agent; the session is never resumed (its agent holds it).
   t.transport.deliver(t.transport.message(at('t1', '1.2', '아직이야?')))
   await sleep(300)
   check('jobs: the next message runs in the kept agent, without a resume', t.resumed.length === 0 && t.created.length === 1 && t.followedBy.length === 2 && t.followedBy[0] === t.followedBy[1] && t.transport.posted.length === 2,
     JSON.stringify({ resumed: t.resumed, created: t.created.length, followups: t.followedBy.length, posted: t.transport.posted.map((p) => p.text) }))
-  check('jobs: and with a job still running after it, the agent is kept again', t.disposed.length === 0, JSON.stringify(t.disposed))
-  // Made on the first turn's route, the kept agent's requests go on the conversation's as it is now.
-  const routed = t.requestListeners.length === 1 ? await t.requestListeners[0]({}, async () => ({ provider: 'old', model: 'old-model' })) : null
-  check('jobs: the kept agent follows the conversation\'s route', routed?.provider === 'fake' && routed?.model === 'fake', JSON.stringify({ listeners: t.requestListeners.length, routed }))
+  // That turn started no job of its own: the first one's, still running, is what keeps it.
+  check('jobs: and with the first turn\'s job still running after it, the agent is kept again', t.disposed.length === 0 && t.jobRows.length === 1 && t.jobRows[0].status === 'running', JSON.stringify({ disposed: t.disposed, jobs: t.jobRows }))
 
   t.done()
 
@@ -2335,6 +2357,145 @@ for (const remove of [false, true]) {
   check('jobs: after the woken turn, the agent is disposed', w.disposed.length === 1 && w.disposed[0] === w.read().sessions[key], JSON.stringify(w.disposed))
   check('jobs: and the woken turn\'s answer was posted to the conversation', w.transport.posted.some((p) => p.text === '테스트 다 통과했어.' && p.target.threadTs === 't1'), JSON.stringify(w.transport.posted.map((p) => p.text)))
   w.done()
+
+  // The job finishes while the turn's log is flushed, after its last wait: the agent is woken then, and kept for that turn.
+  const f = kept({}, {}, true, { flushSettles: true })
+  await sleep(60)
+  f.transport.deliver(f.transport.message(at('t1', '1.1')))
+  await sleep(150)
+  check('jobs: a job that finishes as the turn ends keeps the agent for the turn it woke', f.disposed.length === 0 && f.jobRows[0]?.status === 'completed', JSON.stringify({ disposed: f.disposed, jobs: f.jobRows }))
+  await sleep(500)
+  check('jobs: and that turn\'s answer is posted, then the agent released', f.transport.posted.some((p) => p.text === '테스트 다 통과했어.') && f.disposed.length === 1, JSON.stringify({ disposed: f.disposed, posted: f.transport.posted.map((p) => p.text) }))
+  f.done()
+
+  // A message while a woken turn runs waits for it outside the running turns: both answers arrive, the woken one first.
+  const q = kept()
+  await sleep(60)
+  q.transport.deliver(q.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  q.settleJob(q.jobRows[0].id)
+  q.transport.deliver(q.transport.message(at('t1', '1.2', '끝났어?')))
+  await sleep(800)
+  const qTexts = q.transport.posted.map((p) => p.text)
+  check('jobs: a message during the woken turn: the woken answer, then the reply, without a resume', qTexts.length === 3 && qTexts[1] === '테스트 다 통과했어.' && qTexts[2].includes('끝나면 알려줄게') && q.resumed.length === 0, JSON.stringify({ qTexts, resumed: q.resumed }))
+  q.done()
+
+  // The job finishes after the kept agent was taken for a message, before that message went in: the turn it woke is
+  // waited for outside the running turns, so its answer is still delivered.
+  const b = kept({ permissionPreset: 'standard' })
+  await sleep(60)
+  b.transport.deliver(b.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  b.hooks.adopted = () => { b.hooks.adopted = undefined; b.settleJob(b.jobRows[0].id) }
+  b.transport.deliver(b.transport.message(at('t1', '1.2', '끝났어?')))
+  await sleep(800)
+  const bTexts = b.transport.posted.map((p) => p.text)
+  check('jobs: a job that finishes as a message is taken: the woken answer is delivered, then the reply', b.hooks.adopted === undefined && bTexts.length === 3 && bTexts[1] === '테스트 다 통과했어.' && bTexts[2].includes('끝나면 알려줄게'), JSON.stringify(bTexts))
+  b.done()
+
+  // The deadline is the first turn's: a later turn in the kept agent does not start it again.
+  const r = kept({ backgroundKeepMs: 600 })
+  await sleep(60)
+  r.transport.deliver(r.transport.message(at('t1', '1.1')))
+  await sleep(350)
+  r.transport.deliver(r.transport.message(at('t1', '1.2', '아직이야?')))
+  await sleep(500)
+  check('jobs: a turn in the kept agent does not restart its deadline', r.disposed.length === 1 && r.transport.posted.some((p) => p.text.includes('멈췄어')), JSON.stringify({ disposed: r.disposed, posted: r.transport.posted.map((p) => p.text) }))
+  r.done()
+  // A turn that ends past it: released then, and told after its answer.
+  const r2 = kept({ backgroundKeepMs: 300 }, { turnMs: 250 })
+  await sleep(60)
+  r2.transport.deliver(r2.transport.message(at('t1', '1.1')))
+  await sleep(400)
+  r2.transport.deliver(r2.transport.message(at('t1', '1.2', '아직이야?')))
+  await sleep(450)
+  const r2Texts = r2.transport.posted.map((p) => p.text)
+  check('jobs: a turn in the kept agent that ends past its deadline releases it, and says so after the answer', r2.disposed.length === 1 && r2Texts.length === 3 && r2Texts[1].includes('끝나면 알려줄게') && r2Texts[2].includes('멈췄어'), JSON.stringify({ disposed: r2.disposed, r2Texts }))
+  r2.done()
+
+  // The deadline while a woken turn answers, its job done: the turn is let finish, and nothing is said to be stopped.
+  const e = kept({ backgroundKeepMs: 450 }, { wakeMs: 300 })
+  await sleep(60)
+  e.transport.deliver(e.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  e.settleJob(e.jobRows[0].id)
+  await sleep(500)
+  const eTexts = e.transport.posted.map((p) => p.text)
+  check('jobs: the deadline lets a woken turn with no job left finish, without a notice', eTexts.includes('테스트 다 통과했어.') && !eTexts.some((x) => x.includes('멈췄어')) && e.disposed.length === 1, JSON.stringify({ eTexts, disposed: e.disposed }))
+  e.done()
+  // A woken turn that never ends (a question nobody answers) does not hold the agent past a turn's own time.
+  const h = kept({ runTimeoutMs: 300 }, { wakeMs: 5000 })
+  await sleep(60)
+  h.transport.deliver(h.transport.message(at('t1', '1.1')))
+  await sleep(150)
+  h.settleJob(h.jobRows[0].id)
+  await sleep(250)
+  const held = h.disposed.length
+  await sleep(250)
+  check('jobs: a woken turn is waited for as long as a turn may run, and no longer', held === 0 && h.disposed.length === 1, JSON.stringify({ held, disposed: h.disposed }))
+  h.done()
+
+  // A stop while a woken turn runs stops it, and the agent goes; one while only its job runs stops the job.
+  const s1 = kept({}, { wakeMs: 400 })
+  await sleep(60)
+  s1.transport.deliver(s1.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  s1.settleJob(s1.jobRows[0].id)
+  await sleep(50)
+  s1.transport.deliver(s1.transport.message(at('t1', '1.2', '그만')))
+  await sleep(600)
+  const s1Texts = s1.transport.posted.map((p) => p.text)
+  check('jobs: a stop during a woken turn stops it and releases the agent', s1Texts.includes('중단했어.') && !s1Texts.some((x) => /작업이 없어/.test(x)) && !s1Texts.includes('테스트 다 통과했어.') && s1.disposed.length === 1, JSON.stringify({ s1Texts, disposed: s1.disposed }))
+  s1.done()
+  const s2 = kept()
+  await sleep(60)
+  s2.transport.deliver(s2.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  s2.transport.deliver(s2.transport.message(at('t1', '1.2', '그만')))
+  await sleep(300)
+  const s2Texts = s2.transport.posted.map((p) => p.text)
+  check('jobs: a stop while only the kept agent\'s job runs stops the job', s2Texts.includes('중단했어.') && s2.disposed.length === 1 && s2.jobRows.length === 0, JSON.stringify({ s2Texts, disposed: s2.disposed, jobs: s2.jobRows }))
+  s2.done()
+
+  // 0 turns either setting off: nothing kept, nothing said about it, and the identity does not promise it.
+  for (const off of [{ maxKeptAgents: 0 }, { backgroundKeepMs: 0 }]) {
+    const z = kept(off)
+    await sleep(60)
+    z.transport.deliver(z.transport.message(at('t1', '1.1')))
+    await sleep(300)
+    const sections: Array<{ name: string; text: string }> = []
+    await (z.created[0] as { setup: (ctx: unknown) => Promise<void> }).setup({ systemPrompt: { section: (x: { name: string; text: string }) => { sections.push(x) } } })
+    const zSaid = sections.find((x) => x.name === 'deepbot:identity')?.text ?? ''
+    check(`jobs: ${JSON.stringify(off)} keeps nothing, says nothing of it, and the identity does not promise it`, z.disposed.length === 1 && z.transport.posted.length === 1 && zSaid !== '' && !/in the background/.test(zSaid),
+      JSON.stringify({ disposed: z.disposed, posted: z.transport.posted.map((p) => p.text), promise: /in the background/.test(zSaid) }))
+    z.done()
+  }
+
+  // Past the cap, a turn that said nothing (a message that did not mention it) is followed by no notice either.
+  const qc = kept({ maxKeptAgents: 1, replyMode: 'thread' }, { text: '[no reply]' }, true, { state: { sessions: { 'C_ALLOWED:t2': 'slack-quiet' }, touched: { 'C_ALLOWED:t2': Date.now() } } })
+  await sleep(60)
+  qc.transport.deliver(qc.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  qc.transport.deliver(qc.transport.message({ ...at('t2', '2.1', '점심 뭐 먹지'), addressed: false }))
+  await sleep(300)
+  const inQuiet = qc.transport.posted.filter((p) => p.target.threadTs === 't2').map((p) => p.text)
+  check('jobs: past the cap, a turn that posted no answer posts no notice', qc.disposed.includes('slack-quiet') && inQuiet.length === 0, JSON.stringify({ disposed: qc.disposed, inQuiet }))
+  qc.done()
+
+  // A turn past the queue's backstop is never mapped to its conversation, yet its agent is kept: the turn its job's
+  // notice wakes still belongs to that conversation — its tools are asked about there, and its answer is posted there.
+  const u = kept({ runTimeoutMs: 200, askTools: ['mcp__mail__*'] }, { turnMs: 600, wakeMs: 100 })
+  await sleep(60)
+  u.transport.deliver(u.transport.message(at('t1', '1.1')))
+  await sleep(900)
+  const orphan = u.jobRows[0]?.owner
+  check('jobs: (a turn past the backstop left a job running, its session unmapped)', orphan !== undefined && u.read().sessions[key] === undefined && u.disposed.length === 0, JSON.stringify({ jobs: u.jobRows, sessions: u.read().sessions, disposed: u.disposed }))
+  const asked = u.gate({ name: 'mcp__mail__send', arguments: { to: 'team@example.com' }, agent: { session: { header: { id: orphan } } } })
+  check('jobs: a kept agent\'s tool call is asked about in its conversation, mapped or not', asked?.kind === 'ask', JSON.stringify(asked))
+  u.settleJob(u.jobRows[0].id)
+  await sleep(400)
+  check('jobs: and its woken answer is posted there', u.transport.posted.some((p) => p.text === '테스트 다 통과했어.' && p.target.threadTs === 't1') && u.disposed.length === 1, JSON.stringify({ posted: u.transport.posted.map((p) => p.text), disposed: u.disposed }))
+  u.done()
 
   // A stop the person asks for, while the turn runs, stops its job too: the agent is not kept.
   const st = kept({}, { delayMs: 400 })
@@ -2354,7 +2515,7 @@ for (const remove of [false, true]) {
   await sleep(200)
   check('jobs: before its deadline, the agent is kept', d.disposed.length === 0, JSON.stringify(d.disposed))
   await sleep(400)
-  check('jobs: at the deadline, the agent is disposed and the conversation told', d.disposed.length === 1 && d.transport.posted.some((p) => p.text.includes('npm test') && p.text.includes('멈췄어') && p.target.threadTs === 't1'),
+  check('jobs: at the deadline, the agent is disposed and the conversation told', d.disposed.length === 1 && d.transport.posted.some((p) => p.text.includes('npm test') && p.text.includes('멈췄어') && p.text.startsWith('1분') && p.target.threadTs === 't1'),
     JSON.stringify({ disposed: d.disposed, posted: d.transport.posted.map((p) => p.text) }))
   d.done()
 

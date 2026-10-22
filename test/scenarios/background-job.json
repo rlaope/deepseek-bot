@@ -1,0 +1,24 @@
+{
+  "_comment": "Does a background job outlive its turn and wake the agent when it finishes? The command's output is a hash the model cannot work out, so it can only reach a later message by the job finishing and the woken turn reading it. Step 2 is a message while the job runs: it must run in the kept agent (a resume would fail on the session's writer). The woken turn is not driven by the adapter, so it is asserted on the session log, as the reminder scenario does; Slack delivery of such a turn is covered by test/delivery.test.ts.",
+  "steps": [
+    {
+      "session": "J",
+      "say": "다음 명령을 백그라운드로 실행해줘: `sleep 45; printf 'deepbot-job-7' | shasum | cut -c1-8`. 끝나면 출력값을 알려줘. 지금은 시작했다고만 짧게 답해.",
+      "expectNotContains": "75f2cfe1"
+    },
+    {
+      "session": "J",
+      "say": "그 작업 아직 돌고 있어? 한 줄로.",
+      "expectNotContains": "75f2cfe1"
+    },
+    {
+      "waitSeconds": 75
+    },
+    {
+      "expectSessionTurn": {
+        "session": "J",
+        "contains": "75f2cfe1"
+      }
+    }
+  ]
+}

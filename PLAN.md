@@ -55,13 +55,22 @@ is built before the thing it stands on. The detailed history of each milestone i
   reach ten (about 36 000 characters at 4000), and can cut a surrogate pair. `transports/parts.ts` does both;
   Slack can use it.
 - **A background job outlives its turn, within limits.** An agent that owns a running job is kept after
-  its turn (up to `backgroundKeepMs`, at most `maxKeptAgents`), the harness's wake turn answers when the job
-  settles, and the agent is released after it. Still not: a restart loses running jobs and says nothing of
-  them (they are in-process, and no in-flight record is kept for one); the woken turn has no working status, no
-  progress message and no in-flight record; a stop word with no turn running does not stop a kept agent's
-  job (`job_kill` or the terminal's panel does). A continuable subagent can be messaged only while its
-  parent's turn runs; whether a kept parent changes that is not checked. Checked with fakes only; the
-  real wake path needs a scenario against a real model.
+  its turn (up to `backgroundKeepMs` from its first keeping, at most `maxKeptAgents`), the harness's wake turn
+  answers when the job settles, and the agent is released after it. Checked with fakes only;
+  `test/scenarios/background-job.json` is the real-model check, not yet run. Still not:
+  - a restart loses running jobs and says nothing of them (they are in-process, and no in-flight record is
+    kept for one); a woken turn has no working status, no progress message and no in-flight record;
+  - woken turns run outside `maxConcurrency`: at most `maxConcurrency + maxKeptAgents` turns at once;
+  - with dsh-tool-jobs' `completionDelivery: quiet`, or past its `maxConsecutiveWakes`, the notice is injected
+    instead of waking the agent, and is lost when the agent is released;
+  - a woken turn's tokens are counted in the conversation's usage only by the next turn the adapter drives in
+    that session (usage is the session's cumulative projection, read at the end of such a turn), and not as a
+    turn; with none after it, they are not counted;
+  - a woken turn that asks a question nobody answers holds the agent until `runTimeoutMs`;
+  - a reload of the jobs service drops the adapter's subscription without a word, and kept agents are then
+    released only by their deadline;
+  - a continuable subagent can be messaged only while its parent's turn runs; whether a kept parent changes
+    that is not checked.
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim
   through its first messenger, so `dsh gateway setup` keeps one at a time. Serving two needs each
   conversation routed to the platform it came from, including the messages the bot sends first

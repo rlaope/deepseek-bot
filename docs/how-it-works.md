@@ -155,13 +155,17 @@ its notice and the harness runs that turn itself; its answer is delivered like a
 on a mapped session outside the adapter's running turns), and once the agent owns no live job and is idle again
 it is released. The adapter's subscription (`jobs.events`, `{ owners: 'all' }`) is unscoped, so it hears a
 settlement before dsh-tool-jobs' scoped one wakes the agent in the same dispatch: the wait for the agent starts
-after that dispatch. While kept, the agent holds the session's writer, so the conversation's next message is not
-a resume: the turn runs in the kept agent, after any woken turn running there (outside the running turns, so that
-turn's answer is still delivered as the agent's). A kept agent is released, which stops its job, after
-`backgroundKeepMs` (30 minutes; the conversation is told which job), when a stop is asked for during its turn, and
-when the plugin unloads; at most `maxKeptAgents` (4) are kept, and past that a turn's agent is released as before
-and the conversation told after the answer. Without the jobs service nothing is kept and the identity section
-does not mention it.
+after that dispatch; it is bounded by `runTimeoutMs`. A job that settles while the turn's log is flushed wakes the
+agent after the turn's last wait: an agent found running then is kept for that turn too. While kept, the agent
+holds the session's writer, so the conversation's next message is not a resume: the turn runs in the kept agent,
+which stays out of the running turns until its message goes, then waits for any woken turn running there (whose
+answer is delivered as the agent's). A kept agent's woken turn belongs to its conversation even before the session
+is mapped to it (a turn past the queue's backstop never is): its tools are gated, its approvals asked and its
+answer posted there. A kept agent is released, which stops its job, `backgroundKeepMs` (30 minutes) after it was
+first kept, whatever turns ran in it since (the conversation is told which job; a woken turn still answering, its
+job done, is let finish), when a stop is said in the conversation, and when the plugin unloads. At most
+`maxKeptAgents` (4) are kept; past that a turn's agent is released as before and the conversation told after the
+answer. Either setting at 0, or no jobs service: nothing is kept and the identity section does not mention it.
 
 Two facts that will bite: a session is composed with an **agent preset**, and without one the
 agent has no tools at all — that failure was silent and looked like a memory bug for days. And

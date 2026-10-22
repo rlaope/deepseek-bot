@@ -360,11 +360,16 @@ the caveat about version numbers is at the bottom.
   When the job settles, the harness wakes it with its notice, as it does any idle owner; that turn's answer is posted
   to the conversation (as a reminder's is), and the agent is released after it. The conversation's next message runs
   in the kept agent (a resume would be refused: the agent holds the session). A job still running after
-  `backgroundKeepMs` (30 minutes) is stopped and the conversation told; past `maxKeptAgents` (4) kept at once, a
-  turn's agent is released as before and the conversation told after the answer; a stop the person asks for during
-  the turn stops the job too; unloading releases them all. The identity section says so, only where the jobs service
-  is composed. Checked in the core suite with a fake jobs service that wakes its owner as dsh-tool-jobs does (each
-  check red before, and each line under test removed in turn); not yet run against a real model.
+  `backgroundKeepMs` (30 minutes, counted from the first keeping, not restarted by later turns) is stopped and the
+  conversation told; a woken turn still answering then, its job done, is let finish (up to `runTimeoutMs`). Past
+  `maxKeptAgents` (4) kept at once, a turn's agent is released as before and the conversation told after the
+  answer, if one went out. A stop stops a kept agent's woken turn and its job, during a turn or not; unloading
+  releases them all; 0 in either setting keeps nothing. A job that settles as its turn ends, and one that settles as
+  the next message is taken, still get their woken turn delivered; a kept agent's woken turn belongs to its
+  conversation even when a turn past the backstop never mapped it. The identity section says so, only where agents
+  are kept. Checked in the core suite with a fake jobs service that wakes its owner as dsh-tool-jobs does (each check
+  red before, and each line under test removed in turn); `test/scenarios/background-job.json` is the real-model
+  check, not yet run.
 
 - **`dsh gateway mcp add`: an MCP server in one command, and the bot says which.** Connecting one meant
   editing the profile by hand: a row at the right indent, the program by its absolute path (launchd's PATH

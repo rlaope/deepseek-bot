@@ -157,7 +157,7 @@ const DEFAULTS = {
   // A command the agent runs in the background outlives its turn: the agent that owns it is kept, not released, until
   // the job is done and the turn its notice wakes has answered. For at most backgroundKeepMs: then the job is stopped
   // and the conversation told. At most maxKeptAgents at once: past that a turn's agent is released as before, which
-  // stops its job, and the conversation is told. Without the harness's jobs service, nothing is kept.
+  // stops its job, and the conversation is told. Either 0, or no harness jobs service: nothing is kept.
   backgroundKeepMs: 30 * 60 * 1000,
   maxKeptAgents: 4,
   maxPromptChars: 12000,
@@ -437,8 +437,8 @@ export function apply(ctx, config) {
   }
   // Each passage offered is up to 200 characters sent with every such message: a few hundred is already a page.
   if (!Number.isInteger(cfg.recallPickFrom) || cfg.recallPickFrom < 0 || cfg.recallPickFrom > 200) problems.push(`recallPickFrom: must be a whole number from 0 to 200 (got: ${String(cfg.recallPickFrom)})`)
-  for (const name of ['backgroundKeepMs', 'maxKeptAgents']) {
-    if (!Number.isInteger(cfg[name]) || cfg[name] < 0) problems.push(`${name}: must be a whole number, 0 or more (got: ${String(cfg[name])})`)
+  for (const setting of ['backgroundKeepMs', 'maxKeptAgents']) {
+    if (!Number.isInteger(cfg[setting]) || cfg[setting] < 0) problems.push(`${setting}: must be a whole number, 0 or more (got: ${String(cfg[setting])})`)
   }
   if (!['ask', 'deny'].includes(cfg.readOutside)) problems.push(`readOutside: must be 'ask' or 'deny' (got: ${String(cfg.readOutside)})`)
   if (!['open', 'local', 'public'].includes(cfg.commandNetwork)) problems.push(`commandNetwork: must be 'open', 'local' or 'public' (got: ${String(cfg.commandNetwork)})`)
@@ -1541,8 +1541,8 @@ export function apply(ctx, config) {
     prepared: boolean
     /** The stop was reported for it by the stop request, so it reports nothing when it returns. */
     reported?: boolean
-    /** Its agent owned a background job and was released all the same (maxKeptAgents), stopping it. */
-    jobsStopped?: boolean
+    /** Its agent owned a background job and was released all the same, stopping it: what to tell the conversation. */
+    jobsStopped?: string
   }
   const runningTurns = new Map<string, TurnState>()
 
@@ -1751,7 +1751,7 @@ export function apply(ctx, config) {
         if (event?.type !== 'assistant/message') return
         const sessionId = liveSessionId
         if (activeTurns.has(sessionId)) return
-        const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
+        const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId) ?? keptAgents.get(sessionId)?.key ?? undefined
         if (key === undefined) return
         const text = (event.data?.message?.content ?? [])
           .filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
@@ -1860,7 +1860,8 @@ export function apply(ctx, config) {
   /** The conversation key of a running turn, from its origin. */
   function liveKeyOf(sessionId: string): string | undefined {
     const origin = liveOrigins.get(sessionId)
-    return origin === undefined ? undefined : keyOf(origin)
+    // A kept agent's turn (its job's notice woke it) is its conversation's, mapped yet or not (a turn past the backstop).
+    return origin === undefined ? keptAgents.get(sessionId)?.key ?? undefined : keyOf(origin)
   }
 
   /** A conversation's key, as the state and the queue name it. */
@@ -2352,7 +2353,7 @@ export function apply(ctx, config) {
         const fresh = `${sessionPrefixFor(origin)}-${randomUUID()}`
         outcome = { ...(await runRegisteredTurn({ sessionId: fresh, turnKey, turnState }, prompt, undefined, origin, history, attachmentText, sessionKey, images)), sessionLost: true }
       }
-      if (turnState.jobsStopped === true) outcome = { ...outcome, jobsStopped: true }
+      if (turnState.jobsStopped !== undefined) outcome = { ...outcome, jobsStopped: turnState.jobsStopped }
       return turnState.reported === true ? { ...outcome, reported: true } : outcome
     } finally {
       if (runningTurns.get(turnKey) === turnState) runningTurns.delete(turnKey)
@@ -2463,38 +2464,38 @@ export function apply(ctx, config) {
     const sessionCwdPath = workspace?.path ?? cwd
     const meta = { cwd: sessionCwdPath, ...(presetId !== null ? { agentPreset: presetId } : {}) }
 
+    // A turn the harness runs in the agent (a reminder's, a background job's notice's) is not this one: its answer is
+    // delivered as the agent's own, so this turn waits for it outside the conversation's running turns — for as long as
+    // a turn may run: one that never ends (a question nobody answers) times this one out, not the queue.
+    const leaveTurns = () => { activeTurns.delete(sessionId); liveOrigins.delete(sessionId) }
+    const rejoinTurns = () => { activeTurns.add(sessionId); if (origin !== null) liveOrigins.set(sessionId, origin) }
+    async function awaitOtherTurn(agent: Agent): Promise<void> {
+      let limit: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([agent.whenIdle(), stopped, new Promise<void>((resolve) => { limit = setTimeout(() => { turnState.cancel('timed out'); resolve() }, Math.max(0, deadline - Date.now())) })])
+      } finally { clearTimeout(limit) }
+    }
+    // The conversation's own agent, kept for a background job it owns (keepForJobs).
+    let reusedKept = false
+
     // A scheduled delivery owns its session while it runs, so a resume attempted
     // at that moment is refused ("already owned by an active write handle").
     // Retrying briefly is the right behaviour: the reminder's own turn is what
     // the user is waiting for, and this message is a second one arriving on top.
     async function adopt(existing) {
-      // The conversation's own agent, kept after its turn for a background job it owns (keepForJobs): it holds the
-      // session, so a resume would be refused. The turn runs in it, and the agent's preset scope goes with it. A turn
-      // the job's notice woke it for is waited for first, outside the running turns, so its answer is delivered as
-      // the agent's own; for as long as a turn may run, as for a borrowed agent.
+      // A kept agent holds the session, so a resume would be refused: the turn runs in it, with its preset scope. It
+      // stays out of the running turns until its message goes, when a turn its job's notice woke it for, running or
+      // started meanwhile, is waited for.
       const kept = existing ? keptAgents.get(existing) : undefined
       if (kept !== undefined) {
         keptAgents.delete(existing)
         clearTimeout(kept.timer)
         log(`session ${sessionId}: its agent was kept for a background job — this turn runs in it`)
-        activeTurns.delete(sessionId)
-        liveOrigins.delete(sessionId)
-        let limit: ReturnType<typeof setTimeout> | undefined
-        try {
-          await Promise.race([kept.handle.agent.whenIdle(), stopped, new Promise<void>((resolve) => { limit = setTimeout(() => { turnState.cancel('timed out'); resolve() }, Math.max(0, deadline - Date.now())) })])
-        } catch (e) {
-          await releaseHandle(kept)
-          throw e
-        } finally {
-          clearTimeout(limit)
-          activeTurns.add(sessionId)
-          if (origin !== null) liveOrigins.set(sessionId, origin)
-        }
+        leaveTurns()
+        reusedKept = true
         await Promise.resolve(scope?.[Symbol.asyncDispose]?.()).then(() => {}, () => {})
         scope = kept.scope
-        // Made on the route of the turn that made it: this turn keeps its own (a /model since), a later woken one the
-        // conversation's, as a borrowed agent does.
-        followConversationRoute(kept.handle.agent)
+        // This turn keeps its own route (a /model since); a later woken one takes the conversation's (keepForJobs).
         pinnedRoutes.set(kept.handle.agent, agentOptions)
         return kept.handle
       }
@@ -2527,22 +2528,14 @@ export function apply(ctx, config) {
               held.ctx?.systemPrompt?.section?.({ name: 'deepbot:identity', order: IDENTITY_ORDER, interpolate: false, text: identityText(sessionKey) })
             }
             log(`session ${sessionId} is held by an agent the harness keeps — this turn runs in it`)
-            // A turn the harness is running in it (a reminder's) is the harness's: its answer is delivered as the
-            // agent's own, so this turn waits for it outside the conversation's running turns — for as long as a
-            // turn may run: one that never ends (a question nobody answers) times this one out, not the queue.
-            activeTurns.delete(sessionId)
-            liveOrigins.delete(sessionId)
-            let limit: ReturnType<typeof setTimeout> | undefined
+            // A turn the harness is running in it (a reminder's) is the harness's.
+            leaveTurns()
             try {
-              await Promise.race([held.whenIdle(), stopped, new Promise<void>((resolve) => { limit = setTimeout(() => { turnState.cancel('timed out'); resolve() }, Math.max(0, deadline - Date.now())) })])
+              await awaitOtherTurn(held)
             } catch (e) {
               borrowedAgents.delete(held)
               throw e
-            } finally {
-              clearTimeout(limit)
-              activeTurns.add(sessionId)
-              if (origin !== null) liveOrigins.set(sessionId, origin)
-            }
+            } finally { rejoinTurns() }
             return { agent: held, borrowed: true }
           }
           log(`session ${sessionId} is busy (another turn owns it) — retry ${attempt}/3 in 3s`)
@@ -2653,8 +2646,7 @@ export function apply(ctx, config) {
         log(`turn in ${turnKey} was stopped before it started (${turnState.cause})`)
         return { text: '', reason: { kind: 'cancelled', cause: turnState.cause }, toolsUsed: [], sessionId }
       }
-      await (handle?.borrowed === true ? Promise.race([agent.whenIdle(), stopped]) : agent.whenIdle())
-      const firstSeq = agent.session.seq
+      if (!reusedKept) await (handle?.borrowed === true ? Promise.race([agent.whenIdle(), stopped]) : agent.whenIdle())
       const { preamble } = await contextPreamble(origin ?? null, historyText, attachmentText, sessionKey, prompt, sessionId)
       // Whose message this is, in the platform's mention form: the persona names people that way
       // (`<@U…>는 길동`), which means nothing to a model that cannot see who is speaking. A line of
@@ -2672,10 +2664,14 @@ export function apply(ctx, config) {
       const unaddressed = origin?.quiet === true ? `${NOT_ADDRESSED}\n` : ''
       const body = preamble === '' && speaker === '' && switched === '' && unaddressed === '' ? prompt : `${switched}${preamble}${unaddressed}${speaker}[user message]\n${prompt}`
       const refs = await admitImages(images)
+      // In a kept agent: the turn its job's notice woke, if one runs or started while this message was put together.
+      if (reusedKept) { try { await awaitOtherTurn(agent) } finally { rejoinTurns() } }
       if (turnState.cause !== null) {
         log(`turn in ${turnKey} was stopped before its message went (${turnState.cause})`)
         return { text: '', reason: { kind: 'cancelled', cause: turnState.cause }, toolsUsed: [], sessionId }
       }
+      // The log from here is this turn's.
+      const firstSeq = agent.session.seq
       // A borrowed agent follows the conversation's route per request; this turn keeps the route it started on.
       if (handle?.borrowed === true) pinnedRoutes.set(agent, agentOptions)
       sent = true
@@ -2819,7 +2815,7 @@ export function apply(ctx, config) {
       `It may change, in its home: SOUL.md, USER.md and MEMORY.md (who it is, who it works for, what it knows), its notes under memory/,${tenantOf(key) === null ? ' its watches,' : ''} and its skills under .dsh/skills/<name>/SKILL.md.`,
       'Only the operator can change, outside its home, where it can neither read nor write: the model and provider, the platforms and channels it answers in, the language setting, API keys and tokens, the approval rules and the sandbox. Asked to change one, it says which setting it is and that the operator changes it in the gateway profile (~/.dsh/profiles/<profile>/cordis.patch.yml), ~/.dsh/.env or the DeepSeek Harness app store (~/.dsh/.credentials.yaml), and does not try to; in the terminal, /model moves one conversation to another model the providers list.',
       // Without it, a background job ended with the turn, and "I'll tell you when it finishes" was a promise nobody kept.
-      ...(!followingJobs() ? [] : [`A command it runs in the background keeps running after its answer, for up to ${Math.round(cfg.backgroundKeepMs / 60000)} minutes: when it finishes, it is woken with a notice and its answer is posted to this conversation, so it may say it will tell the person when it finishes.`]),
+      ...(!keepsAgents() ? [] : [`A command it runs in the background keeps running after its answer, for up to ${keepMinutes()} minutes: when it finishes, it is woken with a notice and its answer is posted to this conversation, so it may say it will tell the person when it finishes.`]),
       // A write the sandbox refused was taken for a broken owner: EPERM on ~/.npm, and the person was told to sudo chown it.
       ...(sandbox === null ? [] : [`Its commands run in the ${sandbox} sandbox: ${sandbox === 'read-only' ? 'they write nowhere' : "they write only in its home, /tmp, and the directories the runner gives them for temp files and package managers' caches (npm, pnpm 11, pip, uv, go)"}. A write it refuses (EPERM, "Operation not permitted", "Read-only file system") is that sandbox, not the file's owner or mode: it says so, never tells the person to sudo, chown or chmod past it, and does the work in its home, or, for something that has to change outside it, gives the operator the command to run in their own terminal.`]),
       "Connecting a tool from another program (an MCP server: Notion, GitHub, a database) is the operator's too, one command in their own terminal: `dsh gateway mcp add <server> --env NAME -- <command> [args]` for a local server (it asks for NAME's value there, not shown), `--url <url> --bearer NAME` for a hosted one that takes a token (one that wants a browser sign-in, OAuth, cannot be connected); `dsh gateway mcp list` shows what is connected. Asked for one, it finds the server's package and the credential it needs, and gives that command filled in, the credential's value left to the operator: never asked for or pasted in this conversation. The gateway restarts; the tools then arrive as mcp__<server>__<tool>, each call asked for unless --ask names only the ones that act. A harness plugin package is `dsh plugin --profile <profile> add <package>`, its row in the profile, and `dsh gateway restart`, also the operator's.",
@@ -2961,6 +2957,11 @@ export function apply(ctx, config) {
    */
   type Kept = { handle: AgentHandle; scope: ReturnType<AgentPresetsService['acquireScope']> | null; key: string | null; timer: ReturnType<typeof setTimeout> }
   const keptAgents = new Map<string, Kept>()
+  /** When each kept agent's backgroundKeepMs ends, from its first keeping: a later turn in it does not start it again. */
+  const keptUntil = new WeakMap<object, number>()
+  const keepMinutes = () => Math.max(1, Math.ceil(cfg.backgroundKeepMs / 60000))
+  /** Jobs' labels as the conversation is told them: inert, as an approval's reason is, since a label is the model's command. */
+  const labelsOf = (jobs: Array<{ label: string }>) => jobs.map((job) => String(job.label).slice(0, 120)).join(', ').replace(/</g, '‹').replace(/>/g, '›').replace(/@(?=[A-Za-z])/g, '@\u200b')
   /** Whether the job events are followed: without them a kept agent would never be released, so none is kept. */
   let jobsUnsubscribe: (() => void) | null = null
   const jobsService = () => ctx.get('jobs') as JobsService | undefined
@@ -2970,31 +2971,57 @@ export function apply(ctx, config) {
       return (jobsService()?.list(sessionId) ?? []).filter((job) => job?.owner === sessionId && (job.status === 'running' || job.status === 'stopping'))
     } catch { return [] }
   }
-  /** Keep a turn's agent that owns a running job, under the cap, until its deadline; false when it is to be released. */
+  /** Whether agents are kept for their jobs at all: both settings above 0, and the job events followed. */
+  const keepsAgents = () => cfg.maxKeptAgents > 0 && cfg.backgroundKeepMs > 0 && followingJobs()
+  /**
+   * Keep a turn's agent that owns a running job, under the cap, until its deadline; false when it is to be released.
+   * Also one woken after the turn's last wait (its job settled as the log was flushed): kept for the turn it runs.
+   */
   function keepForJobs(sessionId: string, handle: AgentHandle, scope: Kept['scope'], key: string | null, turnState: TurnState): boolean {
-    if (!followingJobs()) return false
+    if (!keepsAgents()) return false
     const jobs = liveJobs(sessionId)
-    if (jobs.length === 0) return false
-    if (keptAgents.size >= cfg.maxKeptAgents) {
-      log(`session ${sessionId}: owns ${jobs.length} background job(s), but ${keptAgents.size} agent(s) are kept already (maxKeptAgents) — released, which stops them`)
-      turnState.jobsStopped = true
+    if (jobs.length === 0 && handle.agent.status !== 'running') return false
+    const until = keptUntil.get(handle.agent) ?? Date.now() + cfg.backgroundKeepMs
+    const full = keptAgents.size >= cfg.maxKeptAgents
+    if (full || (jobs.length > 0 && until <= Date.now())) {
+      if (jobs.length > 0) {
+        log(`session ${sessionId}: owns ${jobs.length} background job(s), but ${full ? `${keptAgents.size} agent(s) are kept already (maxKeptAgents)` : 'its backgroundKeepMs is over'} — released, which stops them`)
+        turnState.jobsStopped = full ? say.backgroundTooMany : say.backgroundStopped(labelsOf(jobs), keepMinutes())
+      }
       return false
     }
-    const timer = setTimeout(() => {
-      const left = liveJobs(sessionId)
-      const kept = keptAgents.get(sessionId)
-      if (kept === undefined) return
-      log(`session ${sessionId}: kept for backgroundKeepMs — released, which stops ${left.length} background job(s)`)
-      // Inert, as an approval's reason is: a label is the model's command.
-      const labels = left.map((job) => String(job.label).slice(0, 120)).join(', ').replace(/</g, '‹').replace(/>/g, '›').replace(/@(?=[A-Za-z])/g, '@\u200b')
-      if (left.length > 0 && kept.key !== null) {
-        transport.post(targetFromKey(kept.key), say.backgroundStopped(labels, Math.round(cfg.backgroundKeepMs / 60000)))
-          .catch((e) => log(`background job notice failed: ${String((e as Error)?.message ?? e)}`))
-      }
-      void releaseKept(sessionId)
-    }, cfg.backgroundKeepMs)
-    keptAgents.set(sessionId, { handle, scope, key, timer })
-    log(`session ${sessionId}: owns ${jobs.length} background job(s) — its agent is kept until they finish`)
+    keptUntil.set(handle.agent, until)
+    // Its woken turns take the conversation's route as it is then, not the one the agent was made on.
+    followConversationRoute(handle.agent)
+    keptAgents.set(sessionId, { handle, scope, key, timer: setTimeout(() => expireKept(sessionId), Math.max(0, until - Date.now())) })
+    log(`session ${sessionId}: owns ${jobs.length} background job(s)${jobs.length === 0 ? ', and was woken' : ''} — its agent is kept until they finish`)
+    if (jobs.length === 0) void releaseWhenDone(sessionId)
+    return true
+  }
+  /**
+   * backgroundKeepMs is over: the conversation is told which jobs are stopped, and the agent goes with them. With its jobs
+   * done and only the turn their notice woke still answering, that turn is let finish (releaseWhenDone) and nothing said.
+   */
+  function expireKept(sessionId: string): void {
+    const kept = keptAgents.get(sessionId)
+    if (kept === undefined) return
+    const left = liveJobs(sessionId)
+    if (left.length === 0) { void releaseWhenDone(sessionId); return }
+    log(`session ${sessionId}: kept for backgroundKeepMs — released, which stops ${left.length} background job(s)`)
+    if (kept.key !== null) {
+      transport.post(targetFromKey(kept.key), say.backgroundStopped(labelsOf(left), keepMinutes()))
+        .catch((e) => log(`background job notice failed: ${String((e as Error)?.message ?? e)}`))
+    }
+    void releaseKept(sessionId)
+  }
+  /** A stop said in a conversation whose agent is kept: the turn its job's notice woke, and the job, stop. */
+  async function stopKept(key: string): Promise<boolean> {
+    const found = [...keptAgents].find(([, kept]) => kept.key === key)
+    if (found === undefined) return false
+    const [sessionId, kept] = found
+    log(`session ${sessionId}: stopped in ${key} — its kept agent is released, which stops its background job(s)`)
+    try { kept.handle.agent.cancel?.('user') } catch (e) { log(`agent.cancel failed: ${String((e as Error)?.message ?? e)}`) }
+    await releaseKept(sessionId)
     return true
   }
   async function releaseHandle(kept: Kept): Promise<void> {
@@ -3017,7 +3044,9 @@ export function apply(ctx, config) {
     await Promise.resolve()
     const kept = keptAgents.get(sessionId)
     if (kept === undefined || liveJobs(sessionId).length > 0) return
-    try { await kept.handle.agent.whenIdle() } catch { /* released all the same */ }
+    // For as long as a turn may run: one that never ends (a question nobody answers) is released all the same.
+    let limit: ReturnType<typeof setTimeout> | undefined
+    try { await Promise.race([kept.handle.agent.whenIdle(), new Promise<void>((resolve) => { limit = setTimeout(resolve, cfg.runTimeoutMs) })]) } catch { /* released all the same */ } finally { clearTimeout(limit) }
     // A turn of the conversation took it meanwhile, or the woken turn started another job.
     if (keptAgents.get(sessionId) !== kept || liveJobs(sessionId).length > 0) return
     log(`session ${sessionId}: its background jobs finished — its agent is released`)
@@ -3415,7 +3444,7 @@ export function apply(ctx, config) {
         // The terminal marks it itself, as it marks a running turn stopped.
         if (channel !== LOCAL_CHANNEL) await replyInPlaceOf({ channel, threadTs }, say.stoppedStarting, progress.take(key)?.ts ?? null)
       } else if (stopped === 'none') {
-        await transport.post({ channel, threadTs }, say.nothingRunning)
+        await transport.post({ channel, threadTs }, await stopKept(key) ? say.stopped : say.nothingRunning)
       }
       return
     }
@@ -3552,6 +3581,8 @@ export function apply(ctx, config) {
           const out = await replyInPlaceOf(replyTarget, r.text, placeholderTs, true)
           if (out && !quiet) typical.record(ran)
           ended(out ? 'done' : 'failed')
+          // After the answer, which may have promised to tell them when the job finishes.
+          if (out && r.jobsStopped !== undefined) await transport.post(replyTarget, r.jobsStopped).catch((e) => log(`background job notice failed: ${String((e as Error)?.message ?? e)}`))
           await deliverDocuments(key, replyTarget, r.text, started)
             .catch((e) => log(`documents: delivery failed: ${String((e as Error)?.message ?? e)}`))
         } else if (r.reason?.kind === 'cancelled') {
@@ -3574,8 +3605,6 @@ export function apply(ctx, config) {
           // In the voice the bot speaks, and with no path on the host: the log is the operator's to read.
           await replyInPlaceOf(replyTarget, say.unfinished(r.reason?.kind ?? say.unknownReason), placeholderTs)
         }
-        // After the answer, which may have promised to tell them when the job finishes.
-        if (r.jobsStopped === true) await transport.post(replyTarget, say.backgroundTooMany).catch((e) => log(`background job notice failed: ${String((e as Error)?.message ?? e)}`))
       } catch (e) {
         log('turn failed', String(e?.stack ?? e))
         // The backstop gave up on a turn that is still running: stop it, or a stop request would find
