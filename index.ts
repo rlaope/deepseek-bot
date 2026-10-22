@@ -3043,12 +3043,16 @@ export function apply(ctx, config) {
   async function releaseWhenDone(sessionId: string): Promise<void> {
     await Promise.resolve()
     const kept = keptAgents.get(sessionId)
-    if (kept === undefined || liveJobs(sessionId).length > 0) return
+    if (kept === undefined) return
+    // A job still running keeps it, until its deadline: past it, the deadline's timer is spent (it handed over here).
+    const keptFor = () => { if (Date.now() >= (keptUntil.get(kept.handle.agent) ?? Infinity)) expireKept(sessionId) }
+    if (liveJobs(sessionId).length > 0) { keptFor(); return }
     // For as long as a turn may run: one that never ends (a question nobody answers) is released all the same.
     let limit: ReturnType<typeof setTimeout> | undefined
     try { await Promise.race([kept.handle.agent.whenIdle(), new Promise<void>((resolve) => { limit = setTimeout(resolve, cfg.runTimeoutMs) })]) } catch { /* released all the same */ } finally { clearTimeout(limit) }
     // A turn of the conversation took it meanwhile, or the woken turn started another job.
-    if (keptAgents.get(sessionId) !== kept || liveJobs(sessionId).length > 0) return
+    if (keptAgents.get(sessionId) !== kept) return
+    if (liveJobs(sessionId).length > 0) { keptFor(); return }
     log(`session ${sessionId}: its background jobs finished — its agent is released`)
     await releaseKept(sessionId)
   }

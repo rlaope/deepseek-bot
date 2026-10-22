@@ -43,8 +43,8 @@ interface BootOptions {
   home?: string | null
   /** `job`: the agent's first turn starts a background job with that label, still running when the turn ends. `woken`:
    * what the agent answers when the job's notice wakes it, a turn of `wakeMs`. `turnMs`: each turn takes that long
-   * after its message, and a cancel meanwhile ends it cancelled. */
-  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number; turnMs?: number } | null
+   * after its message, and a cancel meanwhile ends it cancelled. `wokenJob`: the woken turn starts another job. */
+  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number; turnMs?: number; wokenJob?: string } | null
   /** The harness's model-call service (`llm`), when a test gives one: its `stream`. */
   llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
   /** Sessions whose log is gone: resuming one fails as the harness fails it. */
@@ -117,6 +117,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
                   woken = sleep(Number(answer?.wakeMs ?? 0)).then(() => {
                     woken = null
                     if (cancelled !== null) { events.push({ type: 'turn/start' }, { type: 'turn/end', data: { reason: { kind: 'cancelled' } } }); return }
+                    if (typeof answer?.wokenJob === 'string') jobRows.push({ id: `bash-${jobRows.length + 1}`, kind: 'bash', label: answer.wokenJob, owner, status: 'running' })
                     const said = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer?.woken ?? '' }] } } }
                     events.push({ type: 'turn/start' }, said, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
                     for (const handler of listeners['session/event'] ?? []) handler({ header: { id: owner } }, said)
@@ -2423,6 +2424,16 @@ for (const remove of [false, true]) {
   const eTexts = e.transport.posted.map((p) => p.text)
   check('jobs: the deadline lets a woken turn with no job left finish, without a notice', eTexts.includes('테스트 다 통과했어.') && !eTexts.some((x) => x.includes('멈췄어')) && e.disposed.length === 1, JSON.stringify({ eTexts, disposed: e.disposed }))
   e.done()
+  // That woken turn starts another job after the deadline: the deadline still ends it, the job and the agent going.
+  const e2 = kept({ backgroundKeepMs: 400 }, { wakeMs: 300, wokenJob: 'npm run e2e' })
+  await sleep(60)
+  e2.transport.deliver(e2.transport.message(at('t1', '1.1')))
+  await sleep(200)
+  e2.settleJob(e2.jobRows[0].id)
+  await sleep(600)
+  const e2Texts = e2.transport.posted.map((p) => p.text)
+  check('jobs: a job a woken turn starts after the deadline is stopped, and the agent released', e2.disposed.length === 1 && e2Texts.some((x) => x.includes('npm run e2e') && x.includes('멈췄어')), JSON.stringify({ e2Texts, disposed: e2.disposed, jobs: e2.jobRows }))
+  e2.done()
   // A woken turn that never ends (a question nobody answers) does not hold the agent past a turn's own time.
   const h = kept({ runTimeoutMs: 300 }, { wakeMs: 5000 })
   await sleep(60)
@@ -2496,6 +2507,17 @@ for (const remove of [false, true]) {
   await sleep(400)
   check('jobs: and its woken answer is posted there', u.transport.posted.some((p) => p.text === '테스트 다 통과했어.' && p.target.threadTs === 't1') && u.disposed.length === 1, JSON.stringify({ posted: u.transport.posted.map((p) => p.text), disposed: u.disposed }))
   u.done()
+  // With tenant isolation, that turn reads within its tenant's directory, not the shared roots another tenant's is under.
+  const tenantRoot = mkdtempSync(join(tmpdir(), 'deepbot-jobs-tenants-'))
+  const ti = kept({ runTimeoutMs: 200, tenantIsolation: true, tenantChannels: { C_ALLOWED: 'acme' }, tenantRoot }, { turnMs: 600 })
+  await sleep(60)
+  ti.transport.deliver(ti.transport.message(at('t1', '1.1')))
+  await sleep(900)
+  const tenantOrphan = ti.jobRows[0]?.owner
+  const crossed = ti.gate({ name: 'read', arguments: { file_path: join(tenantRoot, 'globex', 'notes.md') }, agent: { session: { header: { id: tenantOrphan } } } })
+  check('jobs: a kept, unmapped tenant session cannot read another tenant\'s directory', tenantOrphan !== undefined && ti.read().sessions[key] === undefined && ti.disposed.length === 0 && crossed?.kind === 'deny', JSON.stringify({ tenantOrphan, crossed, disposed: ti.disposed }))
+  ti.done()
+  rmSync(tenantRoot, { recursive: true, force: true })
 
   // A stop the person asks for, while the turn runs, stops its job too: the agent is not kept.
   const st = kept({}, { delayMs: 400 })

@@ -69,6 +69,12 @@ is built before the thing it stands on. The detailed history of each milestone i
   - a woken turn that asks a question nobody answers holds the agent until `runTimeoutMs`;
   - a reload of the jobs service drops the adapter's subscription without a word, and kept agents are then
     released only by their deadline;
+  - at the cap, an agent woken at the very end of its turn (running, its job done) is disposed without a word,
+    and the turn it was woken for with it;
+  - a woken answer that arrives before the turn's own end (its job settled as its log was flushed) is not
+    delivered: the turn is still among the running turns then;
+  - the terminal's busy count undercounts while a kept agent's next turn waits for a woken turn before its
+    message goes (the turn is out of the running turns then);
   - a continuable subagent can be messaged only while its parent's turn runs; whether a kept parent changes
     that is not checked.
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim
