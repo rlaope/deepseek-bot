@@ -358,11 +358,14 @@ writable; read-only denies all writes) and adds read denials for the other insta
 retired bot data, and for the user's credentials: `~/.ssh`, `~/.aws`, `~/.gnupg`, the keychain files,
 `~/.config/gh`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, `~/.netrc` and `~/.git-credentials` (the
 ssh-agent socket alone was refused before, and the key files were one `cat` away), and the token files of
-package registries, containers and infrastructure tools: `~/.npmrc`, `~/.yarnrc.yml`, `~/.pypirc`,
-`~/.docker/config.json`, `~/.cargo/credentials(.toml)`, `~/.gem/credentials`, `~/.vault-token`,
-`~/.terraform.d/credentials.tfrc.json`, `~/.oci`, `~/.config/glab-cli`, `~/.config/op` and Hugging Face's token
-(a command read `~/.npmrc` in a QA run, and its token went to the model). npm and cargo run without theirs, as
-without the file: a private registry's login is the agent's own to set up, in its home. A tool that needs
+package registries, containers, databases, infrastructure tools and other agents' CLIs: `~/.npmrc`, `~/.pypirc`,
+`~/.docker/config.json`, `~/.cargo/credentials.toml`, `~/.pgpass`, `~/.vault-token`, `~/.codex/auth.json`,
+`~/.claude/.credentials.json` and the others in the runner's `credential_files` (a command read `~/.npmrc` in a QA
+run, and its token went to the model). The rules are written whether or not a file is there yet, so one made by a
+login while a command runs is refused too. npm and cargo run without theirs, as without the file, and Hugging
+Face's library, which raises on a token it may not read, is pointed at a name that is never there; Vault and
+Terraform were not run with theirs refused. A private registry's login is the agent's own to set up, in its home.
+A copy beside one (`~/.npmrc.bak`) is not refused. A tool that needs
 one of those fails: the agent's credentials are its own, in its home. Keychain items in an unlocked
 login keychain still reach a command through `security` and git's osxkeychain helper, which talk to the
 system's keychain service rather than read the files. Nor is the user's desktop the agent's: a command

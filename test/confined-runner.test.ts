@@ -9,7 +9,7 @@
  *
  * Run: node test/confined-runner.test.ts
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 
@@ -21,7 +21,7 @@ if (process.platform !== 'darwin') {
   process.exit(0)
 }
 import { fileURLToPath } from 'node:url'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -566,10 +566,33 @@ for (const resolved of [false, true]) {
   const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), 'user-home-')))
   const agentHome = join(fakeHome, 'dsh-agent')
   mkdirSync(agentHome)
-  // And the package registries', containers', infrastructure tools' and others' tokens: in a real-model QA a command read
-  // ~/.npmrc, and its _authToken went to the model. npm and cargo were run with theirs refused, and work without them.
-  const places = ['.ssh/id_ed25519', '.aws/credentials', '.gnupg/private-keys-v1.d/k.key', 'Library/Keychains/login.keychain-db', '.config/gh/hosts.yml', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json', '.kube/config', '.netrc', '.git-credentials',
-    '.npmrc', '.yarnrc.yml', '.pypirc', '.docker/config.json', '.cargo/credentials.toml', '.cargo/credentials', '.gem/credentials', '.vault-token', '.terraform.d/credentials.tfrc.json', '.oci/oci_api_key.pem', '.config/glab-cli/config.yml', '.config/op/config', '.cache/huggingface/token', '.huggingface/token']
+  // And the package registries', containers', databases', infrastructure tools' and other agents' CLIs' tokens: in a
+  // real-model QA a command read ~/.npmrc, and its _authToken went to the model. Each entry of the runner's list, with
+  // the file planted for it (inside it, for a directory); the list itself must be this one, so nothing is left out.
+  const planted = {
+    '.ssh': '.ssh/id_ed25519', '.aws': '.aws/credentials', '.gnupg': '.gnupg/private-keys-v1.d/k.key', 'Library/Keychains': 'Library/Keychains/login.keychain-db',
+    '.config/gh': '.config/gh/hosts.yml', '.config/gcloud': '.config/gcloud/credentials.db', '.azure': '.azure/msal_token_cache.json', '.kube': '.kube/config',
+    '.netrc': '.netrc', '.git-credentials': '.git-credentials', '.npmrc': '.npmrc', '.yarnrc.yml': '.yarnrc.yml', '.pypirc': '.pypirc',
+    '.docker/config.json': '.docker/config.json', '.cargo/credentials.toml': '.cargo/credentials.toml', '.cargo/credentials': '.cargo/credentials',
+    '.gem/credentials': '.gem/credentials', '.bundle/config': '.bundle/config', '.config/composer/auth.json': '.config/composer/auth.json',
+    '.composer/auth.json': '.composer/auth.json', '.m2/settings.xml': '.m2/settings.xml', '.m2/settings-security.xml': '.m2/settings-security.xml',
+    '.gradle/gradle.properties': '.gradle/gradle.properties', '.pgpass': '.pgpass', '.my.cnf': '.my.cnf', '.s3cfg': '.s3cfg', '.vault-token': '.vault-token',
+    '.terraformrc': '.terraformrc', '.terraform.d/credentials.tfrc.json': '.terraform.d/credentials.tfrc.json', '.pulumi/credentials.json': '.pulumi/credentials.json',
+    '.oci': '.oci/oci_api_key.pem', '.fly/config.yml': '.fly/config.yml', '.config/doctl/config.yaml': '.config/doctl/config.yaml',
+    '.config/glab-cli': '.config/glab-cli/config.yml', '.config/op': '.config/op/config', '.config/rclone/rclone.conf': '.config/rclone/rclone.conf',
+    '.config/sops/age/keys.txt': '.config/sops/age/keys.txt', '.config/configstore/firebase-tools.json': '.config/configstore/firebase-tools.json',
+    'Library/Application Support/com.vercel.cli/auth.json': 'Library/Application Support/com.vercel.cli/auth.json',
+    'Library/Preferences/.wrangler/config/default.toml': 'Library/Preferences/.wrangler/config/default.toml',
+    '.cache/huggingface/token': '.cache/huggingface/token', '.cache/huggingface/stored_tokens': '.cache/huggingface/stored_tokens', '.huggingface/token': '.huggingface/token',
+    '.codex/auth.json': '.codex/auth.json', '.claude/.credentials.json': '.claude/.credentials.json', '.local/share/opencode/auth.json': '.local/share/opencode/auth.json',
+    '.gemini/oauth_creds.json': '.gemini/oauth_creds.json', '.config/github-copilot': '.config/github-copilot/hosts.json',
+  }
+  const runnerText = readFileSync(RUNNER, 'utf8')
+  const listed = (runnerText.match(/^credential_files=\(\n([\s\S]*?)\n\)/m)?.[1] ?? '').match(/"[^"]+"|\S+/g)?.map((w) => w.replace(/^"|"$/g, '')) ?? []
+  const unplanted = listed.filter((rel) => !(rel in planted))
+  const unlisted = Object.keys(planted).filter((rel) => !listed.includes(rel))
+  check('credentials: the runner\'s list is the one checked here', listed.length > 0 && unplanted.length === 0 && unlisted.length === 0, `not checked: ${unplanted.join(' ')}; not in the runner: ${unlisted.join(' ')}`)
+  const places = Object.values(planted)
   for (const place of places) {
     mkdirSync(dirname(join(fakeHome, place)), { recursive: true })
     writeFileSync(join(fakeHome, place), 'secret-9f1')
@@ -583,6 +606,26 @@ for (const resolved of [false, true]) {
   }
   const ordinary = spawnSync(RUNNER, [...policy, '--', '/bin/cat', join(fakeHome, 'notes.txt')], { encoding: 'utf8', env, timeout: 15_000 })
   check('credentials: an ordinary file in the user\'s home is still read', ordinary.stdout.includes('ordinary-3c7'), `${ordinary.status} ${ordinary.stderr.trim().slice(0, 100)}`)
+  // A credential made after a command started (npm login, docker login while it runs) is refused too: the rules used
+  // to be written only for files that were there.
+  rmSync(join(fakeHome, '.npmrc'), { force: true })
+  const late = spawn(RUNNER, [...policy, '--', '/bin/sh', '-c', `sleep 1; cat '${join(fakeHome, '.npmrc')}'`], { env })
+  let lateOut = ''
+  late.stdout.on('data', (d) => { lateOut += d })
+  await new Promise((r) => setTimeout(r, 300))
+  writeFileSync(join(fakeHome, '.npmrc'), 'secret-9f1')
+  const lateStatus = await new Promise((r) => late.on('close', r))
+  check('credentials: one made after the command started is not read either', !lateOut.includes('secret-9f1'), `exit ${lateStatus}`)
+  // Hugging Face's library raises on a token file it may not read, rather than going on without it: every hub call in a
+  // read-only command failed for anyone logged in. It is pointed at a name that is never there.
+  // Where it is installed, found with the real home: a user install is under it, and the fake home has none.
+  const hfPython = ['/opt/homebrew/bin/python3', '/usr/local/bin/python3'].find((p) => existsSync(p) && spawnSync(p, ['-c', 'import huggingface_hub'], { stdio: 'ignore' }).status === 0)
+  const hfSite = hfPython === undefined ? '' : spawnSync(hfPython, ['-c', 'import huggingface_hub, os; print(os.path.dirname(os.path.dirname(huggingface_hub.__file__)))'], { encoding: 'utf8' }).stdout.trim()
+  if (hfPython === undefined) console.log('  TODO  huggingface_hub is not installed here: a read-only command\'s hub call is unchecked')
+  else {
+    const hf = spawnSync(RUNNER, [...READ_ONLY, '--', hfPython, '-c', 'from huggingface_hub import get_token; print("token", get_token())'], { encoding: 'utf8', env: { ...env, PYTHONPATH: hfSite }, timeout: 30_000 })
+    check('credentials: a read-only command\'s Hugging Face call goes on without the token, not with an error', hf.status === 0 && hf.stdout.includes('token None'), `${hf.status} ${(hf.stdout + hf.stderr).trim().slice(-160)}`)
+  }
   rmSync(fakeHome, { recursive: true, force: true })
 }
 

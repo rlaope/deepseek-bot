@@ -733,10 +733,15 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   check('readOutside: so is a search outside', t.gate(exec('grep', { pattern: 'x', path: '/etc' }))?.kind === 'ask')
   check('readOutside: asking is logged', t.logs.some((l) => /asking for approval: read outside the workspace/.test(l)), t.logs.filter((l) => /read outside/.test(l)).join(' | '))
   check('readOutside: a read inside is not asked about', t.gate(exec('read', { file_path: join(home, 'notes.md') })) === 'delegated')
+  // The runner's list, as it is written there (service/confined-runner.sh, credential_files).
+  const runnerCredentials = (readFileSync(new URL('../service/confined-runner.sh', import.meta.url), 'utf8').match(/^credential_files=\(\n([\s\S]*?)\n\)/m)?.[1] ?? '')
+    .match(/"[^"]+"|\S+/g)?.map((w) => w.replace(/^"|"$/g, '')) ?? []
+  check('readOutside: the runner\'s credential list is read', runnerCredentials.length > 40 && runnerCredentials.includes('.npmrc') && runnerCredentials.includes('Library/Application Support/com.vercel.cli/auth.json'), String(runnerCredentials.length))
   // The harness home by its usual name: the suites' own (DSH_HOME) is under temp, which is readable anyway.
   for (const secret of [join(homedir(), '.ssh', 'id_ed25519'), join(homedir(), '.aws', 'credentials'), join(homedir(), '.gnupg', 'secring.gpg'), join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
     join(homedir(), '.config', 'gh', 'hosts.yml'), join(homedir(), '.config', 'gcloud', 'credentials.db'), join(homedir(), '.azure', 'accessTokens.json'), join(homedir(), '.kube', 'config'), join(homedir(), '.netrc'), join(homedir(), '.git-credentials'),
-    ...['.npmrc', '.yarnrc.yml', '.pypirc', '.docker/config.json', '.cargo/credentials.toml', '.cargo/credentials', '.gem/credentials', '.vault-token', '.terraform.d/credentials.tfrc.json', '.oci/config', '.config/glab-cli/config.yml', '.config/op/config', '.cache/huggingface/token', '.huggingface/token'].map((p) => join(homedir(), p)),
+    // Every entry of the sandbox runner's credential list: the file tools refuse what the agent's commands are refused.
+    ...runnerCredentials.map((rel) => join(homedir(), ...rel.split('/'))),
     join(homedir(), '.dsh', '.env'), join(homedir(), '.dsh', 'profiles', 'agent', 'cordis.patch.yml'), join(homedir(), 'project', '.env'), join(homedir(), 'project', '.ENV.local'), join(retired, 'UTC')]) {
     const refused = t.gate(exec('read', { file_path: secret }))
     check(`readOutside: never asked about ${secret.replace(homedir(), '~')}`, refused?.kind === 'deny', JSON.stringify(refused))

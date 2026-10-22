@@ -113,6 +113,23 @@ function allowlistHost(entry: unknown): string | null {
 
 // Config is validated by hand instead of with a schemastery schema, to keep the
 // dependency surface at zero.
+/**
+ * The user's credential files and directories, under the home: refused to the file tools here and to the agent's
+ * commands by the sandbox runner, whose own list (credential_files) is checked against this one by the core suite.
+ */
+const CREDENTIAL_FILES = [
+  '.ssh', '.aws', '.gnupg', 'Library/Keychains', '.config/gh', '.config/gcloud', '.azure', '.kube', '.netrc', '.git-credentials',
+  '.npmrc', '.yarnrc.yml', '.pypirc', '.docker/config.json', '.cargo/credentials.toml', '.cargo/credentials', '.gem/credentials',
+  '.bundle/config', '.config/composer/auth.json', '.composer/auth.json', '.m2/settings.xml', '.m2/settings-security.xml',
+  '.gradle/gradle.properties', '.pgpass', '.my.cnf', '.s3cfg', '.vault-token', '.terraformrc', '.terraform.d/credentials.tfrc.json',
+  '.pulumi/credentials.json', '.oci', '.fly/config.yml', '.config/doctl/config.yaml', '.config/glab-cli', '.config/op',
+  '.config/rclone/rclone.conf', '.config/sops/age/keys.txt', '.config/configstore/firebase-tools.json',
+  'Library/Application Support/com.vercel.cli/auth.json', 'Library/Preferences/.wrangler/config/default.toml',
+  '.cache/huggingface/token', '.cache/huggingface/stored_tokens', '.huggingface/token',
+  '.codex/auth.json', '.claude/.credentials.json', '.local/share/opencode/auth.json', '.gemini/oauth_creds.json',
+  '.config/github-copilot',
+]
+
 const DEFAULTS = {
   // Which transport to use. Slack is the one that ships; the factory seam exists so
   // the core can be driven by a fake transport in tests — the core is the part with
@@ -2173,12 +2190,10 @@ export function apply(ctx, config) {
     const named = [resolve(path)]
     try { named.push(realpathSync(path)) } catch { /* not there: as named */ }
     const home = homedir()
-    // The sandbox runner refuses the same to the agent's commands.
-    const places = [process.env.DSH_HOME || join(home, '.dsh'), join(home, '.dsh'), join(home, '.ssh'), join(home, '.aws'), join(home, '.gnupg'),
-      join(home, 'Library', 'Keychains'), join(home, '.config', 'gh'), join(home, '.config', 'gcloud'), join(home, '.azure'), join(home, '.kube'),
-      join(home, '.netrc'), join(home, '.git-credentials'),
-      ...['.npmrc', '.yarnrc.yml', '.pypirc', join('.docker', 'config.json'), join('.cargo', 'credentials.toml'), join('.cargo', 'credentials'), join('.gem', 'credentials'), '.vault-token',
-        join('.terraform.d', 'credentials.tfrc.json'), '.oci', join('.config', 'glab-cli'), join('.config', 'op'), join('.cache', 'huggingface', 'token'), join('.huggingface', 'token')].map((p) => join(home, p)),
+    // The sandbox runner refuses the same to the agent's commands (its credential_files; the core suite checks the two
+    // lists agree).
+    const places = [process.env.DSH_HOME || join(home, '.dsh'), join(home, '.dsh'),
+      ...CREDENTIAL_FILES.map((p) => join(home, ...p.split('/'))),
       ...String(process.env.DEEPBOT_DENY_READ ?? '').split(':').filter((p) => p !== '')]
     const bases = places.flatMap((place) => { const all = [resolve(place)]; try { all.push(realpathSync(place)) } catch { /* not there */ } return all }).map(fold)
     // In such a place, or holding one: a search of a directory above ~/.config/gh reads its token (found by review).

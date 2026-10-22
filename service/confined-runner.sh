@@ -301,18 +301,20 @@ profile() {
     fi
   done
   # The user's credentials, which are not the agent's: SSH keys (the agent socket alone was refused, and the key files
-  # were one cat away), the cloud CLIs' and gh's tokens, the keychains, netrc and git's stored credentials. A tool that
-  # needs one fails; the agent gets a token of its own, in its home, if it needs one. The file tools are held to the
-  # same list (credentialPath in index.ts). And the package registries' (npm, yarn, PyPI, cargo, gems), docker's,
-  # Vault's, Terraform's, OCI's, GitLab's, 1Password's and Hugging Face's: a command read ~/.npmrc in a real-model QA,
-  # and its token went to the model. npm and cargo run without theirs, as without the file.
-  for denied in "$HOME/.ssh" "$HOME/.aws" "$HOME/.gnupg" "$HOME/Library/Keychains" "$HOME/.config/gh" "$HOME/.config/gcloud" "$HOME/.azure" "$HOME/.kube" "$HOME/.netrc" "$HOME/.git-credentials" \
-    "$HOME/.npmrc" "$HOME/.yarnrc.yml" "$HOME/.pypirc" "$HOME/.docker/config.json" "$HOME/.cargo/credentials.toml" "$HOME/.cargo/credentials" "$HOME/.gem/credentials" \
-    "$HOME/.vault-token" "$HOME/.terraform.d/credentials.tfrc.json" "$HOME/.oci" "$HOME/.config/glab-cli" "$HOME/.config/op" "$HOME/.cache/huggingface/token" "$HOME/.huggingface/token"; do
-    [ -e "$denied" ] || [ -L "$denied" ] || continue
-    printf '(deny file-read* (subpath %s))\n' "$(sbpl "$denied")"
-    resolved="$(/bin/realpath "$denied" 2>/dev/null || true)"
-    if [ -n "$resolved" ] && [ "$resolved" != "$denied" ]; then printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"; fi
+  # were one cat away), the cloud CLIs' and gh's tokens, the keychains, netrc and git's stored credentials, and the
+  # token files of package registries, containers, databases, infrastructure tools and other agents' CLIs (a command
+  # read ~/.npmrc in a real-model QA, and its token went to the model). A tool that needs one fails, or goes on
+  # without it as npm and cargo do; the agent gets a token of its own, in its home, if it needs one. The file tools
+  # are held to the same list (credentialPath in index.ts, checked against this one by the core suite). Emitted
+  # whether or not the file is there yet, by HOME's name and its real one: a file made after a command starts (npm
+  # login, docker login) was readable to it. A link that is there is denied where it points, too.
+  home_real="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+  for rel in "${credential_files[@]}"; do
+    for denied in "$HOME/$rel" ${home_real:+"$home_real/$rel"}; do
+      printf '(deny file-read* (subpath %s))\n' "$(sbpl "$denied")"
+    done
+    resolved="$(/bin/realpath "$HOME/$rel" 2>/dev/null || true)"
+    if [ -n "$resolved" ] && [ "$resolved" != "$HOME/$rel" ]; then printf '(deny file-read* (subpath %s))\n' "$(sbpl "$resolved")"; fi
   done
   # Other workspaces' temp directories: a tenant's temp files are its own, as its directory is. Its own stays readable.
   if [ -n "$user_temp" ]; then
@@ -357,6 +359,20 @@ profile() {
     if [ -n "$net_port" ]; then printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$net_port"; fi
   fi
 }
+
+# The user's credential files and directories, under $HOME (see the read denials in profile()).
+credential_files=(
+  .ssh .aws .gnupg Library/Keychains .config/gh .config/gcloud .azure .kube .netrc .git-credentials
+  .npmrc .yarnrc.yml .pypirc .docker/config.json .cargo/credentials.toml .cargo/credentials .gem/credentials
+  .bundle/config .config/composer/auth.json .composer/auth.json .m2/settings.xml .m2/settings-security.xml
+  .gradle/gradle.properties .pgpass .my.cnf .s3cfg .vault-token .terraformrc .terraform.d/credentials.tfrc.json
+  .pulumi/credentials.json .oci .fly/config.yml .config/doctl/config.yaml .config/glab-cli .config/op
+  .config/rclone/rclone.conf .config/sops/age/keys.txt .config/configstore/firebase-tools.json
+  "Library/Application Support/com.vercel.cli/auth.json" Library/Preferences/.wrangler/config/default.toml
+  .cache/huggingface/token .cache/huggingface/stored_tokens .huggingface/token
+  .codex/auth.json .claude/.credentials.json .local/share/opencode/auth.json .gemini/oauth_creds.json
+  .config/github-copilot
+)
 
 sbpl() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
@@ -414,6 +430,10 @@ if [ -n "$cmd_cache" ]; then
     cmd_cache=""
   fi
 fi
+# Hugging Face's library raises on a token file it may not read (the user's is refused above) instead of going on
+# without it, so every hub call failed in a read-only command. With the caches redirected it looks in the
+# workspace's own; without, it is pointed at a name that is never there, and goes on anonymous.
+if [ -z "$cmd_cache" ]; then export HF_TOKEN_PATH=/var/empty/deepbot-no-token; fi
 # Pointed at the proxy, in every spelling the common tools read; node reads them only when told to. Nothing is exempt
 # (no NO_PROXY): a request for this machine goes through the proxy too, which decides by its mode. Without a port,
 # whatever proxy was set is dropped: there is none to reach. DEEPBOT_COMMAND_PROXY names it to the browse tool, and

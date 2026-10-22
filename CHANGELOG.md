@@ -10,11 +10,15 @@ the caveat about version numbers is at the bottom.
 - **A command read `~/.npmrc`, and its npm token went to the model.** The sandbox refused `~/.ssh`, the cloud
   CLIs' and gh's tokens, netrc and git's credentials, but not the package registries' and other tools' token files.
   In a real-model QA the agent was asked to edit `~/.npmrc`; the write was refused, but it read the file first and
-  said it had seen an `_authToken`. Commands and the file tools now refuse `~/.npmrc`, `~/.yarnrc.yml`,
-  `~/.pypirc`, `~/.docker/config.json`, `~/.cargo/credentials(.toml)`, `~/.gem/credentials`, `~/.vault-token`,
-  `~/.terraform.d/credentials.tfrc.json`, `~/.oci`, `~/.config/glab-cli`, `~/.config/op` and Hugging Face's token.
-  npm and cargo were run with theirs refused and work as without the file; a private registry's login is the
-  agent's to set up in its home. Checked in the runner and core suites, 14 checks each, red before.
+  said it had seen an `_authToken`. Commands and the file tools now refuse the token files of package registries,
+  containers, databases, infrastructure tools and other agents' CLIs (`~/.npmrc`, `~/.pypirc`, `~/.docker/config.json`,
+  `~/.cargo/credentials.toml`, `~/.pgpass`, `~/.vault-token`, Hugging Face's `token` and `stored_tokens`,
+  `~/.codex/auth.json`, `~/.claude/.credentials.json` and more: the runner's `credential_files`, which the file tools'
+  list is checked against). The rules are written whether or not a file exists yet: one a login made while a command
+  ran was readable to it. npm and cargo were run with theirs refused and work as without the file; Hugging Face's
+  library raised on its unreadable token in read-only commands, and is pointed at a name that is never there. A
+  private registry's login is the agent's to set up in its home. Checked in the runner and core suites (every entry,
+  the late file and Hugging Face each red before); found by a QA run and its security review.
 
 - **LaunchServices was open to commands unless the network was bounded.** With `commandNetwork: open`, the
   default, a program the agent compiled could ask it to start an app outside the sandbox, and `lsappinfo` showed
