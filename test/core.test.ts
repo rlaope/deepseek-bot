@@ -735,7 +735,9 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   check('readOutside: a read inside is not asked about', t.gate(exec('read', { file_path: join(home, 'notes.md') })) === 'delegated')
   // The harness home by its usual name: the suites' own (DSH_HOME) is under temp, which is readable anyway.
   for (const secret of [join(homedir(), '.ssh', 'id_ed25519'), join(homedir(), '.aws', 'credentials'), join(homedir(), '.gnupg', 'secring.gpg'), join(homedir(), 'Library', 'Keychains', 'login.keychain-db'),
-    join(homedir(), '.config', 'gh', 'hosts.yml'), join(homedir(), '.config', 'gcloud', 'credentials.db'), join(homedir(), '.azure', 'accessTokens.json'), join(homedir(), '.kube', 'config'), join(homedir(), '.netrc'), join(homedir(), '.git-credentials'), join(homedir(), '.dsh', '.env'), join(homedir(), '.dsh', 'profiles', 'agent', 'cordis.patch.yml'), join(homedir(), 'project', '.env'), join(homedir(), 'project', '.ENV.local'), join(retired, 'UTC')]) {
+    join(homedir(), '.config', 'gh', 'hosts.yml'), join(homedir(), '.config', 'gcloud', 'credentials.db'), join(homedir(), '.azure', 'accessTokens.json'), join(homedir(), '.kube', 'config'), join(homedir(), '.netrc'), join(homedir(), '.git-credentials'),
+    ...['.npmrc', '.yarnrc.yml', '.pypirc', '.docker/config.json', '.cargo/credentials.toml', '.cargo/credentials', '.gem/credentials', '.vault-token', '.terraform.d/credentials.tfrc.json', '.oci/config', '.config/glab-cli/config.yml', '.config/op/config', '.cache/huggingface/token', '.huggingface/token'].map((p) => join(homedir(), p)),
+    join(homedir(), '.dsh', '.env'), join(homedir(), '.dsh', 'profiles', 'agent', 'cordis.patch.yml'), join(homedir(), 'project', '.env'), join(homedir(), 'project', '.ENV.local'), join(retired, 'UTC')]) {
     const refused = t.gate(exec('read', { file_path: secret }))
     check(`readOutside: never asked about ${secret.replace(homedir(), '~')}`, refused?.kind === 'deny', JSON.stringify(refused))
   }

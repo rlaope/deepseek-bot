@@ -566,7 +566,10 @@ for (const resolved of [false, true]) {
   const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), 'user-home-')))
   const agentHome = join(fakeHome, 'dsh-agent')
   mkdirSync(agentHome)
-  const places = ['.ssh/id_ed25519', '.aws/credentials', '.gnupg/private-keys-v1.d/k.key', 'Library/Keychains/login.keychain-db', '.config/gh/hosts.yml', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json', '.kube/config', '.netrc', '.git-credentials']
+  // And the package registries', containers', infrastructure tools' and others' tokens: in a real-model QA a command read
+  // ~/.npmrc, and its _authToken went to the model. npm and cargo were run with theirs refused, and work without them.
+  const places = ['.ssh/id_ed25519', '.aws/credentials', '.gnupg/private-keys-v1.d/k.key', 'Library/Keychains/login.keychain-db', '.config/gh/hosts.yml', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json', '.kube/config', '.netrc', '.git-credentials',
+    '.npmrc', '.yarnrc.yml', '.pypirc', '.docker/config.json', '.cargo/credentials.toml', '.cargo/credentials', '.gem/credentials', '.vault-token', '.terraform.d/credentials.tfrc.json', '.oci/oci_api_key.pem', '.config/glab-cli/config.yml', '.config/op/config', '.cache/huggingface/token', '.huggingface/token']
   for (const place of places) {
     mkdirSync(dirname(join(fakeHome, place)), { recursive: true })
     writeFileSync(join(fakeHome, place), 'secret-9f1')

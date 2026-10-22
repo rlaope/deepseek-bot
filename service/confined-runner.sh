@@ -303,8 +303,12 @@ profile() {
   # The user's credentials, which are not the agent's: SSH keys (the agent socket alone was refused, and the key files
   # were one cat away), the cloud CLIs' and gh's tokens, the keychains, netrc and git's stored credentials. A tool that
   # needs one fails; the agent gets a token of its own, in its home, if it needs one. The file tools are held to the
-  # same list (credentialPath in index.ts).
-  for denied in "$HOME/.ssh" "$HOME/.aws" "$HOME/.gnupg" "$HOME/Library/Keychains" "$HOME/.config/gh" "$HOME/.config/gcloud" "$HOME/.azure" "$HOME/.kube" "$HOME/.netrc" "$HOME/.git-credentials"; do
+  # same list (credentialPath in index.ts). And the package registries' (npm, yarn, PyPI, cargo, gems), docker's,
+  # Vault's, Terraform's, OCI's, GitLab's, 1Password's and Hugging Face's: a command read ~/.npmrc in a real-model QA,
+  # and its token went to the model. npm and cargo run without theirs, as without the file.
+  for denied in "$HOME/.ssh" "$HOME/.aws" "$HOME/.gnupg" "$HOME/Library/Keychains" "$HOME/.config/gh" "$HOME/.config/gcloud" "$HOME/.azure" "$HOME/.kube" "$HOME/.netrc" "$HOME/.git-credentials" \
+    "$HOME/.npmrc" "$HOME/.yarnrc.yml" "$HOME/.pypirc" "$HOME/.docker/config.json" "$HOME/.cargo/credentials.toml" "$HOME/.cargo/credentials" "$HOME/.gem/credentials" \
+    "$HOME/.vault-token" "$HOME/.terraform.d/credentials.tfrc.json" "$HOME/.oci" "$HOME/.config/glab-cli" "$HOME/.config/op" "$HOME/.cache/huggingface/token" "$HOME/.huggingface/token"; do
     [ -e "$denied" ] || [ -L "$denied" ] || continue
     printf '(deny file-read* (subpath %s))\n' "$(sbpl "$denied")"
     resolved="$(/bin/realpath "$denied" 2>/dev/null || true)"

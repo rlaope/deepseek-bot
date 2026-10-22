@@ -7,6 +7,15 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **A command read `~/.npmrc`, and its npm token went to the model.** The sandbox refused `~/.ssh`, the cloud
+  CLIs' and gh's tokens, netrc and git's credentials, but not the package registries' and other tools' token files.
+  In a real-model QA the agent was asked to edit `~/.npmrc`; the write was refused, but it read the file first and
+  said it had seen an `_authToken`. Commands and the file tools now refuse `~/.npmrc`, `~/.yarnrc.yml`,
+  `~/.pypirc`, `~/.docker/config.json`, `~/.cargo/credentials(.toml)`, `~/.gem/credentials`, `~/.vault-token`,
+  `~/.terraform.d/credentials.tfrc.json`, `~/.oci`, `~/.config/glab-cli`, `~/.config/op` and Hugging Face's token.
+  npm and cargo were run with theirs refused and work as without the file; a private registry's login is the
+  agent's to set up in its home. Checked in the runner and core suites, 14 checks each, red before.
+
 - **LaunchServices was open to commands unless the network was bounded.** With `commandNetwork: open`, the
   default, a program the agent compiled could ask it to start an app outside the sandbox, and `lsappinfo` showed
   which apps the user had open and which was in front. It is closed in every mode now; node, python, git, curl, pip,

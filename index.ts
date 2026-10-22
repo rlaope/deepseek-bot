@@ -2176,7 +2176,10 @@ export function apply(ctx, config) {
     // The sandbox runner refuses the same to the agent's commands.
     const places = [process.env.DSH_HOME || join(home, '.dsh'), join(home, '.dsh'), join(home, '.ssh'), join(home, '.aws'), join(home, '.gnupg'),
       join(home, 'Library', 'Keychains'), join(home, '.config', 'gh'), join(home, '.config', 'gcloud'), join(home, '.azure'), join(home, '.kube'),
-      join(home, '.netrc'), join(home, '.git-credentials'), ...String(process.env.DEEPBOT_DENY_READ ?? '').split(':').filter((p) => p !== '')]
+      join(home, '.netrc'), join(home, '.git-credentials'),
+      ...['.npmrc', '.yarnrc.yml', '.pypirc', join('.docker', 'config.json'), join('.cargo', 'credentials.toml'), join('.cargo', 'credentials'), join('.gem', 'credentials'), '.vault-token',
+        join('.terraform.d', 'credentials.tfrc.json'), '.oci', join('.config', 'glab-cli'), join('.config', 'op'), join('.cache', 'huggingface', 'token'), join('.huggingface', 'token')].map((p) => join(home, p)),
+      ...String(process.env.DEEPBOT_DENY_READ ?? '').split(':').filter((p) => p !== '')]
     const bases = places.flatMap((place) => { const all = [resolve(place)]; try { all.push(realpathSync(place)) } catch { /* not there */ } return all }).map(fold)
     // In such a place, or holding one: a search of a directory above ~/.config/gh reads its token (found by review).
     return named.some((p) => {

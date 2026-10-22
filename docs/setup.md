@@ -293,7 +293,9 @@ The agent writes only in its home. When it needs a file of yours outside it, a f
 the approval buttons, naming where the read lands (a link is shown with its target);
 `readOutside: deny` in the deepbot row refuses instead. Never asked about, by the file tools:
 `~/.ssh`, `~/.aws`, `~/.gnupg`, the keychain files, `~/.config/gh`, `~/.config/gcloud`, `~/.azure`,
-`~/.kube`, `~/.netrc`, `~/.git-credentials`, the harness home, any `.env`, and a folder that holds
+`~/.kube`, `~/.netrc`, `~/.git-credentials`, the registries' and tools' token files (`~/.npmrc`, `~/.pypirc`,
+`~/.docker/config.json`, `~/.cargo/credentials.toml` and the others in docs/how-it-works.md), the harness home,
+any `.env`, and a folder that holds
 one of them (a search of your home or of `~/.config` is refused; name a narrower folder). The agent's
 commands are refused the same places, and the harness home's own secrets (its `.env`, the app store,
 sessions, profiles); a `.env` elsewhere is refused to the file tools, not to commands. Keychain items
