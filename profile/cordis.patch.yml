@@ -205,6 +205,8 @@
 #   conversation; deny refuses it. Credentials are refused either way.
 #   commandNetwork (not set here: open): where the agent's commands may connect. public or local sends them
 #   through the gateway's proxy and nothing else; docs/setup.md, The agent's network.
+#   backgroundKeepMs, maxKeptAgents (not set here: 30 minutes, 4): how long a background job may outlive its
+#   turn before it is stopped, and how many agents are kept for one at once.
 - id: deepbot
   config:
     platform: slack

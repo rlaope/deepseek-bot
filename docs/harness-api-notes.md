@@ -216,12 +216,16 @@ view is `{ id, kind, label, owner, status, startedAt, output }`, and the panel f
 as user-role messages (`agent-instructions`, `runtime-context`, `skill-catalog`, `time-context`
 source kinds); only `user` is the task.
 
-**A background job ends with its turn here.** dsh-jobs disposes an owner's jobs when the owning
-agent's context is disposed (`ensureOwnerCleanup` → `disposeOwned`), and this adapter releases the
-agent after every turn. Observed: a job still running when its turn ended disappeared from the
-registry. The same holds for anything else owned by the agent. Keeping an agent alive while it owns
-work would change the adapter's lifecycle and is not done; the terminal says "정리됨" instead of
-leaving the output looking live.
+**A background job lives as long as its agent.** dsh-jobs disposes an owner's jobs when the owning
+agent's context is disposed (`ensureOwnerCleanup` → `disposeOwned`). Observed, when this adapter
+released the agent after every turn: a job still running when its turn ended disappeared from the
+registry. The adapter now keeps an agent that owns a running job (how-it-works, Sessions). From the
+harness source: `list(caller)` returns the caller's jobs and the unowned ones; an `{ owners: 'all' }`
+subscription is unscoped and is delivered before `{ owners: 'scope' }` ones, which is where
+dsh-tool-jobs wakes an idle owner (`followup`) with its notice for a settlement that was not awaited,
+not killed by the model and not a teardown; `followup` on an idle agent starts its driver at once,
+so `whenIdle()` called after that dispatch waits for the woken turn. When an agent is released the
+terminal says "정리됨" instead of leaving the output looking live.
 
 **Jobs.** `ctx.jobs.list(ownerSessionId)`, `get(id)`, `readAt(id, from)` →
 `{ chunks: { at; text; channel?: 'stdout' | 'stderr' | 'log' }[]; next; lossy }` (does not move

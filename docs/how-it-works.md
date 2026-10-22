@@ -147,6 +147,22 @@ last assistant text is read out of the session log and posted. `reason.kind === 
 decides success; anything else is reported into the thread, so a failed turn never looks like a
 silent one.
 
+**An agent is released after its turn, unless it owns a background job.** A command the agent runs in the
+background (`run_in_background`, or a foreground one moved there on its timeout) belongs to the live agent, and
+the jobs service stops an agent's jobs when the agent is disposed. So an agent that still owns a running or
+stopping job when its turn ends is kept, by session. When the job settles, dsh-tool-jobs wakes the idle agent with
+its notice and the harness runs that turn itself; its answer is delivered like a reminder's (an assistant message
+on a mapped session outside the adapter's running turns), and once the agent owns no live job and is idle again
+it is released. The adapter's subscription (`jobs.events`, `{ owners: 'all' }`) is unscoped, so it hears a
+settlement before dsh-tool-jobs' scoped one wakes the agent in the same dispatch: the wait for the agent starts
+after that dispatch. While kept, the agent holds the session's writer, so the conversation's next message is not
+a resume: the turn runs in the kept agent, after any woken turn running there (outside the running turns, so that
+turn's answer is still delivered as the agent's). A kept agent is released, which stops its job, after
+`backgroundKeepMs` (30 minutes; the conversation is told which job), when a stop is asked for during its turn, and
+when the plugin unloads; at most `maxKeptAgents` (4) are kept, and past that a turn's agent is released as before
+and the conversation told after the answer. Without the jobs service nothing is kept and the identity section
+does not mention it.
+
 Two facts that will bite: a session is composed with an **agent preset**, and without one the
 agent has no tools at all — that failure was silent and looked like a memory bug for days. And
 resume is bound to the recorded working directory, so moving the agent home orphans every old
@@ -860,9 +876,9 @@ recalls terminal conversations and each Slack channel its own. A conversation st
 it started in: the tenant is recorded with it, survives a restart, and a terminal asking to move it
 is refused.
 
-**Limits, measured.** A background job ends with its turn, because the adapter releases the agent
-after every turn and the harness disposes an agent's jobs with it — the shell view says so when it
-happens. A subagent can be messaged only while its parent's turn runs, for the same reason. The
+**Limits, measured.** A background job outlives its turn for up to `backgroundKeepMs` (see Sessions), and
+ends when its agent is released — the shell view says so when it happens. A subagent can be messaged
+only while its parent's turn runs (whether a kept parent changes that is not checked). The
 questions have no countdown: the deployment's ask tool runs without timed waits. Whether a given
 terminal supports synchronized output, SGR mouse and OSC 52 is not checked; without them it still
 works, with flicker or without mouse.

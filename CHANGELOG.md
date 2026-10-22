@@ -353,6 +353,19 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **A background job outlives its turn, and what it found is posted when it finishes.** The adapter released the
+  agent after every turn, and the harness's jobs service stops an agent's jobs with it: a command started in the
+  background (`run_in_background`, or a foreground one moved there on its timeout) died as the answer went out, so
+  "I'll tell you when it finishes" could not be kept. Now an agent that owns a running job is kept after its turn.
+  When the job settles, the harness wakes it with its notice, as it does any idle owner; that turn's answer is posted
+  to the conversation (as a reminder's is), and the agent is released after it. The conversation's next message runs
+  in the kept agent (a resume would be refused: the agent holds the session). A job still running after
+  `backgroundKeepMs` (30 minutes) is stopped and the conversation told; past `maxKeptAgents` (4) kept at once, a
+  turn's agent is released as before and the conversation told after the answer; a stop the person asks for during
+  the turn stops the job too; unloading releases them all. The identity section says so, only where the jobs service
+  is composed. Checked in the core suite with a fake jobs service that wakes its owner as dsh-tool-jobs does (each
+  check red before, and each line under test removed in turn); not yet run against a real model.
+
 - **`dsh gateway mcp add`: an MCP server in one command, and the bot says which.** Connecting one meant
   editing the profile by hand: a row at the right indent, the program by its absolute path (launchd's PATH
   finds no `npx`), the credential in `~/.dsh/.env` and read with `!!js process.env.NAME` (the app's store is

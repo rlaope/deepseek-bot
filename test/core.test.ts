@@ -41,17 +41,21 @@ interface BootOptions {
   config?: { fake?: FakeTransportOptions; [key: string]: unknown }
   agent?: 'throw' | 'ready' | 'answer'
   home?: string | null
-  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number } | null
+  /** `job`: the turn starts a background job with that label, still running when the turn ends. `woken`: what the agent
+   * answers when the job's notice wakes it, a turn of `wakeMs`. */
+  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number } | null
   /** The harness's model-call service (`llm`), when a test gives one: its `stream`. */
   llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
   /** Sessions whose log is gone: resuming one fails as the harness fails it. */
   gone?: string[]
   /** The sandbox the permission presets name (workspace-write unless a test says otherwise). */
   sandbox?: string
+  /** The harness's jobs service (dsh-jobs-local, with dsh-tool-jobs' wake), which a test drives. */
+  jobs?: boolean
 }
 
 /** Boot the plugin with a fake transport and a state file we control. */
-function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [], sandbox = 'workspace-write' }: BootOptions & { workspace?: boolean } = {}) {
+function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = null, workspace = false, llm = null, gone = [], sandbox = 'workspace-write', jobs = false }: BootOptions & { workspace?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-core-'))
   writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({
     sessions: {}, seen: {}, standing: {}, history: {}, ...state,
@@ -68,6 +72,17 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   const attached = []
   // What the model was handed: the prompt is only visible here, in the ready-agent mode.
   const followups = []
+  // Which agent each followup went to, which sessions were resumed, and which agents were disposed (by session).
+  const followedBy = []
+  const resumed = []
+  const disposed = []
+  // Background jobs as the jobs service holds them, its subscribers, and the live agents by session.
+  const jobRows: Array<{ id: string; kind: string; label: string; owner: string; status: string }> = []
+  const jobListeners: Array<(event: Record<string, unknown>) => void> = []
+  const emitJob = (event: Record<string, unknown>) => { for (const listener of [...jobListeners]) listener(event) }
+  const liveAgents = new Map<string, { status: string; followup: (message: unknown) => void }>()
+  // The agents' request listeners (agent/request), as an agent's own context takes them.
+  const requestListeners: Array<(payload: unknown, next: () => Promise<Record<string, unknown>>) => Promise<Record<string, unknown>>> = []
   const stubs: Record<string, unknown> = {
     agents: {
       create: async (options) => {
@@ -79,11 +94,28 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
         if (agent === 'answer') {
           const events = []
           const failThis = created.length === 1 && answer?.failFirst === true
-          return {
-            agent: {
+          // The session the agent is on: its jobs' owner.
+          const owner = options?.sessionId ?? options?.resumeSessionId ?? 's1'
+          // A turn the job's notice woke it for, while it runs.
+          let woken: Promise<void> | null = null
+          const self = {
               session: { header: { id: options?.sessionId ?? 's1' }, get seq() { return events.length }, eventAt: (i) => events[i] },
+              get status() { return woken === null ? 'idle' : 'running' },
+              ctx: { on: (name, listener) => { if (name === 'agent/request') requestListeners.push(listener) } },
               followup: (message) => {
+                // dsh-tool-jobs' notice: a turn of the agent's own, its answer an assistant message on the session.
+                if (message?.source?.kind === 'tool-jobs') {
+                  woken = sleep(Number(answer?.wakeMs ?? 0)).then(() => {
+                    const said = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer?.woken ?? '' }] } } }
+                    events.push({ type: 'turn/start' }, said, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+                    for (const handler of listeners['session/event'] ?? []) handler({ header: { id: owner } }, said)
+                    woken = null
+                  })
+                  return
+                }
                 followups.push(message)
+                followedBy.push(self)
+                if (typeof answer?.job === 'string') jobRows.push({ id: `bash-${jobRows.length + 1}`, kind: 'bash', label: answer.job, owner, status: 'running' })
                 for (const [path, body] of Object.entries(answer?.files ?? {})) {
                   mkdirSync(dirname(join(home, path)), { recursive: true })
                   writeFileSync(join(home, path), body)
@@ -100,10 +132,22 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
               },
               // failFirst: the first turn dies after its prompt was sent — the second wait throws.
               // answer.delayMs: the turn takes that long, so a mark can be watched while it runs.
-              whenIdle: async () => { if (Number(answer?.delayMs) > 0) await sleep(Number(answer.delayMs)); if (failThis && events.length > 0) throw new Error('fake: the turn died') },
+              whenIdle: async () => { if (woken !== null) await woken; if (Number(answer?.delayMs) > 0) await sleep(Number(answer.delayMs)); if (failThis && events.length > 0) throw new Error('fake: the turn died') },
               cancel: () => {},
+          }
+          liveAgents.set(owner, self)
+          return {
+            agent: self,
+            // As the jobs service does when an owner goes: its live jobs are cancelled (a teardown), then removed.
+            dispose: async () => {
+              disposed.push(owner)
+              liveAgents.delete(owner)
+              for (const job of jobRows.filter((j) => j.owner === owner)) {
+                if (job.status === 'running') { job.status = 'killed'; emitJob({ type: 'settled', job: { ...job }, cause: 'teardown', awaited: false }) }
+                jobRows.splice(jobRows.indexOf(job), 1)
+                emitJob({ type: 'removed', job: { ...job } })
+              }
             },
-            dispose: async () => {},
           }
         }
         if (agent === 'ready') {
@@ -119,6 +163,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
       },
       // A conversation that has a session resumes it: the agents that answer do so the same way either way.
       resume: async (options) => {
+        resumed.push(options?.resumeSessionId)
         if (gone.includes(options?.resumeSessionId)) throw new Error(`session "${options.resumeSessionId}" not found`)
         if (agent === 'answer' || agent === 'ready') return (stubs.agents as { create: (o: unknown) => Promise<unknown> }).create(options)
         throw new Error('fake: agents.resume is not implemented')
@@ -143,6 +188,23 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   }
   // The agent's home. Without an `fs` service the plugin falls back to process.cwd(), which is this
   // repository and has no persona files, so a test that needs them points the home at its own directory.
+  if (jobs) {
+    stubs.jobs = {
+      list: (caller) => jobRows.filter((j) => j.owner === caller).map((j) => ({ ...j })),
+      events: { subscribe: (_filter, listener) => { jobListeners.push(listener); return () => { jobListeners.splice(jobListeners.indexOf(listener), 1) } } },
+    }
+  }
+  /**
+   * A job finishing, as the jobs service and dsh-tool-jobs deliver it: the settlement to every subscriber, the adapter's
+   * first (an unscoped subscription is), then the owner, idle, woken with the notice in the same dispatch.
+   */
+  const settleJob = (id: string) => {
+    const job = jobRows.find((j) => j.id === id)
+    job.status = 'completed'
+    emitJob({ type: 'settled', job: { ...job }, cause: 'producer', awaited: false })
+    const owner = liveAgents.get(job.owner)
+    if (owner?.status === 'idle') owner.followup({ role: 'user', content: [{ type: 'text', text: `background job ${id} finished` }], source: { kind: 'tool-jobs', form: 'notice' } })
+  }
   if (home !== null) stubs.fs = { resolve: async () => home, processPath: (path) => path }
   if (workspace) stubs.workspaceRegistry = { create: async (cwd) => ({ path: cwd, attachSession: async (id) => { attached.push(id) } }) }
   // What the plugin's effects return, run by unload() as the harness runs them when it unloads the plugin.
@@ -173,7 +235,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   /** Fire an approval request the way the harness would, and get the outcome back. */
   const askApproval = (sessionId = 'slack-abc', reason = 'escalate sandbox to danger-full-access') =>
     listeners['approval/request'][0]({ agent: { session: { header: { id: sessionId } } }, reason })
-  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, followedBy, resumed, disposed, jobRows, settleJob, requestListeners, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
 /** The text of a user message the core handed to the agent. */
 const textOf = (message) => (message?.content ?? []).map((block) => block?.text ?? '').join('')
@@ -2220,6 +2282,120 @@ for (const remove of [false, true]) {
   await sleep(400)
   check('a gone session: a quiet turn moves to a new session and posts nothing', q.transport.posted.length === 0 && q.created.length === 1 && q.read().sessions[key] !== 'slack-gone', JSON.stringify({ posted: q.transport.posted.map((p) => p.text), created: q.created.length }))
   q.done()
+}
+
+// A background job outlives its turn: the agent that owns one is kept, not disposed, until the job is done and the turn
+// its notice woke has answered; the conversation's next message runs in it; a deadline, a cap and an unload end it.
+{
+  const key = 'C_ALLOWED:t1'
+  const at = (threadTs: string, ts: string, text = '테스트 돌려줘') => ({ text, ts, target: { channel: 'C_ALLOWED', threadTs } })
+  const kept = (config: Record<string, unknown> = {}, answer: Record<string, unknown> = {}, jobs = true) =>
+    // A platform with its own working status, so what is posted is the answers and the notices.
+    boot({ agent: 'answer', jobs, home: mkdtempSync(join(tmpdir(), 'deepbot-jobs-')), config: { fake: { typing: true }, ...config }, answer: { text: '돌려둘게. 끝나면 알려줄게.', job: 'npm test', woken: '테스트 다 통과했어.', wakeMs: 300, ...answer } })
+
+  // Control: a turn that owns no job ends as before, its agent disposed.
+  const none = kept({}, { job: undefined })
+  await sleep(60)
+  none.transport.deliver(none.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  check('jobs: a turn that owns no running job disposes its agent', none.disposed.length === 1 && none.transport.posted.length === 1, JSON.stringify({ disposed: none.disposed, posted: none.transport.posted.map((p) => p.text) }))
+  none.done()
+
+  const t = kept()
+  await sleep(60)
+  t.transport.deliver(t.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  const session = t.read().sessions[key]
+  check('jobs: a turn whose agent owns a running job does not dispose it', t.disposed.length === 0 && t.jobRows.length === 1 && t.jobRows[0].owner === session && t.transport.posted.some((p) => p.text.includes('끝나면 알려줄게')),
+    JSON.stringify({ disposed: t.disposed, jobs: t.jobRows, posted: t.transport.posted.map((p) => p.text) }))
+
+  // The conversation's next message: the turn runs in the kept agent; the session is never resumed (its agent holds it).
+  t.transport.deliver(t.transport.message(at('t1', '1.2', '아직이야?')))
+  await sleep(300)
+  check('jobs: the next message runs in the kept agent, without a resume', t.resumed.length === 0 && t.created.length === 1 && t.followedBy.length === 2 && t.followedBy[0] === t.followedBy[1] && t.transport.posted.length === 2,
+    JSON.stringify({ resumed: t.resumed, created: t.created.length, followups: t.followedBy.length, posted: t.transport.posted.map((p) => p.text) }))
+  check('jobs: and with a job still running after it, the agent is kept again', t.disposed.length === 0, JSON.stringify(t.disposed))
+  // Made on the first turn's route, the kept agent's requests go on the conversation's as it is now.
+  const routed = t.requestListeners.length === 1 ? await t.requestListeners[0]({}, async () => ({ provider: 'old', model: 'old-model' })) : null
+  check('jobs: the kept agent follows the conversation\'s route', routed?.provider === 'fake' && routed?.model === 'fake', JSON.stringify({ listeners: t.requestListeners.length, routed }))
+
+  t.done()
+
+  // The job finishes: the harness wakes the agent with the notice; its answer is delivered, and only then is it disposed.
+  // One job only: a second's settlement would find the agent already woken by the first's.
+  const w = kept()
+  await sleep(60)
+  w.transport.deliver(w.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  check('jobs: (the turn left one job running)', w.jobRows.length === 1 && w.disposed.length === 0, JSON.stringify({ jobs: w.jobRows, disposed: w.disposed }))
+  w.settleJob(w.jobRows[0].id)
+  await sleep(100)
+  check('jobs: a settled job does not dispose the agent while the turn it woke runs', w.disposed.length === 0, JSON.stringify(w.disposed))
+  await sleep(500)
+  check('jobs: after the woken turn, the agent is disposed', w.disposed.length === 1 && w.disposed[0] === w.read().sessions[key], JSON.stringify(w.disposed))
+  check('jobs: and the woken turn\'s answer was posted to the conversation', w.transport.posted.some((p) => p.text === '테스트 다 통과했어.' && p.target.threadTs === 't1'), JSON.stringify(w.transport.posted.map((p) => p.text)))
+  w.done()
+
+  // A stop the person asks for, while the turn runs, stops its job too: the agent is not kept.
+  const st = kept({}, { delayMs: 400 })
+  await sleep(60)
+  st.transport.deliver(st.transport.message(at('t1', '1.1')))
+  await sleep(600)
+  const started = st.jobRows.length === 1 && st.disposed.length === 0
+  st.transport.deliver(st.transport.message(at('t1', '1.2', '그만')))
+  await sleep(500)
+  check('jobs: a stop during the turn releases the agent, and its job with it', started && st.disposed.length === 1 && st.jobRows.length === 0, JSON.stringify({ started, disposed: st.disposed, jobs: st.jobRows }))
+  st.done()
+
+  // The deadline: the conversation is told which job was stopped and after how long, and the agent goes (the job with it).
+  const d = kept({ backgroundKeepMs: 300 })
+  await sleep(60)
+  d.transport.deliver(d.transport.message(at('t1', '1.1')))
+  await sleep(200)
+  check('jobs: before its deadline, the agent is kept', d.disposed.length === 0, JSON.stringify(d.disposed))
+  await sleep(400)
+  check('jobs: at the deadline, the agent is disposed and the conversation told', d.disposed.length === 1 && d.transport.posted.some((p) => p.text.includes('npm test') && p.text.includes('멈췄어') && p.target.threadTs === 't1'),
+    JSON.stringify({ disposed: d.disposed, posted: d.transport.posted.map((p) => p.text) }))
+  d.done()
+
+  // The cap: past maxKeptAgents, the agent is disposed as before, and the conversation told after the answer.
+  const c = kept({ maxKeptAgents: 1 })
+  await sleep(60)
+  c.transport.deliver(c.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  c.transport.deliver(c.transport.message(at('t2', '2.1')))
+  await sleep(300)
+  const second = c.read().sessions['C_ALLOWED:t2']
+  const inT2 = c.transport.posted.filter((p) => p.target.threadTs === 't2').map((p) => p.text)
+  check('jobs: past maxKeptAgents, the agent is disposed and the conversation told after its answer', c.disposed.length === 1 && c.disposed[0] === second && inT2.length === 2 && inT2[0].includes('끝나면 알려줄게') && /너무 많/.test(inT2[1]),
+    JSON.stringify({ disposed: c.disposed, second, inT2 }))
+  check('jobs: and the one within it stays kept', !c.disposed.includes(c.read().sessions[key]), JSON.stringify(c.disposed))
+
+  // The identity says a background command outlives the answer only where it does.
+  const identity = async (b: ReturnType<typeof boot>) => {
+    const sections: Array<{ name: string; text: string }> = []
+    await (b.created[0] as { setup: (ctx: unknown) => Promise<void> }).setup({ systemPrompt: { section: (s: { name: string; text: string }) => { sections.push(s) } } })
+    return sections.find((s) => s.name === 'deepbot:identity')?.text ?? ''
+  }
+  const said = await identity(c)
+  check('jobs: the identity says a background command keeps running and its answer is posted, with the jobs service', /in the background keeps running/.test(said) && /30 minutes/.test(said), said.split('\n').filter((l) => /background/.test(l)).join(' | '))
+
+  // Unload: every kept agent goes.
+  const before = [...c.disposed]
+  c.unload()
+  await sleep(100)
+  check('jobs: unload disposes the kept agents', before.length === 1 && c.disposed.length === 2 && c.disposed[1] === c.read().sessions[key], JSON.stringify({ before, after: c.disposed }))
+  c.done()
+
+  // With no jobs service, nothing changes: the agent is disposed after its turn.
+  const n = kept({}, {}, false)
+  await sleep(60)
+  n.transport.deliver(n.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  check('jobs: with no jobs service, the agent is disposed after its turn as before', n.disposed.length === 1, JSON.stringify(n.disposed))
+  const unsaid = await identity(n)
+  check('jobs: and says nothing of it without one', unsaid !== '' && !/in the background/.test(unsaid), unsaid.split('\n').filter((l) => /background/.test(l)).join(' | '))
+  n.done()
 }
 
 const failed = results.filter((r) => !r.ok)

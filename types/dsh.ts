@@ -86,6 +86,27 @@ export interface AgentsService {
   list?(): Agent[]
 }
 
+/** A background job as the jobs service projects it (dsh-jobs' `JobView`): the fields read here. */
+export interface JobView {
+  id: string
+  kind: string
+  label: string
+  /** The owning agent's session; absent for an unowned job. */
+  owner?: string
+  status: 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+}
+
+/** dsh-jobs (dsh-jobs-local): background jobs, owned by the live agent that started them and disposed with it. */
+export interface JobsService {
+  /** The caller's jobs, and the unowned ones. */
+  list(caller?: string): JobView[]
+  /**
+   * `{ owners: 'all' }` is unscoped, so it is delivered before dsh-tool-jobs' own (`{ owners: 'scope' }`), which wakes
+   * an idle owner with its notice in the same dispatch. Returns the disposer.
+   */
+  events: { subscribe(filter: { owner: string } | { owners: 'all' }, listener: (event: { type: string; job?: JobView }) => void): unknown }
+}
+
 export interface SessionsService {
   /** Commit buffered session events to the durable log. */
   flush(session: Session): Promise<void>

@@ -54,10 +54,14 @@ is built before the thing it stands on. The detailed history of each milestone i
 - **Slack's own part cutter** (`postChunked`) keeps its number's room but does not recount it when the parts
   reach ten (about 36 000 characters at 4000), and can cut a surrogate pair. `transports/parts.ts` does both;
   Slack can use it.
-- **A background job ends with its turn.** The adapter releases the agent after every turn and
-  dsh-jobs disposes an agent's jobs with it, so "I'll tell you when it finishes" cannot be kept — on
-  any platform. A continuable subagent can be messaged only while its parent's turn runs, for the
-  same reason. Keeping an agent while it owns work is a lifecycle change, not made.
+- **A background job outlives its turn, within limits.** An agent that owns a running job is kept after
+  its turn (up to `backgroundKeepMs`, at most `maxKeptAgents`), the harness's wake turn answers when the job
+  settles, and the agent is released after it. Still not: a restart loses running jobs and says nothing of
+  them (they are in-process, and no in-flight record is kept for one); the woken turn has no working status, no
+  progress message and no in-flight record; a stop word with no turn running does not stop a kept agent's
+  job (`job_kill` or the terminal's panel does). A continuable subagent can be messaged only while its
+  parent's turn runs; whether a kept parent changes that is not checked. Checked with fakes only; the
+  real wake path needs a scenario against a real model.
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim
   through its first messenger, so `dsh gateway setup` keeps one at a time. Serving two needs each
   conversation routed to the platform it came from, including the messages the bot sends first
