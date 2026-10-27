@@ -58,7 +58,7 @@ async function until(predicate, ms = 3000) {
 
   // `dsh` opens the terminal; anything that is not one of its own flags is the harness CLI's.
   check('route: no arguments, or only the terminal\'s flags, open the terminal', route([]) === 'tui' && route(['--resume', 'c-1']) === 'tui' && route(['--name', 'work']) === 'tui' && route(['-h']) === 'tui' && route(['--help']) === 'tui')
-  check('route: anything else goes to the harness CLI', route(['--profile', 'agent']) === 'harness' && route(['gateway']) === 'harness' && route(['--version']) === 'harness')
+  check('route: anything else goes to the harness CLI', route(['--profile', 'agent']) === 'harness' && route(['gateway'], () => true) === 'harness' && route(['--version']) === 'harness')
   // `dsh update` is ours alone or with its help; with anything else it is a profile named update and its app's arguments.
   check('route: dsh update, alone or with --help, is the update', route(['update']) === 'update' && route(['update', '--help']) === 'update' && route(['update', '-h']) === 'update')
   check('route: update with anything else, or --profile update, is the harness CLI\'s', route(['update', 'run the tests']) === 'harness' && route(['update', '--help', 'x']) === 'harness' && route(['--profile', 'update']) === 'harness')
@@ -187,7 +187,7 @@ async function until(predicate, ms = 3000) {
   try { got = readFileSync(seen, 'utf8') } catch { /* not run */ }
   check('forward: the harness CLI gets the arguments as they were given', got === '--profile\nagent\n--port\n19500\nx & "y"\n', JSON.stringify(got))
   check('forward: and its exit status is dsh\'s', forwarded.status === 3, `status ${forwarded.status} ${forwarded.stderr.trim()}`)
-  const missing = spawnSync(process.execPath, [main, 'gateway'], { encoding: 'utf8', env: { ...process.env, DSH_BIN: join(bin, 'nothing-here') } })
+  const missing = spawnSync(process.execPath, [main, '--version'], { encoding: 'utf8', env: { ...process.env, DSH_BIN: join(bin, 'nothing-here') } })
   check('forward: a harness CLI that is not there is said, with how to point at it', missing.status === 127 && missing.stderr.includes('DSH_BIN'), `status ${missing.status} ${missing.stderr.trim()}`)
   check('forward: elsewhere the default is the app\'s CLI', harnessCli({ PATH: bin }, 'darwin') === '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh')
   // With no DSH_BIN, Windows runs npm's harness found beside a dsh.cmd on PATH, wherever npm's global
