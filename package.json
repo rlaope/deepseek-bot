@@ -1,7 +1,7 @@
 {
   "name": "deepbot",
   "version": "0.2.0",
-  "description": "A standalone, always-on agent built on DeepSeek Harness. Slack Socket Mode platform adapter + durable sessions + a memory-ready gateway profile.",
+  "description": "The agentic memory & gateway for DeepSeek Harness: durable sessions, channel-scoped recall, and one agent on Slack, Discord, Telegram and the terminal.",
   "type": "module",
   "license": "MIT",
   "exports": {
@@ -27,7 +27,10 @@
     "socket-mode",
     "cordis",
     "llm",
-    "personal-agent"
+    "personal-agent",
+    "telegram",
+    "discord",
+    "memory"
   ],
   "repository": {
     "type": "git",
