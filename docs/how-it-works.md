@@ -50,8 +50,9 @@ One bundle row in a gateway profile. `index.ts` (built to `dist/index.js`) regis
 adapter; `profile/` is the gateway composition it expects; `service/` wraps both so the thing
 survives logout, reboot and a dropped socket.
 
-- TypeScript, built with `tsc`, **zero runtime dependencies** — nothing in the plugin imports
-  from `node_modules` (`docs/harness-api-notes.md` §5 explains why).
+- TypeScript, built with `tsc`. **The plugin imports nothing from `node_modules`**
+  (`docs/harness-api-notes.md` §5 explains why); the one runtime dependency, `playwright-core`
+  (pinned), is loaded only by the browse tool.
 - MIT. Version 0.2.0.
 - Built against DeepSeek Harness `0.2.0-rc.2`. That is a release candidate: session driving,
   message construction and the event fold are recovered from the shipped implementation and
@@ -65,11 +66,11 @@ Each line is traceable to code and to something that checks it.
 
 | It | Where | Checked by |
 |---|---|---|
-| Serves Slack over **Socket Mode**: receive, reply in thread, chunk long answers, drop duplicate events, a Markdown table sent as a list (Slack, Discord and Telegram draw no tables) | `transports/slack.ts`, `transports/tables.ts` | `test/tables.test.ts`; `test/slack.test.ts` 54/54; `tools/qa-slack.ts` against a live workspace |
-| Serves **Telegram** by long polling | `transports/telegram.ts` | `test/telegram.test.ts` 41/41 |
-| Serves **Discord** (gateway websocket + REST), with buttons for approvals | `transports/discord.ts` | `test/discord.test.ts` 38/38 |
-| Serves a **terminal** (`dsh`) over a local socket, beside Slack or alone: streamed answers, approval buttons, a turn's questions, its subagents and shells | `transports/local.ts`, `transports/composite.ts`, `tui/` | `test/local.test.ts` 132/132, `test/tui-*.test.ts`; `test/tui-live.ts` 11/11 against a model |
-| Keeps a **durable session per thread**, resumed after a restart | `index.ts`, `<stateDir>/sessions.json` | `test/core.test.ts` 152/152; `test/scenarios/restart-1.json` + `restart-2.json` |
+| Serves Slack over **Socket Mode**: receive, reply in thread, chunk long answers, drop duplicate events, a Markdown table sent as a list (Slack, Discord and Telegram draw no tables) | `transports/slack.ts`, `transports/tables.ts` | `test/tables.test.ts`; `test/slack.test.ts` 115/115; `tools/qa-slack.ts` against a live workspace |
+| Serves **Telegram** by long polling | `transports/telegram.ts` | `test/telegram.test.ts` 64/64 |
+| Serves **Discord** (gateway websocket + REST), with buttons for approvals | `transports/discord.ts` | `test/discord.test.ts` 55/55 |
+| Serves a **terminal** (`dsh`) over a local socket, beside Slack or alone: streamed answers, approval buttons, a turn's questions, its subagents and shells | `transports/local.ts`, `transports/composite.ts`, `tui/` | `test/local.test.ts` 206/206, `test/tui-*.test.ts`; `test/tui-live.ts` 11/11 against a model |
+| Keeps a **durable session per thread**, resumed after a restart | `index.ts`, `<stateDir>/sessions.json` | `test/core.test.ts` 490/490; `test/scenarios/restart-1.json` + `restart-2.json` |
 | Injects **persona and notes** (`SOUL.md`/`USER.md`/`MEMORY.md` from the adapter, `AGENTS.md` from `dsh-agent-instructions`), without re-sending them every turn | `index.ts` | `test/core.test.ts`; `test/scenarios/persona.json` 4/4 |
 | **Recalls past conversations** — rank passages and have the conversation's model choose among the latest, then ask for what they imply | `recall/`, `recallContext.ts` | `test/recall.test.ts`; `test/recall-context.test.ts`; `test/scenarios/recall-near.json` |
 | Reads the **thread it was mentioned in**, as a delta | `transports/slack.ts` | `test/history.test.ts` 9/9 |
@@ -77,13 +78,13 @@ Each line is traceable to code and to something that checks it.
 | Produces **documents** (docx, pptx, xlsx) | `profile/cordis.patch.yml` office rows | `test/scenarios/document.json` asserts the artifacts |
 | Uses the tools of **MCP servers** the profile composes, through the harness's own MCP client | `profile/cordis.patch.yml`, `docs/setup.md` | `test/scenarios/mcp.json` against a real model |
 | Asks the user to **approve** a destructive command, in the conversation — with buttons on every platform | `index.ts`, `transports/*.ts` | approval checks in `test/core.test.ts`; `approval-gate.json` runs the gate against a real model |
-| Confines **reads**, for commands and for the file tools — other agents' homes, the harness home (credentials, sessions and their index, the adapter's state, attachments, reminders; all but its runtimes), the gateway's logs, the user's agent sockets | `service/confined-runner.sh`, `readScope` | `test/confined-runner.test.ts` 100/100; `test/edges.test.ts` 19/19 |
-| Flags **instruction-like text** in fetched material | `injection.ts` | `test/injection.test.ts` 31/31 |
-| **Uploads the documents a turn made** (pdf, docx, xlsx, pptx, csv changed during the turn, whose path the answer names, with one link and inside the home; on Slack it needs `files:write`) | `index.ts`, `transports/*.ts` | `test/core.test.ts` 152/152; `test/slack.test.ts` |
-| Runs **one turn at a time per conversation**; a later message waits, and a stop withdraws what is waiting | `index.ts` | `test/failures.test.ts` 32/32 |
-| Shows it is **working at once** with the platform's own indicator (Slack's thread status, typing elsewhere), or a progress message where that is refused | `progress.ts`, `index.ts` | `test/progress.test.ts` 22/22; `test/core.test.ts` |
+| Confines **reads**, for commands and for the file tools — other agents' homes, the harness home (credentials, sessions and their index, the adapter's state, attachments, reminders; all but its runtimes), the gateway's logs, the user's agent sockets | `service/confined-runner.sh`, `readScope` | `test/confined-runner.test.ts` 212/212; `test/edges.test.ts` 41/41 |
+| Flags **instruction-like text** in fetched material | `injection.ts` | `test/injection.test.ts` 37/37 |
+| **Uploads the documents a turn made** (pdf, docx, xlsx, pptx, csv changed during the turn, whose path the answer names, with one link and inside the home; on Slack it needs `files:write`) | `index.ts`, `transports/*.ts` | `test/core.test.ts` 490/490; `test/slack.test.ts` |
+| Runs **one turn at a time per conversation**; a later message waits, and a stop withdraws what is waiting | `index.ts` | `test/failures.test.ts` 58/58 |
+| Shows it is **working at once** with the platform's own indicator (Slack's thread status, typing elsewhere), or a progress message where that is refused | `progress.ts`, `index.ts` | `test/progress.test.ts` 29/29; `test/core.test.ts` |
 | **Stops** a running turn on request, and on its own timeout | `index.ts` | `test/scenarios/interrupt.json` |
-| Reports **token usage** without starting a turn | `usage.ts` | `test/usage.test.ts` 19/19 |
+| Reports **token usage** without starting a turn | `usage.ts` | `test/usage.test.ts` 21/21 |
 | Delivers **reminders** and **watches** — speaking first, but only when asked to; a watch the agent wrote runs read-only in the sandbox | `watch/`, schedule bundle | `test/watch.test.ts` 22/22; `test/delivery.test.ts` 9/9 |
 | Publishes **health** so an external probe can restart a disconnected bot | `service/health-check.ts` | `PLAN.md` M3: injected unhealthy state → restart → recovered |
 | Gives each conversation group its own **workspace** (tenants) | `index.ts` | tenant checks in `test/core.test.ts`; `test/scenarios/tenant.json` |
@@ -100,15 +101,16 @@ Three kinds of evidence appear in this repository, and they are not equivalent:
 3. **Live checks** were made against a running deployment and are recorded here, in `PLAN.md`, or
    in a code comment with the measurement next to it.
 
-The counts below are from a run of `pnpm test` on 2026-10-13 (macOS, Node 26.7.0): **531 checks
-in 21 suites, exit 0**, plus the `dist-fresh` build guard and a secret scan. CI runs the same
-suites on Node 22 with `pnpm run typecheck` in front of them.
+The last full run of `pnpm test`, on 2026-10-27 (macOS, Node 26.7.0): **2,882 checks in 37 suites,
+exit 0**, plus the `dist-fresh` build guard and a secret scan. Per-suite counts quoted elsewhere on this
+page are from the 2026-10-27 run. CI runs the suites on Node 22 with
+`pnpm run typecheck` in front of them.
 
 | Area | State |
 |---|---|
 | Slack Socket Mode, threads, chunking, dedupe | verified unit + live |
-| Telegram | implemented, with buttons, uploads and Markdown; unit 41/41; **live round trip not done** (needs a bot token) |
-| Discord | implemented, with buttons and uploads; unit 38/38; **live round trip not done** (needs a bot token) |
+| Telegram | implemented, with buttons, uploads and Markdown; unit 64/64; **live round trip not done** (needs a bot token) |
+| Discord | implemented, with buttons and uploads; unit 55/55; **live round trip not done** (needs a bot token) |
 | Durable sessions, resume across a restart | verified (scenario: two processes) |
 | Cross-session recall, injected as a decision block | verified unit; `recall`, `recall-immediate` and `recall-decision` scenarios pass against a real model |
 | Persona/notes budgets, note hygiene | verified unit |
@@ -120,7 +122,7 @@ suites on Node 22 with `pnpm run typecheck` in front of them.
 | Streaming tokens into Slack | implemented: the turn's text streams into the thread (chat.startStream / appendStream), and the answer is posted new while the streamed message is deleted; unit-checked against a stubbed Web API, its calls shaped by a live probe; a refusal falls back to the answer arriving whole |
 | Semantic recall | **by the conversation's model, over the latest passages** — a message that points at the past has the model choose, from the channel's latest passages (`recallPickFrom`, 40), the ones about it, and ranks the rest by words and the words the model relates to it; older passages are matched by words only. No vector index |
 | Browser automation | implemented as a command the agent runs (`dist/tools/browse.js`): a page drawn by JavaScript, typing, clicking, a screenshot; checked against a real browser and a real model |
-| Per-tenant *permission* preset | **not supported** — `permission` is read and never applied (`TODO` in `test/core.test.ts`) |
+| Per-tenant *permission* preset | **not a setting** — removed; a tenant's `permission` imposes nothing (`test/core.test.ts` checks it) |
 
 ## How it works
 
@@ -953,7 +955,7 @@ Tokens come from the harness's `tokenUsage` session projection, which reports **
 totals for a session. The tracker stores the last snapshot per session and adds only the growth,
 so the running total survives a restart; a session whose totals go down — compaction, or a
 different log — is treated as a new baseline rather than a negative delta. All of that is
-`test/usage.test.ts` 19/19.
+`test/usage.test.ts` 21/21.
 
 Money is deliberately absent. The harness exposes no price for a model, so a price table here
 would be a number nobody could check: the summary reports tokens and says why.
@@ -1004,9 +1006,9 @@ and across (`../acme/...`). `tenantPolicies` gives a tenant its own agent preset
 persona, with the deployment's settings as the default and a refusal that names the tenant when a
 preset does not exist — all verified by checks in `test/core.test.ts`.
 
-**A per-tenant *permission* preset is not supported.** The `permission` key is read into the
-policy, but the session-level call that would apply it never executes, and the check for it is a
-`TODO` printed by `test/core.test.ts` rather than a passing one. Treat it as unsupported.
+**A per-tenant *permission* preset is not a setting.** The key was read and never applied, so it
+was removed; `test/core.test.ts` checks that a tenant's `permission` imposes nothing. The
+deployment's `permissionPreset` applies to every tenant.
 
 **A YAML trap worth knowing:** a key containing a colon must be quoted. `scenario:T1: acme` parses
 as the key `scenario` with the value `T1: acme`, so isolation silently does nothing — which is
@@ -1023,7 +1025,7 @@ not quote the attack back** — a warning that repeats the payload delivers it t
 **This is a mitigation, not a boundary.** What decides is elsewhere: the read scope refuses files
 outside the workspace, the sandbox runner refuses other instances' data, and destructive commands
 ask a human. This layer makes an attempt visible to the model at the point of use and to the
-operator in the log, instead of silent. `test/injection.test.ts` (31/31) weights the benign cases
+operator in the log, instead of silent. `test/injection.test.ts` (37/37) weights the benign cases
 as heavily as the attacks, because a guard that flags ordinary conversation is a guard nobody
 reads.
 

@@ -56,8 +56,9 @@ is built before the thing it stands on. The detailed history of each milestone i
   Slack can use it.
 - **A background job outlives its turn, within limits.** An agent that owns a running job is kept after
   its turn (up to `backgroundKeepMs` from its first keeping, at most `maxKeptAgents`), the harness's wake turn
-  answers when the job settles, and the agent is released after it. Checked with fakes only;
-  `test/scenarios/background-job.json` is the real-model check, not yet run. Still not:
+  answers when the job settles, and the agent is released after it. Checked with fakes, and against a real
+  model by `test/scenarios/background-job.json` (4/4 on 2026-10-27, OpenGateway route; not yet in the daily
+  list). Still not:
   - a restart loses running jobs and says nothing of them (they are in-process, and no in-flight record is
     kept for one); a woken turn has no working status, no progress message and no in-flight record;
   - woken turns run outside `maxConcurrency`: at most `maxConcurrency + maxKeptAgents` turns at once;
