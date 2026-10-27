@@ -187,6 +187,33 @@ function boot({ state = {}, config = {} }: { state?: Record<string, unknown>; co
   check('and says it could not read the scenario', /could not read the scenario: /.test(notJson.said) && /could not read the scenario: /.test(nothing.said), notJson.said.trim().split('\n').slice(-1)[0]?.slice(0, 100))
 }
 
+// 9b. A restart pair (`--dump`, then `--seed`) runs both phases in one home. The second made a fresh home, and the
+// harness resumes a session only in the directory that made it: `pnpm test:restart` failed every time, with an empty
+// answer, while restarts worked. DSH_BIN is any program, so neither phase reaches a gateway; what is checked is the home.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'deepbot-restart-'))
+  const scenario = join(dir, 'restart.json')
+  writeFileSync(scenario, JSON.stringify({ steps: [] }))
+  const dump = join(dir, 'sessions.json')
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, USERPROFILE: dir, DSH_HOME: join(dir, '.dsh'), DSH_BIN: process.execPath }
+  delete env.DEEPBOT_TEST_HOME
+  // What the plugin dumped stays beside the home: a session is here before the first phase, as the plugin's would be.
+  writeFileSync(dump, JSON.stringify({ sessions: { thread: 'session-1' } }))
+  const run = (flag: string) => spawnSync(process.execPath, ['test/run-scenario.ts', scenario, flag, dump, '--timeout', '5'], { encoding: 'utf8', cwd: process.cwd(), env })
+  const first = run('--dump')
+  let home = ''
+  let keptSessions = false
+  try { const d = JSON.parse(readFileSync(dump, 'utf8')); home = String(d.home ?? ''); keptSessions = d.sessions?.thread === 'session-1' } catch { /* checked below */ }
+  const kept = home !== '' && existsSync(home)
+  const second = run('--seed')
+  const said = /^home +: (.*)$/m.exec(second.stdout)?.[1] ?? ''
+  check('restart pair: the first phase records its home in the dump, and keeps it', kept, `${home} ${first.stdout.split('\n').find((l) => l.startsWith('home')) ?? ''}`)
+  check('restart pair: the sessions in the dump are kept beside the home', keptSessions)
+  check('restart pair: the second phase runs in that home', home !== '' && said.startsWith(home), said)
+  check('restart pair: and removes it when done', home !== '' && !existsSync(home))
+  rmSync(dir, { recursive: true, force: true })
+}
+
 // 10. A link inside the workspace that points outside it is not inside it.
 // The read scope resolves the real path when the path exists, which is the whole defence
 // against this: a name that looks local and reads a system file.

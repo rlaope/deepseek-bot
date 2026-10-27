@@ -60,7 +60,15 @@ const PROFILE = process.env.DEEPBOT_TEST_PROFILE ?? 'agent-test'
 // assertion can then pass on stale state without this run proving anything. It
 // looked green for exactly that reason once. A fresh home per run means the only
 // thing recall can find is what this run wrote.
-const TEST_HOME = process.env.DEEPBOT_TEST_HOME ?? join(homedir(), `dsh-agent-test-${Date.now().toString(36)}`)
+//
+// The exception is a restart pair: `--dump` records its home in the dump, and `--seed` runs in it. The harness
+// resumes a session only in the directory that made it, so a second phase in a home of its own was refused at once,
+// and `pnpm test:restart` failed every time while restarts worked.
+const SEEDED_HOME = (() => {
+  if (seedFile === undefined) return undefined
+  try { const home = JSON.parse(readFileSync(seedFile, 'utf8')).home; return typeof home === 'string' && home !== '' ? home : undefined } catch { return undefined }
+})()
+const TEST_HOME = process.env.DEEPBOT_TEST_HOME ?? SEEDED_HOME ?? join(homedir(), `dsh-agent-test-${Date.now().toString(36)}`)
 const PORT = process.env.DEEPBOT_TEST_PORT ?? '19599'
 const LIVE_HOME = process.env.DEEPBOT_LIVE_HOME ?? join(homedir(), 'dsh-agent')
 // The result path is pinned outside the (fresh, disposable) agent home, because
@@ -82,13 +90,24 @@ if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) fail('coul
 
 console.log(`scenario : ${scenario}`)
 console.log(`profile  : ${PROFILE}`)
-console.log(`home     : ${TEST_HOME}${process.env.DEEPBOT_TEST_HOME ? ' (pinned)' : ' (fresh)'}`)
+console.log(`home     : ${TEST_HOME}${process.env.DEEPBOT_TEST_HOME ? ' (pinned)' : SEEDED_HOME !== undefined ? ' (the first phase\'s)' : ' (fresh)'}`)
 console.log(`port     : ${PORT}`)
 console.log()
 
 // A test home mirrors the live one where it matters — the instruction file is
 // what tells the agent that a recall index exists at all.
 mkdirSync(TEST_HOME, { recursive: true })
+// The plugin writes the dump's sessions; the home they were made in goes with them, however this run ends.
+if (dumpFile !== undefined) {
+  process.on('exit', () => {
+    let dump: Record<string, unknown> = { sessions: {} }
+    if (existsSync(dumpFile)) {
+      // One the plugin left half written is left as it is, for the second phase to refuse, rather than replaced by none.
+      try { dump = JSON.parse(readFileSync(dumpFile, 'utf8')) } catch { console.error(`the dump is not JSON, so its home was not added: ${dumpFile}`); return }
+    }
+    try { writeFileSync(dumpFile, JSON.stringify({ ...dump, home: TEST_HOME }, null, 1)) } catch (e) { console.error(`could not write the dump: ${String((e as Error)?.message ?? e)}`) }
+  })
+}
 // A run with commandNetwork bounded leaves the gateway's file for this home, closed, as a stop does: the home goes at
 // exit, and the file with it. Keyed as the gateway keys it, by the real path, read now while the home is there.
 const HOME_KEY = createHash('sha256').update(realpathSync(TEST_HOME)).digest('hex').slice(0, 16)
@@ -274,8 +293,9 @@ console.log()
 console.log(`${result.total - result.failed}/${result.total} steps passed  (cwd ${result.cwd})`)
 
 // Always clean the unique home unless asked to keep it: it exists only for this
-// run, and leaving it would pollute the next run's session bucket.
-if (!keep) rmSync(TEST_HOME, { recursive: true, force: true })
-else console.log(`kept test home for inspection: ${TEST_HOME}`)
+// run, and leaving it would pollute the next run's session bucket. A first phase's goes on to the second.
+if (!keep && dumpFile === undefined) rmSync(TEST_HOME, { recursive: true, force: true })
+else if (keep) console.log(`kept test home for inspection: ${TEST_HOME}`)
+else console.log(`kept test home for the second phase (--seed ${dumpFile})`)
 
 process.exit(result.failed === 0 ? 0 : 1)
