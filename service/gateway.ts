@@ -1243,7 +1243,9 @@ async function mcpRemove(io: GatewayIO, p: Paths, o: Options, profile: Loaded, r
 /** `dsh gateway <argv>`: the exit status. */
 export async function gateway(argv: string[], io: GatewayIO): Promise<number> {
   const [command, ...rest] = argv
-  if (!GATEWAY_COMMANDS.has(command)) { io.err(GATEWAY_USAGE); return 2 }
+  // Alone, or asking for help, it is a question about the commands: the answer is them, and nothing failed.
+  if (command === undefined || ((command === '-h' || command === '--help') && rest.length === 0)) { io.out(GATEWAY_USAGE); return 0 }
+  if (!GATEWAY_COMMANDS.has(command)) { io.err(`unknown command ${command}\n\n${GATEWAY_USAGE}`); return 2 }
   const o = parseOptions(command, rest)
   if ('error' in o) { io.err(`${o.error}\n\n${GATEWAY_USAGE}`); return 2 }
   if (o.help) { io.out(GATEWAY_USAGE); return 0 }

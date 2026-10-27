@@ -191,6 +191,11 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **`dsh gateway` alone, its `--help` and a mistyped command printed the harness's stack trace.** Only `gateway`
+  followed by one of its commands was taken from the harness CLI, which booted a profile named gateway that does not
+  exist: `Error: dsh: profile "gateway" does not exist` and a Node stack, exit 1. Where the harness has no such profile
+  they are now `dsh gateway`'s: alone or with `--help` it prints its commands (exit 0), a mistyped command is named
+  (exit 2). A profile named gateway, where one exists, still boots as before. Checked in the gateway suite, red before.
 - **A thread whose session log was gone failed every turn.** A cleanup of the harness's sessions removed their logs,
   and the bot went on resuming each thread's session: the harness answered `session "…" not found`, and the person
   saw "The run failed" on every message in that thread. Now the same turn starts a new session with the whole thread

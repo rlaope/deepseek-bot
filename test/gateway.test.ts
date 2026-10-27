@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { EventEmitter } from 'node:events'
 import { gateway, mcpRows, mergeIds, parseIds, readProfile, slackManifest, storeRefs, terminalSession, keyReader, writeProfile, envSet, envValue, type GatewayIO, type RunResult } from '../dist/service/gateway.js'
-import { route, usage } from '../dist/tui/cli.js'
+import { harnessProfile, route, usage } from '../dist/tui/cli.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -140,7 +140,28 @@ const SLACK = { SLACK_BOT_TOKEN: 'xoxb-1-2-abc', SLACK_APP_TOKEN: 'xapp-1-def' }
 
 // 1. Routing: only `gateway <command>` is taken from the harness CLI.
 check('route: gateway with one of its commands is the gateway CLI', route(['gateway', 'setup', 'slack']) === 'gateway' && route(['gateway', 'status']) === 'gateway' && route(['gateway', 'manifest', 'slack']) === 'gateway')
-check('route: gateway alone, or with anything else, still boots the harness profile named gateway', route(['gateway']) === 'harness' && route(['gateway', 'web']) === 'harness' && route(['gateway', '--help']) === 'harness')
+// `dsh gateway` alone, its help and a mistyped command printed the harness's stack trace ("profile \"gateway\" does not
+// exist"): the harness has no such profile until someone makes one, so without it they are ours.
+const noProfile = () => false
+const gatewayProfile = (name: string) => name === 'gateway'
+check('route: gateway alone, its help or a mistyped command is the gateway CLI when no profile is named gateway', route(['gateway'], noProfile) === 'gateway' && route(['gateway', '--help'], noProfile) === 'gateway' && route(['gateway', '-h'], noProfile) === 'gateway' && route(['gateway', 'statu'], noProfile) === 'gateway')
+{
+  // The profile is looked for where the harness looks: a `~` in DSH_HOME is the home directory, a blank one is unset.
+  const dir = mkdtempSync(join(tmpdir(), 'deepbot-profile-'))
+  mkdirSync(join(dir, 'h', 'profiles', 'gateway'), { recursive: true })
+  writeFileSync(join(dir, 'h', 'profiles', 'gateway', 'package.json'), '{}')
+  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME'
+  const saved = process.env[homeVar]
+  process.env[homeVar] = dir
+  try {
+    check('harnessProfile: DSH_HOME=~/h finds a profile under the home directory, as the harness does', harnessProfile('gateway', { DSH_HOME: '~/h' }) && !harnessProfile('agent', { DSH_HOME: '~/h' }))
+    check('harnessProfile: an absolute DSH_HOME, and a blank one meaning ~/.dsh', harnessProfile('gateway', { DSH_HOME: join(dir, 'h') }) && !harnessProfile('gateway', { DSH_HOME: '  ' }))
+  } finally {
+    if (saved === undefined) delete process.env[homeVar]; else process.env[homeVar] = saved
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+check('route: with a harness profile named gateway, gateway alone or with anything else still boots it', route(['gateway'], gatewayProfile) === 'harness' && route(['gateway', 'web'], gatewayProfile) === 'harness' && route(['gateway', '--help'], gatewayProfile) === 'harness' && route(['gateway', 'status'], gatewayProfile) === 'gateway')
 check('usage: the terminal\'s help names dsh gateway', usage().includes('dsh gateway <command>'))
 
 // 2. Pure pieces.
@@ -403,6 +424,21 @@ for (const [name, profile] of [['no deepbot row', '- id: other\n  config: {}\n']
   const s = scene({ env: null })
   const code = await gateway(['status'], s.io)
   check('status: a missing token is exit 1 and named', code === 1 && s.out.some((l) => l.includes('SLACK_BOT_TOKEN missing')), s.text())
+  s.done()
+}
+
+// 8b. `dsh gateway` with no command, or its help, prints the usage and succeeds; a mistyped command is named.
+{
+  const s = scene()
+  const bare = await gateway([], s.io)
+  const bareOut = s.out.join('\n')
+  s.out.length = 0
+  const help = await gateway(['--help'], s.io)
+  const helpOut = s.out.join('\n')
+  const typo = await gateway(['statu'], s.io)
+  check('usage: dsh gateway alone prints its commands, exit 0', bare === 0 && bareOut.includes('dsh gateway setup'), `${bare} ${s.text().slice(0, 120)}`)
+  check('usage: dsh gateway --help prints its commands, exit 0', help === 0 && helpOut.includes('dsh gateway status'), `${help}`)
+  check('usage: a mistyped command is named, exit 2', typo === 2 && s.err.some((l) => l.includes('unknown command statu')), `${typo} ${s.err.join(' ').slice(0, 120)}`)
   s.done()
 }
 

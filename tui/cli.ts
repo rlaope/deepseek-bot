@@ -3,7 +3,8 @@
  * the tests can import them without starting a terminal.
  */
 import { existsSync } from 'node:fs'
-import { win32 } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve, win32 } from 'node:path'
 import type { App } from './app.js'
 import { NAME, type ClientFrame, type ConversationItem, type ModelChoice, type ModelItem, type ServerFrame } from './protocol.js'
 import { interviewPrompt } from './interview.js'
@@ -39,15 +40,29 @@ export function usage(): string {
 const OWN = new Set(['-h', '--help', '--name', '--socket', '--tenant', '--resume'])
 
 /**
+ * Whether the harness has a profile of this name: it boots one only where `<home>/profiles/<name>/package.json`
+ * is (the profiles it makes on first use are its templates, and gateway is none of them). The home is found as the
+ * harness finds it: a blank `DSH_HOME` is unset, a leading `~` is the home directory, and the result is absolute.
+ */
+export function harnessProfile(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const configured = env.DSH_HOME !== undefined && env.DSH_HOME.trim() !== '' ? env.DSH_HOME : join(homedir(), '.dsh')
+  const home = configured === '~' ? homedir() : configured.startsWith('~/') || configured.startsWith('~\\') ? join(homedir(), configured.slice(2)) : configured
+  return existsSync(join(resolve(home), 'profiles', name, 'package.json'))
+}
+
+/**
  * Whether `dsh <argv>` opens the terminal, runs `dsh gateway <command>` or `dsh update`, or is handed to
  * the DeepSeek Harness CLI, whose name it shares. For the harness `dsh gateway` boots a profile named
- * gateway, so only `gateway` followed by one of its commands is taken here; likewise `update` only alone
- * or with its help flag (a profile named update is still `dsh --profile update`).
+ * gateway: where one exists, only `gateway` followed by one of its commands is taken here. Where none does,
+ * the harness could only fail with its stack trace, so `dsh gateway` alone, its help and a mistyped command
+ * are ours too. Likewise `update` only alone or with its help flag (a profile named update is still
+ * `dsh --profile update`).
  */
-export function route(argv: string[]): 'tui' | 'gateway' | 'update' | 'harness' {
+export function route(argv: string[], hasProfile: (name: string) => boolean = harnessProfile): 'tui' | 'gateway' | 'update' | 'harness' {
   if (argv.length === 0 || OWN.has(argv[0])) return 'tui'
   if (argv[0] === 'update' && (argv.length === 1 || (argv.length === 2 && (argv[1] === '-h' || argv[1] === '--help')))) return 'update'
-  return argv[0] === 'gateway' && GATEWAY_COMMANDS.has(argv[1]) ? 'gateway' : 'harness'
+  if (argv[0] !== 'gateway') return 'harness'
+  return GATEWAY_COMMANDS.has(argv[1]) || !hasProfile('gateway') ? 'gateway' : 'harness'
 }
 
 /** The harness CLI inside the app — the same default the gateway's launcher uses. */
