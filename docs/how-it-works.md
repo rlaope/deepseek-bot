@@ -78,7 +78,7 @@ Each line is traceable to code and to something that checks it.
 | Produces **documents** (docx, pptx, xlsx) | `profile/cordis.patch.yml` office rows | `test/scenarios/document.json` asserts the artifacts |
 | Uses the tools of **MCP servers** the profile composes, through the harness's own MCP client | `profile/cordis.patch.yml`, `docs/setup.md` | `test/scenarios/mcp.json` against a real model |
 | Asks the user to **approve** a destructive command, in the conversation — with buttons on every platform | `index.ts`, `transports/*.ts` | approval checks in `test/core.test.ts`; `approval-gate.json` runs the gate against a real model |
-| Confines **reads**, for commands and for the file tools — other agents' homes, the harness home (credentials, sessions and their index, the adapter's state, attachments, reminders; all but its runtimes), the gateway's logs, the user's agent sockets | `service/confined-runner.sh`, `readScope` | `test/confined-runner.test.ts` 212/212; `test/edges.test.ts` 41/41 |
+| Confines **reads**, for commands and for the file tools — other agents' homes, the harness home (credentials, sessions and their index, the adapter's state, attachments, reminders; all but its runtimes), the gateway's logs, the user's agent sockets | `service/confined-runner.sh`, `readScope` | `test/confined-runner.test.ts` 212/212; `test/edges.test.ts` 45/45 |
 | Flags **instruction-like text** in fetched material | `injection.ts` | `test/injection.test.ts` 37/37 |
 | **Uploads the documents a turn made** (pdf, docx, xlsx, pptx, csv changed during the turn, whose path the answer names, with one link and inside the home; on Slack it needs `files:write`) | `index.ts`, `transports/*.ts` | `test/core.test.ts` 490/490; `test/slack.test.ts` |
 | Runs **one turn at a time per conversation**; a later message waits, and a stop withdraws what is waiting | `index.ts` | `test/failures.test.ts` 58/58 |
@@ -101,7 +101,7 @@ Three kinds of evidence appear in this repository, and they are not equivalent:
 3. **Live checks** were made against a running deployment and are recorded here, in `PLAN.md`, or
    in a code comment with the measurement next to it.
 
-The last full run of `pnpm test`, on 2026-10-27 (macOS, Node 26.7.0): **2,882 checks in 37 suites,
+The last full run of `pnpm test`, on 2026-10-27 (macOS, Node 26.7.0): **2,892 checks in 37 suites,
 exit 0**, plus the `dist-fresh` build guard and a secret scan. Per-suite counts quoted elsewhere on this
 page are from the 2026-10-27 run. CI runs the suites on Node 22 with
 `pnpm run typecheck` in front of them.
