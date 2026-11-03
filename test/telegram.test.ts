@@ -178,6 +178,17 @@ function groupMessage(overrides = {}) {
   const bare = hugeParts.map((p) => p.replace(/^\(\d+\/\d+\)\n/, ''))
   check('every part of a long answer fits, its number included', hugeParts.length === 3 && hugeParts.every((p) => p.length <= 4096) && hugeParts.every((p, i) => p.startsWith(`(${i + 1}/3)\n`)), JSON.stringify(hugeParts.map((p) => p.length)))
   check('the parts are the whole answer, no character cut in half', bare.join('') === huge && bare[0].length === 4089 && bare.every((p) => !/[\ud800-\udbff]$/.test(p)), JSON.stringify(bare.map((p) => p.length)))
+  // A cut prefers a paragraph's end to the middle of a word, and a code block across it is code in every part:
+  // each part is rendered on its own, and half a fence was sent as its backticks.
+  const sentSince = (n) => api.calls.slice(n).filter((c) => c.method === 'sendMessage')
+  const atPara = api.calls.length
+  await t.post({ channel: '7', threadTs: null }, `${'a '.repeat(1500)}\n\n${'b '.repeat(1000)}`)
+  const paraParts = sentSince(atPara).map((c) => String(c.body?.text ?? '').replace(/^\(\d+\/\d+\)\n/, ''))
+  check('a part ends at a paragraph, not inside a word', paraParts.length === 2 && paraParts[0] === `${'a '.repeat(1500)}\n\n`, JSON.stringify(paraParts.map((p) => p.slice(-8))))
+  const atFence = api.calls.length
+  await t.post({ channel: '7', threadTs: null }, `\`\`\`js\n${'let x = 1;\n'.repeat(500)}\`\`\``)
+  const fenceParts = sentSince(atFence)
+  check('a code block across parts is code in each, not backticks', fenceParts.length === 2 && fenceParts.every((c) => c.body?.parse_mode === 'HTML' && String(c.body?.text).includes('<pre>') && !String(c.body?.text).includes('```')), JSON.stringify(fenceParts.map((c) => [c.body?.parse_mode, String(c.body?.text ?? '').slice(0, 20), String(c.body?.text ?? '').slice(-12)])))
   // At the limit, one message, unnumbered; one over, two.
   const atLimit = api.calls.length
   await t.post({ channel: '7', threadTs: null }, 'w'.repeat(4096))

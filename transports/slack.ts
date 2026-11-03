@@ -24,6 +24,7 @@ import type {
 import type { AttachmentManifest, InboundMessage, PostedMessage, StreamFrame, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
+import { numberedParts } from './parts.js'
 import { reactionMarks, type MarkOutcome } from './marks.js'
 
 export function createSlackApi({ cfg, log, sessionCwd }) {
@@ -543,26 +544,16 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
 
   async function postChunked(target: Target, markdown: string, replaceTs: string | null, buttons: ActionButton[] = []): Promise<PostedMessage | null> {
     const text = api.toSlackMarkdown(markdown)
-    const chunks: string[] = []
     // A configuration without a usable chunk size used to slice at NaN and send an *empty*
     // body, which Slack answers with `no_text` — a missing setting became a silent, total
     // failure of every reply. Fall back to the documented limit instead.
     const chunkChars = Number(cfg.chunkChars) > 0 ? Math.floor(Number(cfg.chunkChars)) : 4000
-    for (let i = 0; i < text.length; i += chunkChars) chunks.push(text.slice(i, i + chunkChars))
-    if (text.length === 0) chunks.push("(empty response)")
-    // A numbered part carries a prefix, and the prefix counts toward Slack's limit: slicing
-    // at exactly chunkChars produced 4006-character parts, which Slack refuses. Re-slice with
-    // the prefix's length taken off, and only when there is a prefix to add.
-    if (chunks.length > 1) {
-      const prefix = `(${chunks.length}/${chunks.length})\n`.length
-      const room = Math.max(1, chunkChars - prefix)
-      chunks.length = 0
-      for (let i = 0; i < text.length; i += room) chunks.push(text.slice(i, i + room))
-    }
+    // Cut from Slack's text, not the Markdown: what is counted, and what must not be split (a `<url|label>`
+    // link, an `&amp;` escape, a code fence), is what Slack is sent. Each part carries its number.
+    const chunks = numberedParts(text, chunkChars)
     let first: PostedMessage | null = null
     let replace = replaceTs
-    for (const [i, chunk] of chunks.entries()) {
-      const body = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n${chunk}` : chunk
+    for (const [i, body] of chunks.entries()) {
       const ts = replace
       // The buttons go with the last part, where the question ends.
       const extra = i === chunks.length - 1 ? blocksFor(body, buttons) : {}

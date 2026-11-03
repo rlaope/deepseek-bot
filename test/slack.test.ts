@@ -134,6 +134,75 @@ function transportFor(api) {
   check('the first id is returned, not the last', sent?.ts === 'ts-1', JSON.stringify(sent))
 }
 
+// 4b. A long answer is cut where a person would cut it, and never inside what Slack reads as one thing.
+// The parts are cut from the Slack text (after toSlackMarkdown), with their number counted toward chunkChars.
+{
+  const api = stubSlack()
+  const t = transportFor(api)
+  await t.authenticate()
+  const partsOf = async (markdown) => {
+    const before = api.calls.length
+    await t.post({ channel: 'C1', threadTs: null }, markdown)
+    return api.calls.slice(before).filter((c) => c.method === 'chat.postMessage').map((c) => String(c.body?.text ?? ''))
+  }
+  const bareOf = (parts) => parts.map((p) => p.replace(/^\(\d+\/\d+\)\n/, ''))
+  const numbered = (parts) => parts.every((p, i) => p.startsWith(`(${i + 1}/${parts.length})\n`))
+  const fits = (parts) => parts.every((p) => p.length <= 4000)
+  const lengths = (parts) => JSON.stringify(parts.map((p) => p.length))
+
+  // Nine parts by the room "(9/9)" leaves, ten once the number is "(10/10)", two characters wider.
+  const ten = 'z'.repeat(9 * 3994 + 1)
+  const tenParts = await partsOf(ten)
+  check('parts: ten or more are numbered (i/n) and each fits chunkChars, its number included', tenParts.length >= 10 && numbered(tenParts) && fits(tenParts), lengths(tenParts))
+  check('parts: and together they are the whole answer', bareOf(tenParts).join('') === ten)
+
+  // An emoji where the first part's room ends.
+  const emoji = 'x'.repeat(3993) + '😀' + 'y'.repeat(3000)
+  const emojiParts = await partsOf(emoji)
+  check('parts: an emoji at the boundary is not split', emojiParts.length === 2 && fits(emojiParts) && bareOf(emojiParts).join('') === emoji
+    && bareOf(emojiParts).every((p) => !/[\ud800-\udbff]$/.test(p) && !/^[\udc00-\udfff]/.test(p)), lengths(emojiParts))
+
+  // A link whose label has spaces runs across the room: a cutter that only looks for a space would cut inside it.
+  const label = `${'word '.repeat(60)}end`
+  const linkParts = await partsOf(`${'x'.repeat(3800)} [${label}](https://example.com/page) after ${'y'.repeat(3000)}`)
+  const link = `<https://example.com/page|${label}>`
+  check('parts: a long <https://…|label> link is not split', linkParts.length === 2 && fits(linkParts) && linkParts.some((p) => p.includes(link)), JSON.stringify(bareOf(linkParts).map((p) => p.slice(-40))))
+
+  // "&" becomes "&amp;" in Slack's text, five characters, and the room ends in the middle of it.
+  const ampParts = await partsOf(`${'x'.repeat(3992)}&${'y'.repeat(3000)}`)
+  check('parts: an &amp; escape is not split', ampParts.length === 2 && fits(ampParts) && bareOf(ampParts).join('') === `${'x'.repeat(3992)}&amp;${'y'.repeat(3000)}`
+    && bareOf(ampParts).every((p) => !/&[a-z]*$/.test(p)), JSON.stringify(bareOf(ampParts).map((p) => p.slice(-8))))
+
+  // A code block longer than a part: the cut falls inside it, and each part is code that opens and closes.
+  const code = 'print(1)\n'.repeat(600)
+  const fenceParts = await partsOf(`intro\n\n\`\`\`python\n${code}\`\`\`\n\nafter`)
+  const fenceBare = bareOf(fenceParts)
+  check('parts: a fence across a boundary is closed at the end of the part', fenceParts.length === 2 && fits(fenceParts) && /\n```$/.test(fenceBare[0]), JSON.stringify(fenceBare[0].slice(-20)))
+  check('parts: and reopened with its language at the start of the next', fenceBare[1].startsWith('```python\nprint(1)\n'), JSON.stringify(fenceBare[1].slice(0, 30)))
+  check('parts: every part has its fences in pairs', fenceBare.every((p) => (p.match(/^```/gm) ?? []).length % 2 === 0), JSON.stringify(fenceBare.map((p) => (p.match(/^```/gm) ?? []).length)))
+  check('parts: and no line of code is lost or doubled', fenceBare.join('').split('print(1)').length - 1 === 600)
+
+  // A blank line in the second half of the room wins over a line end and a space after it.
+  const para = 'a '.repeat(1250)
+  const paraParts = bareOf(await partsOf(`${para}\n\n${'b '.repeat(500)}\n${'c '.repeat(2000)}`))
+  check('parts: a blank line is preferred', paraParts[0] === `${para}\n\n`, JSON.stringify(paraParts[0].slice(-12)))
+  // No blank line: a line end wins over a space after it.
+  const lineParts = bareOf(await partsOf(`${para}\n${'b '.repeat(2000)}`))
+  check('parts: then a line end', lineParts[0] === `${para}\n`, JSON.stringify(lineParts[0].slice(-12)))
+  // No line end: a space, not the middle of a word.
+  const wordParts = bareOf(await partsOf('ab '.repeat(2000)))
+  check('parts: then a space', wordParts.length === 2 && wordParts[0].endsWith(' ') && wordParts.join('') === 'ab '.repeat(2000), JSON.stringify(wordParts.map((p) => p.slice(-6))))
+
+  // The control: an answer that fits is one message, unnumbered and unchanged, whatever it holds.
+  const short = 'a short answer\n\n```js\nlet x = 1\n```\n\nand a second paragraph'
+  const shortParts = await partsOf(short)
+  check('parts: a short answer is one part, unchanged', shortParts.length === 1 && shortParts[0] === short, JSON.stringify(shortParts))
+  const full = 'f '.repeat(2000)
+  const fullParts = await partsOf(full)
+  check('parts: an answer of exactly chunkChars is one part', fullParts.length === 1 && fullParts[0] === full, lengths(fullParts))
+  api.restore()
+}
+
 // 5. Replacing uses chat.update and keeps the id.
 {
   const api = stubSlack()
