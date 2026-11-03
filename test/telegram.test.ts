@@ -483,6 +483,25 @@ function groupMessage(overrides = {}) {
   check('marks: an end that was rate limited is tried again', JSON.stringify(e.sets) === JSON.stringify(['👀@7/16', '👌@7/16', '👌@7/16']), JSON.stringify(e.sets))
 }
 
+// 17. Deleting the bot's own message: the core posts a slow turn's answer as a new message, which notifies, and
+// takes the working message away. Telegram deletes only messages under 48 hours old; a refusal is a false, said in
+// the log, never a throw that would reach the turn after its answer is out.
+{
+  const api = fakeApi()
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'tg-')))
+  await t.identity()
+  const ok = await t.remove({ channel: '7', threadTs: null }, '120')
+  const call = api.calls.find((c) => c.method === 'deleteMessage')
+  check('remove: deleteMessage, the message id a number', ok === true && call?.body?.chat_id === '7' && call?.body?.message_id === 120, JSON.stringify(call))
+  const refusing = { ...api, fetchImpl: async (url, init) => String(url).endsWith('/deleteMessage')
+    ? { ok: false, status: 400, json: async () => ({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted" }) }
+    : api.fetchImpl(url, init) }
+  const t2 = transportFor(refusing, mkdtempSync(join(tmpdir(), 'tg-')))
+  await t2.identity()
+  const refused = await t2.remove({ channel: '7', threadTs: null }, '121')
+  check('remove: a refusal is false, and said', refused === false && t2.logs.some((l) => /delete failed: .*can't be deleted/.test(l)), t2.logs.join(' | '))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -367,6 +367,22 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     }
   }
 
+  /**
+   * Delete one of the bot's own messages, as Slack's chat.delete: the core posts a slow turn's answer as a new message,
+   * which notifies, and takes the working message away. An edit raised no notification, and left the answer above
+   * anything said while the turn ran. Telegram deletes only messages under 48 hours old; a refusal is a false, and the
+   * core leaves the working message.
+   */
+  async function remove(target: Target, ts: string): Promise<boolean> {
+    try {
+      await call('deleteMessage', { chat_id: target.channel, message_id: Number(ts) })
+      return true
+    } catch (e) {
+      log(`telegram delete failed: ${String((e as Error)?.message ?? e)} (id=${ts})`)
+      return false
+    }
+  }
+
   async function downloadFile(fileId: string): Promise<Buffer> {
     const file = await call<{ file_path?: string }>('getFile', { file_id: fileId })
     if (!file.file_path) throw new Error('getFile returned no path')
@@ -385,6 +401,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     startTyping,
     uploadFile,
     mark,
+    remove,
 
     async connect(handlers: { onMessage: (message: InboundMessage) => void; onAction?: (action: ActionEvent) => void }) {
       onMessage = handlers.onMessage

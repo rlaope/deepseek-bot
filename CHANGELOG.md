@@ -212,6 +212,15 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
+  puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat
+  above anything said while the turn ran. Both transports can delete now (Discord's message DELETE, Telegram's
+  `deleteMessage`), so, as on Slack, the answer is a new message and the working message is deleted after its last
+  part. A refused delete (Telegram deletes only messages under 48 hours old) leaves the working message, said in the
+  log; the answer goes out once either way. The same holds for every reply that takes the working message's place (a
+  stop, a failure, a restart's notice); a stop already reported deletes it where it was edited into a second report,
+  and a quiet turn that ends with one deletes it where it was left. Checked through the real transports against fake
+  APIs, red before; not seen live.
 - **Slack rewrote code.** Inside a code block or inline code, a `# comment` line came out bold, a `- ` line as
   a bullet, and `**`, Markdown links and the rest were converted like text. Code is set aside before the rules now and
   sent as written; a fence ends at a run of its own mark and length, so one showing a shorter fence holds it, and a

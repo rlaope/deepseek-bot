@@ -421,6 +421,22 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     })
   }
 
+  /**
+   * Delete one of the bot's own messages, as Slack's chat.delete: the core posts a slow turn's answer as a new message,
+   * which notifies, and takes the working message away. An edit raised no notification, and left the answer above
+   * anything said while the turn ran. The bot needs no permission to delete its own message (Manage Messages is for
+   * others'); a refusal is a false, and the core leaves the working message.
+   */
+  async function remove(target: Target, ts: string): Promise<boolean> {
+    try {
+      await rest(`/channels/${target.channel}/messages/${ts}`, { method: 'DELETE' })
+      return true
+    } catch (e) {
+      log(`discord delete failed: ${String((e as Error)?.message ?? e)} (id=${ts})`)
+      return false
+    }
+  }
+
   async function downloadAttachment(attachment: DiscordAttachment): Promise<Buffer> {
     if (!attachment.url) throw new Error('no url on this attachment')
     const res = await doFetch(attachment.url)
@@ -436,6 +452,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     startTyping,
     uploadFile,
     mark,
+    remove,
     supportsButtons: true,
 
     async connect({ onMessage: handler, onAction: actionHandler }: {
