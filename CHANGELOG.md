@@ -257,6 +257,19 @@ the caveat about version numbers is at the bottom.
   Discord's thread events and `GET /channels/{id}` for a forum post, Telegram's `message_thread_id` on each method in a
   real forum, and whether Slack sends `app_mention` in a group DM.
 
+- **Slack cut a long answer anywhere.** Its own cutter sliced Slack's text every `chunkChars` characters: it left
+  room for the "(i/n)" number but did not recount it when the parts reached ten, so at the default limit ten parts
+  came out one over it (about 36 000 characters at 4000) and Slack refused them; and it cut a surrogate pair (an emoji
+  shown as two broken halves), a `<url|label>` link or mention, an `&amp;` escape (shown as typed), and a ``` code
+  block (the rest of the answer shown as code, or the code as text). Slack now uses `transports/parts.ts`, as Discord
+  and Telegram do, and that cutter now ends a part, within the second half of its room, after a blank line, else a
+  line end, else a space; never inside a surrogate pair, a `<…>` token, an `&…;` entity or a fence's line; and a cut
+  inside a code block closes it at the end of the part and opens it again, with its language, at the start of the
+  next. This changes Discord and Telegram too: their parts used to end exactly where the room did, mid-word, and a
+  code block across parts was shown as backticks on Telegram (each part is rendered on its own) and with a fence left
+  open in one part and a stray one in the next on Discord; their parts now end at the same boundaries and each part's code opens and closes. An
+  answer that fits one message is unchanged, and the Block Kit path (one part with buttons) and streaming are not
+  touched. Checked in the Slack, Discord and Telegram suites, red before, against fake APIs only.
 - **A message of files alone got nothing, on every platform.** A Discord upload without text, a Telegram photo
   without a caption and a file shared in a Slack DM were each dropped: the core returned on the empty text, and
   Slack's transport before it (a DM's `file_share` has empty text, and an app_mention with only a file has nothing
