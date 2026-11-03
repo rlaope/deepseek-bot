@@ -453,6 +453,21 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   let refused = ''
   try { boot({ config: { replyMode: 'threads' } }) } catch (err) { refused = String((err as Error).message) }
   check('replyMode: a mode it does not have is a config error', /replyMode: must be 'mention', 'thread' or 'all' \(got: threads\)/.test(refused), refused.split('\n')[1] ?? refused)
+  // 'thread' and 'all' are Slack's: Discord and Telegram never read them, and the core's quiet path needs a thread,
+  // which they do not have. Accepted there, either did nothing at all; refused, the person setting it up is told.
+  const refusal = (platform: unknown, replyMode: string) => {
+    try { boot({ config: { platform, replyMode } }).done(); return '' } catch (err) { return String((err as Error).message) }
+  }
+  for (const platform of ['discord', 'telegram', ['telegram', 'local']]) {
+    for (const mode of ['thread', 'all']) {
+      const why = refusal(platform, mode)
+      check(`replyMode: '${mode}' on ${JSON.stringify(platform)} is a config error that says it works on Slack only`, new RegExp(`replyMode: '${mode}' works on Slack only`).test(why) && /set replyMode: mention/.test(why), why.split('\n')[1] ?? (why || 'accepted'))
+    }
+    check(`replyMode: 'mention' on ${JSON.stringify(platform)} is accepted`, refusal(platform, 'mention') === '', refusal(platform, 'mention'))
+  }
+  for (const platform of ['slack', ['slack', 'local']]) {
+    for (const mode of ['thread', 'all', 'mention']) check(`replyMode: '${mode}' on ${JSON.stringify(platform)} is accepted`, refusal(platform, mode) === '', refusal(platform, mode))
+  }
 }
 
 // 3c. Progress on the person's message, where the platform has reactions: taken, then how it ended. A message that

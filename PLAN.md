@@ -207,6 +207,10 @@ Decided against:
   answers what is meant for it. The suites drive a fake agent; the scenario runner has no conversation to put a
   message without a mention in. Watch `kept quiet` against `answered` in the gateway log on a deployment that uses it.
 
+- `replyMode` refused on Discord and Telegram: the guided setup reaches the same refusal (its save step), but only
+  after the tokens are entered and checked, and only the non-guided path is in the suite. A profile edited by hand to
+  such a mode is refused when the plugin loads; what the harness does then was not run, and by the code `dsh gateway
+  start` or `restart` says only that it did not connect and names the log, where the reason is.
 - The guided `dsh gateway setup` in a real terminal: its menus and the token prompt were driven in a
   pty (macOS Terminal-style escape sequences) and by the suite's fakes; not yet in other emulators,
   nor end to end against Slack, Telegram and Discord. The browser is opened with macOS's `open`;

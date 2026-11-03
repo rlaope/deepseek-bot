@@ -391,8 +391,12 @@ set `DEEPBOT_DENY_READ` (colon-separated paths) before installing the services.
 `targetChannels` in the profile's `cordis.patch.yml` accepts channel ids or `'*'` for every channel
 the bot was invited to; **the plugin refuses to start with an empty list**. `replyMode: mention`
 answers @-mentions in channels (DMs always); `'all'` answers every human message in them. `thread`
-(Slack only; elsewhere it is `mention`) takes a mention to start, and then every message in a thread the
-bot takes part in, mention or not, for a day after it was last mentioned or spoke there. Told the message
+takes a mention to start, and then every message in a thread the bot takes part in, mention or not, for
+a day after it was last mentioned or spoke there. **`thread` and `all` are Slack's only.** On Discord and
+Telegram the bot answers a mention, a reply to it, or a direct message, whatever the mode; there the
+plugin refuses to start with `thread` or `all`, and `dsh gateway setup discord` or `telegram` refuses to
+switch a profile that has either (set `replyMode: mention` first). With the terminal beside Slack the
+mode is Slack's; what is typed in the terminal is always for the bot. Told the message
 did not mention it, the model answers only when it is meant for it and otherwise posts nothing, with no
 working status shown; a failure or a timeout says nothing either. Several such messages in a row are one
 turn. Words such as `stop`, `usage` or `yes` are commands only with a mention; an approval may be answered

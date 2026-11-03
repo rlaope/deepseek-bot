@@ -310,6 +310,31 @@ for (const [name, vars, why] of [
   check('one at a time: on a switch, the channels and people given replace the old ones', given.targetChannels.join() === 'D1,tui' && given.allowedUsers.join() === 'U9', JSON.stringify(given))
   t.done()
 }
+// replyMode 'thread' and 'all' work on Slack only, and the gateway refuses to start with either on Discord or Telegram:
+// a switch to one of those is refused here, where the person is, instead of a gateway that never comes up.
+for (const [platform, token] of [['discord', { DISCORD_BOT_TOKEN: 'a.b.c' }], ['telegram', { TELEGRAM_BOT_TOKEN: '1:a' }]] as const) {
+  for (const mode of ['thread', 'all']) {
+    const s = scene({ profile: HAND.replace('    replyMode: mention\n', `    replyMode: ${mode}\n`), vars: token })
+    const [profile, env] = [s.profile(), s.env()]
+    const code = await gateway(['setup', platform, '--no-verify', '--no-restart'], s.io)
+    check(`replyMode: setup ${platform} on a profile with replyMode ${mode} is refused, saying it works on Slack only`, code === 1 && s.err.join().includes(`replyMode is ${mode}, which works on Slack only`) && s.err.join().includes('replyMode: mention') && s.err.join().includes('Nothing was written'), s.text())
+    check(`replyMode: and nothing was written (${platform}, ${mode})`, s.profile() === profile && s.env() === env, s.text())
+    s.done()
+  }
+}
+{
+  // Slack keeps its mode, and so does the terminal beside it.
+  const s = scene({ profile: HAND.replace('    replyMode: mention\n', '    replyMode: thread\n').replace("    platform: ['slack', 'local']", '    platform: slack').replace('      - tui\n', '') })
+  const code = await gateway(['setup', 'local', '--no-restart'], s.io)
+  check('replyMode: thread on Slack does not stop setting up the terminal beside it', code === 0 && (readProfile(s.profile()) as any).platform.join() === 'slack,local', s.text())
+  s.done()
+}
+for (const mode of ['thread', 'all']) {
+  const s = scene({ profile: HAND.replace('    replyMode: mention\n', `    replyMode: ${mode}\n`), vars: SLACK })
+  const code = await gateway(['setup', 'slack', '--no-verify', '--no-restart'], s.io)
+  check(`replyMode: setup slack on a profile with replyMode ${mode} goes ahead`, code === 0 && s.env().includes(`SLACK_BOT_TOKEN=${SLACK.SLACK_BOT_TOKEN}`), s.text())
+  s.done()
+}
 {
   const s = scene({ vars: { DISCORD_BOT_TOKEN: 'a.b.c' } })
   const before = s.profile()
