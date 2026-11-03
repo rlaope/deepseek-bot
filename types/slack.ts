@@ -39,6 +39,7 @@ export interface SlackMessage {
 export interface SlackHistoryResponse extends SlackResponse {
   messages?: SlackMessage[]
   has_more?: boolean
+  response_metadata?: { next_cursor?: string }
 }
 
 export interface SlackMember {

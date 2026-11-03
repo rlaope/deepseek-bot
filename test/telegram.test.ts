@@ -831,6 +831,18 @@ function groupMessage(overrides = {}) {
   rmSync(home, { recursive: true, force: true })
 }
 
+// 22. Cut for length: from the oldest, said so, and the pointer passes the question.
+{
+  const api = fakeApi({ updates: Array.from({ length: 10 }, (_, i) => ({ ...privateMessage({ message_id: 200 + i, text: `line ${200 + i} ${'x'.repeat(40)}` }), update_id: 200 + i })) })
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'tg-')))
+  await t.connect({ onMessage: () => {} })
+  await sleep(600)
+  const cut = await t.fetchHistory({ channel: '7', threadTs: null }, { currentTs: '210', sinceTs: null, limit: 20, maxChars: 200 })
+  await t.close()
+  const shown = [...cut.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
+  check('cut: what is left out for length is the oldest, said so, and the pointer passes the question', shown.length > 0 && shown.length < 10 && shown.at(-1) === 209 && /\(earlier messages not shown\)/.test(cut.text) && cut.lastTs === '210', `${JSON.stringify(shown)} ${cut.lastTs}`)
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)
