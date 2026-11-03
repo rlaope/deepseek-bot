@@ -30,7 +30,7 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
@@ -195,6 +195,8 @@ Decided against:
 - Progress marks against Slack itself: the live app lacked `reactions:write` when they were written, so
   `reactions.add`, `reactions.remove` and `reactions.get` are checked against a stubbed Web API only, and the
   rate limits (Tier 3 add, Tier 2 remove) by Slack's documentation, not by load.
+  Since Slack's marks moved onto `marks.ts` (shared with Discord and Telegram), the same stubbed suite has checked
+  them, unchanged; they were not run against Slack again.
 - `dsh gateway mcp add` end to end on a real gateway: the row it writes composes (`--dump-config`), and the
   row shape it writes reached a real model in the MCP scenario; a credential written to `~/.dsh/.env`
   reaching the server through `!!js process.env.NAME` is read from the harness's source (dsh-app-boot loads
@@ -218,6 +220,10 @@ Decided against:
   answers what is meant for it. The suites drive a fake agent; the scenario runner has no conversation to put a
   message without a mention in. Watch `kept quiet` against `answered` in the gateway log on a deployment that uses it.
 
+- `replyMode` refused on Discord and Telegram: the guided setup reaches the same refusal (its save step), but only
+  after the tokens are entered and checked, and only the non-guided path is in the suite. A profile edited by hand to
+  such a mode is refused when the plugin loads; what the harness does then was not run, and by the code `dsh gateway
+  start` or `restart` says only that it did not connect and names the log, where the reason is.
 - The guided `dsh gateway setup` in a real terminal: its menus and the token prompt were driven in a
   pty (macOS Terminal-style escape sequences) and by the suite's fakes; not yet in other emulators,
   nor end to end against Slack, Telegram and Discord. The browser is opened with macOS's `open`;

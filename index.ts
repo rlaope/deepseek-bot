@@ -428,6 +428,11 @@ export function apply(ctx, config) {
   // went to the first one listed.
   if (new Set(listedPlatforms).size !== listedPlatforms.length) problems.push(`platform: a platform listed twice would connect twice — list each once (got: ${JSON.stringify(cfg.platform)})`)
   const messengers = [...new Set(listedPlatforms.filter((p) => p !== 'local'))]
+  // Slack's: Discord and Telegram never read the mode, and a message there has no thread for the quiet path to take.
+  const threadless = messengers.filter((p) => p === 'discord' || p === 'telegram')
+  if (['thread', 'all'].includes(cfg.replyMode) && threadless.length > 0) {
+    problems.push(`replyMode: '${cfg.replyMode}' works on Slack only, and on ${threadless.join(', ')} it would do nothing — set replyMode: mention (there the bot answers a mention, a reply to it, or a direct message)`)
+  }
   if (messengers.length > 1) {
     problems.push(`platform: one messenger at a time, with 'local' beside it (got: ${messengers.join(', ')}) — keep one in the profile, or run dsh gateway setup <slack|telegram|discord>, which replaces the messenger`)
   }

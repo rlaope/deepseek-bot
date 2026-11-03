@@ -111,6 +111,20 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **Slack's progress marks had their own copy of the algorithm Discord and Telegram share.** `slack.ts` kept a
+  second implementation of what `marks.ts` does (the wanted mark added before the old ones come off, a burst merged
+  into its newest mark, the end tried again after 1×, 5× and 15× `markRetryMs`, a restart's own marks read back and
+  taken off, every mark stopped after a lasting refusal, said once), so a fix had to be made twice. Slack now hands
+  `marks.ts` its calls (`reactions.add`, `reactions.remove`, `reactions.get`) and keeps only how Slack's answers are
+  read. Two things Slack did that `marks.ts` could not say are now part of its interface, not a platform check: an
+  `unreachable` answer (a message or channel gone, `message_not_found` and the like) lets the message go without
+  taking ours off, where `gone` (too many reactions) still takes them off first; and the removes made while letting
+  a message go are marked `clearing`, so Slack does not log their failures, as before. The refusal line names
+  Slack's error as before. Behaviour is unchanged: the Slack, Discord and Telegram suites pass as they were, with
+  seven Slack checks added for what they did not pin (the refusal and failure lines, no remove on a message gone
+  after its eyes, the quiet removes on a full message, four tries of a failing end, the digit's clamp, a missing
+  token), each passing on the code before and failing against a mutant of the code after.
+
 - **`npm install` failed in the sandbox, and the agent told the person to `sudo chown` their `~/.npm`.** Package
   managers keep their caches in the user's home, which a command cannot write: npm failed with EPERM, uv and go
   stopped, pip turned its cache off, and pnpm put its store in the project. The runner now points them into a cache
@@ -226,6 +240,15 @@ the caveat about version numbers is at the bottom.
   conversation; other chats do not wait. A message already handled is marked so at once, not on the half-second
   debounced save: a usage request or a stop sent again after a restart within it was answered twice. Checked in the Discord, Telegram
   and Slack suites through the core, red before; against fake platform APIs only.
+- **`replyMode: thread` and `all` did nothing on Discord and Telegram.** Validation accepted them, but neither
+  transport reads the mode, and the core's quiet path needs a thread, which a Discord channel or Telegram chat does
+  not have: the bot answered a mention, a reply to it or a DM as with `mention`. The plugin now refuses to start with
+  either on Discord or Telegram, saying the mode works on Slack only and to set `replyMode: mention`; and `dsh gateway
+  setup discord` or `telegram` refuses, before writing anything, to switch a profile that has either, where the
+  gateway would otherwise just not come up. Slack keeps both, with or without the terminal beside it. Checked in the
+  core and gateway suites, red before. docs/setup.md and the profile templates say so.
+  **Upgrading:** a Discord or Telegram deployment that set `replyMode: thread` or `all` will now refuse to start. Set
+  `replyMode: mention` before updating; it behaved as `mention` there anyway.
 - **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
   puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat
   above anything said while the turn ran. Both transports can delete now (Discord's message DELETE, Telegram's

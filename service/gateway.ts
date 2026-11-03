@@ -258,7 +258,7 @@ const failed = (x: unknown): x is { error: string } => typeof x === 'object' && 
 
 // ── The profile's deepbot row ─────────────────────────────────────────────────
 
-type ListKey = 'platform' | 'targetChannels' | 'allowedUsers' | 'askTools'
+type ListKey = 'platform' | 'targetChannels' | 'allowedUsers' | 'askTools' | 'replyMode'
 interface ListField { values: string[]; style: 'scalar' | 'flow' | 'block'; line: number; end: number; indent: string; itemIndent: string; comment: string }
 export interface DeepbotLists { platform: string[]; targetChannels: string[]; allowedUsers: string[] }
 
@@ -853,6 +853,15 @@ interface TokenAnswer { key: string; value: string; from: string }
  */
 function commitPlatform(p: Paths, profile: Loaded, platform: Platform, tokens: TokenAnswer[], channels: string[] | undefined, users: string[] | undefined, replaceUsers = false): { error: string } | { next: DeepbotLists; changed: boolean; replaced: string[]; channelsReset: boolean } {
   const { lists } = profile
+  // The gateway refuses to start with replyMode thread or all on Discord or Telegram (Slack's only): said here, before
+  // anything is written, rather than as a gateway that does not come up.
+  if (platform === 'discord' || platform === 'telegram') {
+    const lines = profile.text.split('\n')
+    const row = deepbotRow(lines)
+    const mode = 'error' in row ? null : readList(lines, row, 'replyMode')
+    const value = mode === null || failed(mode) ? null : mode.values[0]
+    if (value === 'thread' || value === 'all') return { error: `replyMode is ${value}, which works on Slack only: on ${platform} it would do nothing, and the gateway would not start with it. Set replyMode: mention in the deepbot row, then run this again` }
+  }
   const replaced = platform === 'local' ? [] : messengersOf(lists.platform).filter((name) => name !== platform)
   const kept = lists.platform.filter((name) => !replaced.includes(name))
   const terminal = kept.includes('local') || platform === 'local'

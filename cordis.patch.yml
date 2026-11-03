@@ -11,7 +11,8 @@
 #   every invited channel:  targetChannels: ['*']
 #
 # replyMode: 'mention' answers @-mentions in channels (DMs are always answered);
-# 'all' answers every human message in the allowed channels.
+# 'all' answers every human message in the allowed channels. 'thread' and 'all' are
+# Slack's only: on Discord or Telegram the plugin refuses to start with either.
 - insert:
     - id: deepbot
       name: 'deepbot'

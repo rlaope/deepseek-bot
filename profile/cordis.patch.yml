@@ -196,7 +196,8 @@
 # terminal alone; `dsh gateway setup` puts a messenger, its channels and its people here.
 #   targetChannels: ['*'] answers in every channel the bot is invited to; a list of ids narrows it.
 #   replyMode: mention answers @-mentions in channels; DMs are always answered. thread also takes every
-#   message in a thread the bot takes part in, and the model keeps quiet when one is not for it.
+#   message in a thread the bot takes part in, and the model keeps quiet when one is not for it. thread and
+#   all are Slack's only: on Discord or Telegram the gateway refuses to start with either.
 #   language: what the bot itself says (approvals, stops, failures): en, ko or zh. The terminal's own
 #   interface is English; the model's own answers follow the persona in SOUL.md, not this.
 #   askTools (not set here: none): tools asked for on every call, as a destructive command is, such as an MCP
