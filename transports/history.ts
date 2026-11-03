@@ -9,6 +9,17 @@ export const EARLIER_NOT_SHOWN = '(earlier messages not shown)'
 export const OWN_EARLIER = 'you (earlier)'
 
 /**
+ * A person's name as a history shows it. Anyone can call themselves "you (earlier)" (a Slack display name, a Telegram
+ * first name, an old Discord username), and their lines read as the bot's own earlier messages. A name the label can
+ * be read in, one that starts with "you" or holds "you (" in any case and spacing, is quoted and given the person's id,
+ * which the bot's own lines never carry.
+ */
+export function personName(name: string, id: string): string {
+  const shown = String(name).replace(/\s+/g, ' ').trim() || id
+  return /^you\b|you\s*\(/i.test(shown) ? `"${shown}" (${id})` : shown
+}
+
+/**
  * How many of the newest lines fit in `maxChars`. What a history leaves out for length is its oldest lines: cut from
  * the top, the lines right before the message being answered were the ones lost.
  */

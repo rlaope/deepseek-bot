@@ -26,7 +26,7 @@ import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 import { numberedParts } from './parts.js'
 import { reactionMarks, type MarkOutcome } from './marks.js'
-import { EARLIER_NOT_SHOWN, OWN_EARLIER, newestThatFit } from './history.js'
+import { EARLIER_NOT_SHOWN, OWN_EARLIER, newestThatFit, personName } from './history.js'
 
 export function createSlackApi({ cfg, log, sessionCwd }) {
   // ── Slack Web API (built-in fetch) ────────────────────────────────────────
@@ -55,8 +55,9 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
    */
   const nameCache = new Map()
   const MAX_NAME_PAGES = 10
-  /** A thread's pages read for one history, 200 each. */
-  const MAX_REPLY_PAGES = 5
+  /** Calls one history makes of a thread at most, 200 messages each, and how many it pages before jumping ahead. */
+  const MAX_REPLY_CALLS = 6
+  const PAGES_BEFORE_JUMP = 2
   function rememberMember(member) {
     const name = member?.profile?.display_name || member?.real_name || member?.name || member?.id
     if (member?.id && name) nameCache.set(member.id, name)
@@ -123,24 +124,60 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
       return { text: hint, lastTs: null }
     }
     const messages: SlackMessage[] = []
-    // Older messages after the pointer than were read (a channel's page), or newer ones (a thread past its page bound).
+    // Older messages after the pointer than were read (a channel's page, a thread read from further on), or newer ones
+    // (a thread past its call bound).
     let olderUnread = false
     let newerUnread = false
     if (threadTs) {
       // A thread is read oldest first, up to the message being answered: one page of a long gap since the pointer
-      // was its oldest 200, and the rest, the lines right before the question, never arrived. Paged, bounded.
+      // was its oldest 200, and the rest, the lines right before the question, never arrived. Paged; and a gap that
+      // is still not read after a few pages is read from halfway between what was read and the question instead,
+      // what lies before that left out, so the lines right before the question are reached in a bounded number of
+      // calls. Paging to the end held the oldest 1000 after the pointer, and dropped the newest.
       let cursor: string | undefined
-      for (let page = 0; ; page++) {
-        const r = await slackGet<SlackHistoryResponse>(botToken, 'conversations.replies', { channel, ts: threadTs, limit: '200', ...latest, ...(sinceTs ? { oldest: sinceTs } : {}), ...(cursor ? { cursor } : {}) })
+      let from: string | null = sinceTs
+      // Before the last jump: where that stretch was read from, and the newest it read.
+      let fromBefore: string | null = sinceTs
+      let readBefore = 0
+      const replies = (params: Record<string, string>) => slackGet<SlackHistoryResponse>(botToken, 'conversations.replies', { channel, ts: threadTs, limit: '200', ...params })
+      let call = 0
+      for (;;) {
+        call++
+        const r = await replies({ ...latest, ...(from ? { oldest: from } : {}), ...(cursor ? { cursor } : {}) })
         if (!r.ok) return failed(r)
         messages.push(...(r.messages ?? []))
         cursor = r.has_more === true ? r.response_metadata?.next_cursor || undefined : undefined
         if (cursor === undefined) break
-        if (page + 1 >= MAX_REPLY_PAGES) {
+        if (call >= MAX_REPLY_CALLS || !('latest' in latest)) {
           newerUnread = true
-          log(`history: thread ${threadTs} has more than ${MAX_REPLY_PAGES * 200} messages since the last turn — the newest are not read`)
+          log(`history: thread ${threadTs} was not read to the question in ${call} call(s) — the newest are not read`)
           break
         }
+        if (call >= PAGES_BEFORE_JUMP) {
+          fromBefore = from
+          readBefore = messages.reduce((max, m) => Math.max(max, Number(m.ts)), Number(from ?? 0))
+          from = ((readBefore + Number(currentTs)) / 2).toFixed(6)
+          cursor = undefined
+          olderUnread = true
+        }
+      }
+      if (olderUnread) {
+        // Only what was read from the last jump on: what came before it is not next to it. A page carries the
+        // thread's first message whatever its `oldest`, and it is left out across the gap too.
+        let after = Number(from)
+        // A jump that left fewer than `limit` after it: what it skipped, if one call holds it all, joins the two.
+        const tail = messages.filter((m) => Number(m.ts) > after).length
+        if (tail < limit && call < MAX_REPLY_CALLS && !newerUnread) {
+          const r = await replies({ oldest: readBefore.toFixed(6), latest: String(from), inclusive: 'true' })
+          if (r.ok && r.has_more !== true) {
+            messages.push(...(r.messages ?? []))
+            after = Number(fromBefore ?? 0)
+            olderUnread = fromBefore !== sinceTs
+          }
+        }
+        // Once each (an inclusive bound reads one twice), in reading order.
+        const byTs = new Map(messages.filter((m) => Number(m.ts) > after).map((m) => [m.ts, m]))
+        messages.splice(0, messages.length, ...[...byTs.values()].sort((x, y) => Number(x.ts) - Number(y.ts)))
       }
     } else {
       // Newest first, up to the message being answered; put in reading order.
@@ -159,7 +196,7 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
       .filter((m) => !m.subtype || m.subtype === 'thread_broadcast' || m.subtype === 'file_share')
       .filter((m) => sinceTs === null || !own(m))
       .map((m) => {
-        const who = own(m) ? OWN_EARLIER : m.user ? (nameCache.get(m.user) ?? m.user) : (m.bot_id ? `bot(${m.bot_id})` : 'unknown')
+        const who = own(m) ? OWN_EARLIER : m.user ? personName(nameCache.get(m.user) ?? m.user, m.user) : (m.bot_id ? `bot(${m.bot_id})` : 'unknown')
         const when = new Date(Number(m.ts) * 1000).toISOString().slice(5, 16).replace('T', ' ')
         const text = humanize(m.text).replace(/\n+/g, ' ').trim()
         return { line: `${when} ${who}: ${text}`, own: own(m), empty: text === '' }

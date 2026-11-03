@@ -237,12 +237,14 @@ the caveat about version numbers is at the bottom.
   the pointer behind the question. Now, on every platform, history is what came after the pointer and before the
   message being answered, and the pointer passes the message being answered. The bot's own messages are left out of a
   delta (the session has them) and given to a new session (a thread under a watch's alert, a session whose log is
-  gone, a pruned conversation), marked "you (earlier)" rather than as someone else's. A Slack thread is paged up to
-  the question; Discord reads `before` it, its newest page. What a full page or a cut for length leaves out is the
+  gone, a pruned conversation), marked "you (earlier)" rather than as someone else's; a person whose name is that
+  label (or begins with "you", in any case) is shown quoted, with their id, so their lines are not taken for the
+  bot's. A Slack thread is paged up to the question, reading on from halfway to it when a gap is long, in at most 6
+  calls; Discord reads `before` it, its newest page. What a full page or a cut for length leaves out is the
   oldest, and the history says "(earlier messages not shown)". Telegram's ring is per topic already, and an album is
   remembered under its own id, so its caption is no longer the next turn's history. Checked against fake APIs only,
-  turns through the real transports and the core (`test/slack.test.ts`, `test/discord.test.ts` 16-18,
-  `test/telegram.test.ts` 21-22), each red before.
+  turns through the real transports and the core (`test/slack.test.ts`, `test/discord.test.ts` 16-19,
+  `test/telegram.test.ts` 23-25), each red before.
 - **Threads, topics and group DMs went to the wrong place, or nowhere.**
   - Discord: a thread or forum post is a channel of its own, so a `targetChannels` entry naming its channel did not
     cover it, and the tenant map sent it to the default workspace. The transport now learns each thread's channel from

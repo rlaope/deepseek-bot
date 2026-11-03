@@ -23,7 +23,7 @@ import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 import { numberedParts } from './parts.js'
 import { reactionMarks, REACTIONS, type MarkOutcome } from './marks.js'
-import { EARLIER_NOT_SHOWN, OWN_EARLIER, newestThatFit } from './history.js'
+import { EARLIER_NOT_SHOWN, OWN_EARLIER, newestThatFit, personName } from './history.js'
 import type { ActionButton, ActionEvent, AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 
 interface DiscordHost {
@@ -391,7 +391,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
       return null
     }
     const addressed = addressedToBot(message)
-    remember(message.channel_id, message.id, message.author?.username ?? 'unknown', addressed ? stripMention(content) : content)
+    remember(message.channel_id, message.id, personName(message.author?.username ?? 'unknown', message.author?.id ?? 'unknown'), addressed ? stripMention(content) : content)
     return {
       eventId: `discord-${message.id}`,
       target: { channel: message.channel_id, threadTs: null },
@@ -613,7 +613,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
           if (own && since !== null) continue
           const text = (message.content ?? '').replace(/\n+/g, ' ').trim()
           if (text === '') continue
-          entries.push({ line: `${own ? OWN_EARLIER : message.author?.username ?? 'unknown'}: ${text}`, own })
+          entries.push({ line: `${own ? OWN_EARLIER : personName(message.author?.username ?? 'unknown', message.author?.id ?? 'unknown')}: ${text}`, own })
         }
         return said(entries, olderUnread)
       } catch (e) {
