@@ -20,8 +20,12 @@ function check(name, ok, detail = '') {
 for (const [address, kind] of [
   ['169.254.169.254', 'metadata'], ['169.254.10.10', 'metadata'], ['100.100.100.200', 'metadata'], ['fd00:ec2::254', 'metadata'],
   ['::ffff:169.254.169.254', 'metadata'], ['64:ff9b::a9fe:a9fe', 'metadata'],
-  // NAT64's local-use prefix (64:ff9b:1::/48, RFC 8215) carries IPv4 in its last 32 bits too.
+  // NAT64's local-use prefix (64:ff9b:1::/48, RFC 8215) holds translation prefixes of any RFC 6052 length: a /96 one
+  // carries IPv4 in the last 32 bits, a /48, /56 or /64 one around the reserved octet (64:ff9b:1:808:8:800:: is 8.8.8.8
+  // behind a /48, not 0.0.0.0). Readings that disagree: metadata wins, private against public is unclear.
   ['64:ff9b:1::a9fe:a9fe', 'metadata'], ['64:ff9b:1::7f00:1', 'private'], ['64:ff9b:1::808:808', 'public'],
+  ['64:ff9b:1:808:8:800::', 'public'], ['64:ff9b:1:a9fe:a9:fe00::', 'metadata'], ['64:ff9b:1:7f00:0:100::', 'private'],
+  ['64:ff9b:1:abcd:a9:fea9:fe00:0', 'metadata'], ['64:ff9b:1:0:8:808:a00:0', 'unclear'],
   // Azure's WireServer and Oracle Cloud's, and IPv4 carried in IPv6 the old ways: compatible (::a.b.c.d) and 6to4.
   ['168.63.129.16', 'metadata'], ['192.0.0.192', 'metadata'], ['::169.254.169.254', 'metadata'], ['2002:a9fe:a9fe::1', 'metadata'],
   ['::127.0.0.1', 'private'], ['2002:a00:1::1', 'private'], ['2001:0:4136:e378:8000:63bf:3fff:fdd2', 'private'],
@@ -37,6 +41,7 @@ for (const [address, kind] of [
 
 // Why a request is not made: a metadata name before it is resolved, any metadata address it resolves to, a private one
 // unless the page asked for was private itself.
+check('an unclear local-use NAT64 address is refused even to a private page', /NAT64 local-use/.test(String(destinationRefusal('x.example', ['64:ff9b:1:0:8:808:a00:0'], true))))
 check('a metadata name is refused whatever it resolves to', /cloud metadata/.test(String(destinationRefusal('metadata.google.internal', ['8.8.8.8'], true))))
 check('a name that resolves to a metadata address is refused', /169\.254\.169\.254, a cloud metadata service/.test(String(destinationRefusal('meta.example', ['93.184.216.34', '169.254.169.254'], true))))
 check('a name that resolves to a private address is refused for a public page', /10\.0\.0\.5, a private address/.test(String(destinationRefusal('intranet.example', ['10.0.0.5'], false))))

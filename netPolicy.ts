@@ -65,27 +65,63 @@ function groups(address: string): number[] | null {
 }
 
 /**
- * The IPv4 address an IPv6 one carries, or null: NAT64 (64:ff9b::/96, and the local-use 64:ff9b:1::/48) and the old compatible form (::a.b.c.d, with
- * :: and ::1 among them) in the last 32 bits, 6to4 (2002::/16) in the 32 after the prefix. A mapped one
- * (::ffff:a.b.c.d) needs nothing: BlockList checks it against the IPv4 rules itself.
+ * The IPv4 address an IPv6 one carries, or null: NAT64's well-known prefix (64:ff9b::/96) and the old compatible form
+ * (::a.b.c.d, with :: and ::1 among them) in the last 32 bits, 6to4 (2002::/16) in the 32 after the prefix. A mapped one
+ * (::ffff:a.b.c.d) needs nothing: BlockList checks it against the IPv4 rules itself. NAT64's local-use prefix is read by
+ * localUseIPv4s.
  */
-function carriedIPv4(address: string): string | null {
-  const g = groups(address)
-  if (g === null) return null
+function carriedIPv4(g: readonly number[]): string | null {
   const quad = (hi: number, lo: number) => [hi >> 8, hi & 255, lo >> 8, lo & 255].join('.')
-  const translated = g[0] === 0x64 && g[1] === 0xff9b && (g.slice(2, 6).every((x) => x === 0) || g[2] === 1)
+  const translated = g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)
   const compatible = g.slice(0, 6).every((x) => x === 0)
   if (translated || compatible) return quad(g[6], g[7])
   if (g[0] === 0x2002) return quad(g[1], g[2])
   return null
 }
 
-/** What an IP address is: a cloud metadata service, an address off the public internet, or a public one. */
-export function addressKind(address: string): 'metadata' | 'private' | 'public' {
+/**
+ * The IPv4 addresses an address in NAT64's local-use prefix (64:ff9b:1::/48, RFC 8215) may carry, or null for any other
+ * address. The /48 holds the operator's own translation prefixes, /48, /56, /64 or /96 long (RFC 6052 2.2), and the
+ * address does not say which: under the shorter ones the IPv4 bits sit around the reserved octet (bits 64 to 71) and
+ * the rest is zero, so 64:ff9b:1:808:8:800:: is 8.8.8.8 behind a /48 and 0.0.0.0 read as a /96. Every layout the
+ * address fits is read: the reserved octet and the suffix are zero (one with the reserved octet set fits none and reads
+ * as 0.0.0.0). A reading in 0.0.0.0/8 is dropped when there are others (a translator sends nothing there; it is the
+ * /96 reading of the shorter layouts); with none, 0.0.0.0 stands.
+ */
+function localUseIPv4s(g: readonly number[]): string[] | null {
+  if (g[0] !== 0x64 || g[1] !== 0xff9b || g[2] !== 1) return null
+  const bits = g.reduce((v, x) => (v << 16n) | BigInt(x), 0n)
+  const mask = (n: number) => (1n << BigInt(n)) - 1n
+  if (((bits >> 56n) & 0xffn) !== 0n) return ['0.0.0.0']
+  const read: bigint[] = []
+  for (const prefix of [48, 56, 64]) {
+    const before = 64 - prefix, after = 32 - before
+    const suffix = 128 - 72 - after
+    if ((bits & mask(suffix)) !== 0n) continue
+    read.push((((bits >> 64n) & mask(before)) << BigInt(after)) | ((bits >> BigInt(suffix)) & mask(after)))
+  }
+  read.push(bits & mask(32))
+  const quad = (v: bigint) => [24n, 16n, 8n, 0n].map((s) => Number((v >> s) & 255n)).join('.')
+  const routed = read.filter((v) => v >> 24n !== 0n)
+  return [...new Set((routed.length > 0 ? routed : read).map(quad))]
+}
+
+/**
+ * What an IP address is: a cloud metadata service, an address off the public internet, a public one, or unclear: one in
+ * NAT64's local-use prefix whose possible IPv4 readings are private and public both.
+ */
+export function addressKind(address: string): 'metadata' | 'private' | 'public' | 'unclear' {
   const family = isIP(address)
-  if (family === 6) {
-    const carried = carriedIPv4(address)
+  const g = family === 6 ? groups(address) : null
+  if (g !== null) {
+    const carried = carriedIPv4(g)
     if (carried !== null) return addressKind(carried)
+    // Readings that disagree: a metadata one is enough to refuse; private against public is unclear, refused either
+    // way, since neither a private nor a public answer is safe for an address that may be the other.
+    const kinds = new Set(localUseIPv4s(g)?.map(addressKind))
+    if (kinds.size === 1) return [...kinds][0]
+    if (kinds.has('metadata')) return 'metadata'
+    if (kinds.size > 1) return 'unclear'
   }
   const type = family === 6 ? 'ipv6' : 'ipv4'
   if (metadata.check(address, type)) return 'metadata'
@@ -104,7 +140,9 @@ export function destinationRefusal(host: string, addresses: readonly string[], a
   for (const address of addresses) {
     const kind = addressKind(address)
     if (kind === 'public' || (kind === 'private' && allowPrivate)) continue
-    const what = kind === 'metadata' ? 'a cloud metadata service, which answers with credentials' : 'a private address (this machine or its network), which is not reached from here'
+    const what = kind === 'metadata' ? 'a cloud metadata service, which answers with credentials'
+      : kind === 'unclear' ? 'a NAT64 local-use address that may carry a private IPv4 address, which is not reached from here'
+      : 'a private address (this machine or its network), which is not reached from here'
     return address === host ? `${address} is ${what}` : `${host} is ${address}, ${what}`
   }
   return null
