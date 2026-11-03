@@ -212,6 +212,13 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **`replyMode: thread` and `all` did nothing on Discord and Telegram.** Validation accepted them, but neither
+  transport reads the mode, and the core's quiet path needs a thread, which a Discord channel or Telegram chat does
+  not have: the bot answered a mention, a reply to it or a DM as with `mention`. The plugin now refuses to start with
+  either on Discord or Telegram, saying the mode works on Slack only and to set `replyMode: mention`; and `dsh gateway
+  setup discord` or `telegram` refuses, before writing anything, to switch a profile that has either, where the
+  gateway would otherwise just not come up. Slack keeps both, with or without the terminal beside it. Checked in the
+  core and gateway suites, red before. docs/setup.md and the profile templates say so.
 - **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
   puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat
   above anything said while the turn ran. Both transports can delete now (Discord's message DELETE, Telegram's
