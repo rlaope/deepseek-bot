@@ -887,7 +887,12 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   await sleep(60)
   n.transport.deliver(n.transport.message({ ts: '3202.2', text: '이건 봐줘' }))
   await sleep(900)
-  check('mute at start: (control) a waiting message that named it still runs', n.followups.length === 2 && n.transport.posted.some((p) => p.text === '응, 볼게'), `${n.followups.length} turn(s) ${JSON.stringify(n.transport.posted.map((p) => p.text))}`)
+  check('mute at start: a waiting message that named it still runs', n.followups.length === 2 && n.transport.posted.some((p) => p.text === '응, 볼게'), `${n.followups.length} turn(s) ${JSON.stringify(n.transport.posted.map((p) => p.text))}`)
+  // Named again, as at intake: it unmutes, and a follow-up without a mention is a turn again.
+  check('mute at start: a waiting message that named it unmutes the conversation', n.read().muted?.[key] === undefined, JSON.stringify(n.read().muted))
+  n.transport.deliver(n.transport.message({ addressed: false, ts: '3202.3', text: '그럼 이것도?' }))
+  await sleep(600)
+  check('mute at start: and a later follow-up without a mention opens a turn again', n.followups.length === 3, `${n.followups.length} turn(s)`)
   n.done()
 }
 
