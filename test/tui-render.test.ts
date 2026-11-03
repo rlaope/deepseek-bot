@@ -24,7 +24,7 @@ import { welcomeBlock, answerBlock, toolCallBlock, userBlock, outputBlock } from
 import { copy, osc52 } from '../dist/tui/render/clipboard.js'
 import { emulator, fakeTerminal, fakeClock } from './tui-fakes.ts'
 import { sgr, detectColorMode, rgbTo256, backgroundOf, useBackground, themeGeneration, theme, palette } from '../dist/tui/render/style.js'
-import { markdown } from '../dist/tui/render/markdown.js'
+import { markdown, markdownStream } from '../dist/tui/render/markdown.js'
 import { lineDiff } from '../dist/tui/render/linediff.js'
 
 const results = []
@@ -673,6 +673,60 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   split.append(' on\n')
   const text = split.lines(80).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
   check('job output: (control) an escape split between reads still goes whole, tabs at stops of 8', JSON.stringify(text) === JSON.stringify(['a       b', 'red: hot and on']), JSON.stringify(text))
+// A streamed answer laid out again only from its last block boundary; a resize laid out around the view.
+{
+  const st = { text: 'T', bold: 'B', italic: 'I', boldItalic: 'BI', strike: 'S', code: 'C', heading: 'H', quote: 'Q', codeBlock: 'K', dim: 'D', link: 'L', keyword: 'KW', string: 'ST', comment: 'CM', number: 'NU' }
+  const pre = { text: '  ', style: '' }
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+  // Streams of what changes earlier lines when it comes later: fences opened and closed, tables, rules under text.
+  const PIECES = ['```js', '```', '~~~', '````', 'const a = 1', '\tindented', '| a | b |', '|---|---|', '| 1 | 2 |', 'a | b', '---|---', '---', '',
+    '# head', '- item', '1. one', '> quote', 'plain words **bold** `x` ~~s~~', 'a | pipe in text', '***', 'x'.repeat(70)]
+  let bad = null
+  for (let n = 0; n < 120 && bad === null; n++) {
+    const text = Array.from({ length: 5 + rand(25) }, () => PIECES[rand(PIECES.length)]).join('\n')
+    const md = markdownStream()
+    for (let at = 0; at <= text.length && bad === null; at += 1 + rand(9)) {
+      const now = text.slice(0, at)
+      if (!same(md(now, 40, st, pre), markdown(now, 40, st, pre))) bad = JSON.stringify(now)
+    }
+    if (bad === null && !same(md(text, 40, st, pre), markdown(text, 40, st, pre))) bad = JSON.stringify(text)
+  }
+  check('stream: every frame of a streamed answer lays out as the whole text does', bad === null, bad ?? '')
+  const again = markdownStream()
+  again('```js\nconst a = 1\nmore', 40, st, pre)
+  check('stream: a text that is not the last one with more (a retry) is laid out from its start', same(again('plain\n- x', 40, st, pre), markdown('plain\n- x', 40, st, pre)) && same(again('plain\n- x', 30, st, pre), markdown('plain\n- x', 30, st, pre)))
+
+  // The work per frame stays bounded: a 2000-line answer with a long code block, 40 characters a frame.
+  const long = [...Array.from({ length: 800 }, (_, i) => (i % 9 === 0 ? '' : `line ${i} of the answer, words and **bold**`)), '```go', ...Array.from({ length: 800 }, (_, i) => `\tx := ${i}`), '```', ...Array.from({ length: 400 }, (_, i) => `- item ${i}`)].join('\n')
+  let work = 0
+  const counted = markdownStream((lines) => { work += lines })
+  let frames = 0
+  for (let at = 40; at < long.length + 40; at += 40) { counted(long.slice(0, at), 80, st, pre); frames++ }
+  const lines = long.split('\n').length
+  check('stream: a long answer\'s layout work grows with its length, not with its length times its frames', work <= 2 * frames + 2 * lines, `${work} lines laid out over ${frames} frames of a ${lines}-line answer`)
+  check('stream: (control) and the last frame is the whole answer', same(counted(long, 80, st, pre), markdown(long, 80, st, pre)))
+
+  // A resize of a long session lays out what is in view and a screen around it, not every block.
+  let calls = 0
+  const counting = (block) => ({ ...block, lines: (w) => { calls++; return block.lines(w) }, get version() { return block.version } })
+  const session = () => {
+    const tr = new Transcript()
+    for (let i = 0; i < 600; i++) { const b = answerBlock('none'); b.finish(`answer ${i}: ${'words to wrap '.repeat(12)}\n- a point\n- another`); tr.push(counting(b)) }
+    return tr
+  }
+  const tr = session()
+  tr.visible(120, 28)
+  calls = 0
+  const shown = tr.visible(100, 28)
+  const resized = calls
+  const fresh = session()
+  const whole = fresh.layout(100)
+  check('resize: a 600-block session lays out only the blocks near the view', resized > 0 && resized < 40, `${resized} blocks laid out`)
+  check('resize: and the view shows what a full layout shows at the bottom', same(shown, whole.slice(whole.length - 28)), `${tr.size} vs ${whole.length} lines`)
+  tr.toTop()
+  check('resize: scrolled to the top, the first lines are laid out as a full layout has them', same(tr.visible(100, 28), whole.slice(0, 28)) && tr.unseen === 0)
+  check('resize: and every line, asked for all of them, as a full layout', same(tr.layout(100), whole))
+  check('resize: (control) at the width it was laid out at, nothing is laid out again', (calls = 0, tr.visible(100, 28), calls === 0))
 }
 
 const failed = results.filter((r) => !r.ok)
