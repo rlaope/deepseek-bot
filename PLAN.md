@@ -30,7 +30,7 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform, as much of them as `marks` says, and the model's own reaction (`[react:👍]`) beside them; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
@@ -126,6 +126,12 @@ Decided against:
   be a knob that does nothing.
 
 ## Unverified
+
+- The `marks` setting and the model's reactions, checked against the fake transport and mocked platform APIs only:
+  not seen that Slack takes `+1`, `-1`, `heart`, `thinking_face` and the rest, that Discord takes ❤️ with its VS16
+  and Telegram ❤ without, nor that a real model answers `[react:👍]` alone when a reaction says enough (no scenario).
+  While Slack streams a turn, a reaction-only answer shows `[react:👍]` as text until the stream is reset. A turn
+  whose session was lost and that answers with a reaction alone does not say the session was lost.
 
 - Muting a conversation (quiet words, `[quiet]`), checked against the fake transport and mocked platform APIs only:
   not seen that Slack takes `saluting_face` and Discord and Telegram 🫡 on a live message, nor that a real model

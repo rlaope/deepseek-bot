@@ -669,6 +669,79 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   pr.done()
 }
 
+// 3e. The model may react instead of replying: an answer of "[react:👍]" alone puts that reaction on the person's
+// message and posts nothing; on its own first line, before text, it reacts and posts the rest. Anything else with
+// "[react:" in it is text, all or nothing; and an emoji this platform cannot put is never swapped for another: the
+// text after it is posted, or, with none, the emoji itself.
+{
+  const ALL = ['👍', '👎', '✅', '❌', '👀', '🙏', '🔥', '🎉', '😂', '❤️', '🤔', '🫡']
+  const NO_CHECK = ALL.filter((e) => !['✅', '❌', '😂'].includes(e))
+  const reacting = async (text: string, { reactions = ALL as string[] | null, config = {} as Record<string, unknown>, message = {} as Record<string, unknown>, fake = {} as FakeTransportOptions } = {}) => {
+    const t = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-react-')), config: { ...config, fake: { marks: true, typing: true, remove: true, ...fake, ...(reactions === null ? {} : { reactions }) } }, state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, answer: { text } })
+    await sleep(80)
+    t.transport.deliver(t.transport.message({ ts: '3000.1', text: '고마워', ...message }))
+    await sleep(300)
+    return t
+  }
+  const said = (t: ReturnType<typeof boot>) => t.transport.posted.map((p) => p.text)
+  const put = (t: ReturnType<typeof boot>) => t.transport.reacted.map((r) => `${r.emoji}@${r.ts}`)
+  const kinds = (t: ReturnType<typeof boot>) => t.transport.marks.filter((m) => m.ts === '3000.1').map((m) => m.state.kind)
+
+  const a = await reacting('[react:👍]')
+  check('react: "[react:👍]" alone puts 👍 on the message and posts nothing', JSON.stringify(put(a)) === '["👍@3000.1"]' && said(a).length === 0, `${JSON.stringify(put(a))} ${JSON.stringify(said(a))}`)
+  check('react: and the turn ends done, nothing after', kinds(a).at(-1) === 'done' && a.transport.lateMarks.length === 0, JSON.stringify(kinds(a)))
+  const standing = textOf(a.followups[0]).split('\n').find((l) => l.startsWith('[reacting]')) ?? ''
+  check('react: the model is told it may answer [react:👍] alone, with the emoji this platform takes', /\[react:👍\]/.test(standing) && ALL.every((e) => standing.includes(e)), standing)
+  a.done()
+  const b = await reacting('[react:👍]\nthanks, noted')
+  check('react: "[react:👍]" on the first line reacts and posts the rest', JSON.stringify(put(b)) === '["👍@3000.1"]' && JSON.stringify(said(b)) === '["thanks, noted"]', `${JSON.stringify(put(b))} ${JSON.stringify(said(b))}`)
+  b.done()
+  for (const [text, emoji] of [['`[react:👍]`', '👍'], ['[react:👍].', '👍'], ['  [react:🎉]  ', '🎉'], ['[react:❤]', '❤️']] as const) {
+    const x = await reacting(text)
+    check(`react: "${text}" is the reaction ${emoji}`, JSON.stringify(put(x)) === JSON.stringify([`${emoji}@3000.1`]) && said(x).length === 0, `${JSON.stringify(put(x))} ${JSON.stringify(said(x))}`)
+    x.done()
+  }
+  // All or nothing: not one of the list, not alone on its line, not well formed — the whole answer is text.
+  for (const text of ['[react:🐙]', 'see [react:👍]', '[react:👍] thanks', '[react:👍', '[react:]', '[react:👍👍]', '[react:thumbsup]', 'thanks\n[react:👍]']) {
+    const x = await reacting(text)
+    check(`react: "${text.replace(/\n/g, '\\n')}" is posted as text, with no reaction`, put(x).length === 0 && JSON.stringify(said(x)) === JSON.stringify([text.trim()]), `${JSON.stringify(put(x))} ${JSON.stringify(said(x))}`)
+    x.done()
+  }
+  // A platform that cannot show it (Telegram has no ✅): nothing in its place. Its text is posted, or with none, the emoji.
+  const c = await reacting('[react:✅]', { reactions: NO_CHECK })
+  check('react: an emoji this platform cannot put, alone, is posted as the emoji', put(c).length === 0 && JSON.stringify(said(c)) === '["✅"]', `${JSON.stringify(put(c))} ${JSON.stringify(said(c))}`)
+  const cStanding = textOf(c.followups[0]).split('\n').find((l) => l.startsWith('[reacting]')) ?? ''
+  check('react: the model is told only the emoji this platform takes', NO_CHECK.every((e) => cStanding.includes(e)) && !cStanding.includes('✅') && !cStanding.includes('😂'), cStanding)
+  c.done()
+  const d = await reacting('[react:✅]\nok, done', { reactions: NO_CHECK })
+  check('react: an emoji this platform cannot put, before text, posts only the text', put(d).length === 0 && JSON.stringify(said(d)) === '["ok, done"]', `${JSON.stringify(put(d))} ${JSON.stringify(said(d))}`)
+  d.done()
+  // No reactions at all (the terminal): the emoji is said, and the model is not told about reactions.
+  const e = await reacting('[react:👍]', { reactions: null })
+  check('react: where there are no reactions, the emoji is posted', JSON.stringify(said(e)) === '["👍"]', JSON.stringify(said(e)))
+  check('react: and the model is not told it may react', !/\[react:/.test(textOf(e.followups[0])), '')
+  e.done()
+  // A turn for a message that did not mention it (replyMode 'thread') may react instead of "[no reply]".
+  const q = await reacting('[react:👍]', { config: { replyMode: 'thread' }, message: { addressed: false, text: '봇 덕분에 해결됐다' } })
+  check('react: a quiet turn may react, and posts nothing', JSON.stringify(put(q)) === '["👍@3000.1"]' && said(q).length === 0 && q.transport.marks.length === 0, `${JSON.stringify(put(q))} ${JSON.stringify(said(q))} ${JSON.stringify(q.transport.marks)}`)
+  q.done()
+  // Streamed as it was written, the token comes down: nothing streamed stays where nothing is posted.
+  const s = await reacting('[react:👍]', { fake: { stream: true } })
+  check('react: what was streamed of a reaction alone is reset', put(s).length === 1 && said(s).length === 0 && s.transport.frames.at(-1)?.frame.kind === 'reset', JSON.stringify(s.transport.frames.map((f) => f.frame.kind)))
+  s.done()
+  // A muted "[quiet]" is still the quiet answer, not text.
+  const m = await reacting('[quiet]')
+  check('react: control — "[quiet]" still mutes, no reaction', put(m).length === 0 && m.read().muted?.['C_ALLOWED:t1'] !== undefined, JSON.stringify(put(m)))
+  m.done()
+}
+
+// 3f. The marks setting: progress (the default), simple or off. Anything else is refused at start.
+{
+  const refusal = (marks: unknown) => { try { boot({ config: { marks } }).done(); return '' } catch (err) { return String((err as Error).message) } }
+  check('marks: a value it does not have is a config error', /marks: must be 'progress', 'simple' or 'off' \(got: loud\)/.test(refusal('loud')), refusal('loud').split('\n')[1] ?? 'accepted')
+  for (const marks of ['progress', 'simple', 'off', undefined]) check(`marks: ${String(marks)} is accepted`, refusal(marks) === '', refusal(marks))
+}
+
 // 4. The same platform event twice is handled once.
 {
   const t = boot()
@@ -1763,6 +1836,30 @@ for (const remove of [false, true]) {
     check(`${platform}: and the working message is deleted`, dropped.length === 1 && deletedId(dropped[0], platform) === firstId(platform),
       JSON.stringify(f.api.calls.map((c) => c.call)))
     f.t.done()
+
+    // The model's reaction alone: on the person's message, nothing posted but the working message, which comes down.
+    // On Telegram, which shows one reaction of the bot's, it takes the place of the end mark.
+    const reactions = (api) => platform === 'discord'
+      ? api.calls.filter((c) => /^PUT \/channels\/C_ALLOWED\/messages\/100\/reactions\//.test(c.call)).map((c) => decodeURIComponent(c.call.split('/')[6]))
+      : api.calls.filter((c) => c.call === 'setMessageReaction').map((c) => c.body?.reaction?.[0]?.emoji)
+    const k = onPlatform(platform, '[react:👍]')
+    await sleep(80)
+    k.send()
+    await sleep(700)
+    check(`${platform}: "[react:👍]" alone reacts on the message and posts no answer`, reactions(k.api).includes('👍') && posts(k.api, platform).length === 1 && deletes(k.api, platform).length === 1,
+      JSON.stringify(k.api.calls.map((c) => c.call)))
+    if (platform === 'telegram') check('telegram: the reaction is the last one set: no OK after it', reactions(k.api).at(-1) === '👍', JSON.stringify(reactions(k.api)))
+    else check('discord: the reaction stays beside the check', reactions(k.api).includes('✅') && !k.api.calls.some((c) => c.call.includes(`/reactions/${encodeURIComponent('👍')}/@me`) && c.call.startsWith('DELETE')), JSON.stringify(k.api.calls.map((c) => c.call)))
+    k.t.done()
+    // ✅ is not in Telegram's list: it is said as text there, not swapped for another reaction.
+    const n = onPlatform(platform, '[react:✅]')
+    await sleep(80)
+    n.send()
+    await sleep(700)
+    const nSent = posts(n.api, platform).map((c) => textOf(c, platform))
+    if (platform === 'telegram') check('telegram: "[react:✅]" is posted as ✅, with no reaction in its place', nSent.at(-1) === '✅' && !reactions(n.api).some((e) => !['👀', '✍', '👌'].includes(e)), `${JSON.stringify(nSent)} ${JSON.stringify(reactions(n.api))}`)
+    else check('discord: "[react:✅]" is the reaction ✅, no answer', reactions(n.api).includes('✅') && nSent.length === 1, `${JSON.stringify(nSent)} ${JSON.stringify(reactions(n.api))}`)
+    n.t.done()
   }
 }
 
