@@ -499,6 +499,22 @@ function transportFor(api) {
   check('inline code is sent as written', inline === 'run `**x** ~~y~~` now', JSON.stringify(inline))
   const marks = await sent('*italic* and _also_ and **bold** and ~~struck~~\n* item')
   check('italic, bold and strike in Slack\'s marks; a star list is still a list', marks === '_italic_ and _also_ and *bold* and ~struck~\n• item', JSON.stringify(marks))
+  check('italics in brackets', await sent('(*x*)') === '(_x_)')
+  // A star next to bold's pair is not italics: these came out as `_args, *_kwargs` and `_Use *_this** one*`.
+  const kwargs = await sent('*args, **kwargs')
+  check('a star beside a bold mark opens no italics', kwargs === '*args, **kwargs', JSON.stringify(kwargs))
+  for (const md of ['*Use **this** one*', 'x *y **z**']) {
+    const out = await sent(md)
+    check(`bold inside stars is not cut into italics: ${md}`, !out.includes('_') && out.includes(`*${md.includes('this') ? 'this' : 'z'}*`), JSON.stringify(out))
+  }
+  // A tilde fence is code too, sent as a fence Slack shows; and a fence holding a shorter one ends at its own run.
+  const tilde = await sent('~~~\n# not\n- li\n~~~')
+  check('a tilde fence is sent as written, as a fence Slack shows', tilde === '```\n# not\n- li\n```', JSON.stringify(tilde))
+  const nested = await sent('````md\n```js\n# c\n- d\n```\n````')
+  check('a fence ends at its own run of backticks, not at a shorter one inside', nested === '````md\n```js\n# c\n- d\n```\n````', JSON.stringify(nested))
+  // A pipe in a Markdown link's URL would end the URL there and show the rest as the label.
+  const piped = await sent('[docs](https://evil.example|https://bank.example)')
+  check('a link whose URL holds a pipe is not made a link', !piped.includes('<https://evil.example'), piped)
 }
 
 // 9. A document is uploaded rather than named: a local path cannot be clicked, so the file travels.
@@ -879,6 +895,17 @@ function transportFor(api) {
   check('stream: started in the thread, for the person who asked and their team', started?.body?.channel === 'C1' && started?.body?.thread_ts === '5.0' && started?.body?.recipient_user_id === 'U7' && started?.body?.recipient_team_id === 'T1ID' && started?.body?.markdown_text === '안녕하세요', JSON.stringify(started?.body))
   check('stream: a tool step shows by its name only, never its command', appended.includes('`▸ bash`') && !/curl|Authorization|example/.test(appended) && appended.endsWith(' 끝'), JSON.stringify(appended))
   check('stream: the answer posted new at once (it notifies), then the stream stopped and deleted', JSON.stringify(chat(a)) === JSON.stringify(['startStream', 'appendStream', 'postMessage', 'stopStream', 'delete']) && answered?.body?.text === '최종 *답*' && answered?.body?.thread_ts === '5.0', JSON.stringify(chat(a)))
+  // The preview pings nobody either, a mention split across frames and batches included; it reads the same.
+  const mp = stubSlack()
+  const tp = streamer(mp)
+  await tp.authenticate(); await tp.identity()
+  tp.stream(at, { kind: 'text', text: 'hi <!channel> <@U7> <#C1> <' })
+  await pause()
+  tp.stream(at, { kind: 'text', text: '!here> a<b' })
+  await pause()
+  mp.restore()
+  const streamed = mp.calls.filter((c) => /^chat\.(start|append)Stream$/.test(c.method)).map((c) => String(c.body?.markdown_text ?? '')).join('')
+  check('stream: a mention in the preview is inert, across batches too', !/<[!@#]/.test(streamed) && streamed.replace(/\u200b/g, '') === 'hi <!channel> <@U7> <#C1> <!here> a<b', JSON.stringify(streamed))
   // A failed attempt: what it streamed is not the answer, so it goes, and the next attempt streams anew.
   const b = stubSlack()
   const tb = streamer(b)

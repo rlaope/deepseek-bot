@@ -190,8 +190,10 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
    * What the model writes is text: `&`, `<` and `>` are escaped, so `<!channel>`, `<!here>`, `<!subteam^…>` or
    * `<@U…>` in an answer is shown, not sent as a ping (nothing here mentions anyone on purpose). Escaped inside code
    * too, where Slack shows `&lt;` as `<`. Code is set aside before the rules and restored after, so a `# comment` or
-   * a `- ` line in it is not made bold or a bullet. Links are set aside as well, their label escaped: a Markdown one
-   * as `<url|label>`, and one already in Slack's form (the thread's own link is handed to the model so) as it is.
+   * a `- ` line in it is not made bold or a bullet. A fence ends at a run of its own mark and length, so one that
+   * shows a shorter fence holds it; a tilde fence, which Slack does not show as code, is sent as a backtick one.
+   * Links are set aside as well, their label escaped: a Markdown one as `<url|label>`, and one already in Slack's
+   * form (the thread's own link is handed to the model so) as it is.
    */
   function toSlackMarkdown(md) {
     const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -199,16 +201,19 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     const keep = (text: string) => `\u0000${kept.push(text) - 1}\u0000`
     // The placeholders are NUL-delimited, so a NUL in the text itself is dropped first.
     const text = escape(tablesAsLists(String(md ?? '')).replace(/\u0000/g, '')
-      .replace(/```[\s\S]*?```/g, (code: string) => keep(escape(code)))
+      .replace(/^[ \t]*(`{3,}|~{3,})([^\n]*)\n([\s\S]*?\n)?[ \t]*\1[ \t]*$/gm, (code: string, fence: string, info: string, body = '') =>
+        keep(escape(fence[0] === '~' && !body.includes('```') ? `\`\`\`${info}\n${body}\`\`\`` : code)))
       .replace(/`[^`\n]+`/g, (code: string) => keep(escape(code)))
       // A bare URL is linked by Slack itself, so it is left alone. A local path cannot be made clickable here —
       // that needs an upload, which is a separate job.
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s<>]+)\)/g, (_, label: string, url: string) => keep(`<${url}|${escape(label)}>`))
+      // No pipe in the URL: Slack would end the URL there and show the rest as the label.
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s<>|]+)\)/g, (_, label: string, url: string) => keep(`<${url}|${escape(label)}>`))
       .replace(/<(https?:\/\/[^\s<>|]+)(?:\|([^<>\n]*))?>/g, (_, url: string, label?: string) =>
         keep(label === undefined ? `<${url}>` : `<${url}|${escape(label)}>`)))
       // Italics before bold, which would otherwise come out as italics: a mark followed by a non-space opens and one
-      // after a non-space closes, so a list marker ("* item") or a product ("2 * 3") is not emphasis.
-      .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, '$1_$2_')
+      // after a non-space closes, so a list marker ("* item") or a product ("2 * 3") is not emphasis; neither side is
+      // another star, so a star beside bold's pair (`*args, **kwargs`, `*Use **this** one*`) is not cut into italics.
+      .replace(/(^|[^*\w])\*(?=[^*\s])([^*\n]*?[^*\s])\*(?!\*)/g, '$1_$2_')
       .replace(/\*\*(.+?)\*\*/g, '*$1*')
       .replace(/~~(.+?)~~/g, '~$1~')
       .replace(/^#{1,6}\s+(.*)$/gm, '*$1*')
@@ -898,7 +903,10 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     if (held === undefined && (typeof user !== 'string' || user === '')) return
     const s = held ?? { target: { channel: target.channel, threadTs: target.threadTs }, user: user as string, ts: null, pending: '', chain: Promise.resolve(), timer: null, idle: null, stopped: false, dead: false }
     streams.set(key, s)
-    s.pending += text
+    // The preview pings nobody: it goes as `markdown_text`, not through toSlackMarkdown, and whether Slack resolves
+    // `<!channel>` there is not known. A zero-width space after every `<`, not only one before `!`, `@` or `#`: a
+    // mention can arrive split across frames, and a batch can end between its `<` and the rest.
+    s.pending += text.replace(/</g, '<\u200b')
     if (s.timer === null) s.timer = setTimeout(() => { s.timer = null; flush(s) }, flushMs)
     keepOpen(key, s)
   }

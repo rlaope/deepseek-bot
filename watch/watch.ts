@@ -87,6 +87,14 @@ function runCommand(command, confined) {
   }
 }
 
+/**
+ * Text for Slack, as text. The agent writes a watch's name and the output is fetched, so either could carry
+ * `<!channel>`, which Slack sends as a ping. Its own copy, not the transport's: this file is deployed alone.
+ */
+function slackText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function fingerprint(result) {
   return createHash('sha256').update(`${result.ok ? 'ok' : 'err'}\n${result.output}`).digest('hex').slice(0, 16)
 }
@@ -211,7 +219,10 @@ for (const watch of config.watches) {
 
   const suppressedNote = record.suppressed > 0 ? `\n(and ${record.suppressed} earlier change(s) were suppressed by the rate limit)` : ''
   const body = result.ok ? result.output.slice(0, MAX_OUTPUT_CHARS) : `the check FAILED: ${result.error}`
-  const text = `:eyes: *${watch.name ?? watch.id}* changed.\n\`\`\`\n${body}\n\`\`\`${suppressedNote}`
+  // No two backticks left side by side in the output (a zero-width space between): a ``` line in it closed the
+  // alert's fence, and what followed went to Slack as text.
+  const fenced = slackText(body).replace(/`(?=`)/g, '`\u200b')
+  const text = `:eyes: *${slackText(String(watch.name ?? watch.id))}* changed.\n\`\`\`\n${fenced}\n\`\`\`${suppressedNote}`
 
   pendings.push({ watch, text })
   record.fingerprint = print

@@ -195,6 +195,25 @@ delete process.env.DEEPBOT_HOME
 const state = JSON.parse(readFileSync(stateFile, 'utf8'))
 check('the fingerprint was persisted', typeof state.watches?.test?.fingerprint === 'string')
 
+// 9) An alert pings nobody. The agent writes the name and the output is fetched, so either could carry `<!channel>`;
+// and a ``` line in the output closed the alert's fence, sending the rest as Slack text.
+{
+  const pingFile = join(dir, 'ping.txt')
+  const pingConfig = join(dir, 'ping.json')
+  const pingState = join(dir, 'ping-state.json')
+  writeFileSync(pingConfig, JSON.stringify({ watches: [{ id: 'ping', name: '<!channel> deploy & co', command: `cat ${pingFile}`, intervalSeconds: 60, channel: 'C_TEST', rateLimitMinutes: 0 }] }))
+  const runPing = () => {
+    try { return execFileSync(process.execPath, [WATCH, '--config', pingConfig, '--state', pingState, '--dry-run', '--force'], { encoding: 'utf8' }) } catch (e) { return String(e?.stdout ?? '') }
+  }
+  writeFileSync(pingFile, 'before')
+  runPing()
+  writeFileSync(pingFile, 'v2\n```\n<!here> <@U1> **out**\n````')
+  const alert = runPing().split('\n').find((l) => l.includes('DRY-RUN alert')) ?? ''
+  check('an alert carries no mention, from its name or its output', alert !== '' && !/<[!@]/.test(alert), alert)
+  check('the name reads as written, escaped', alert.includes('*&lt;!channel&gt; deploy &amp; co* changed.'), alert)
+  check('the output cannot close the alert\'s fence', (alert.match(/```/g) ?? []).length === 2 && alert.includes('&lt;!here&gt; &lt;@U1&gt; **out**'), alert)
+}
+
 rmSync(dir, { recursive: true, force: true })
 const failed = results.filter((x) => !x.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

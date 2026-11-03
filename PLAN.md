@@ -108,9 +108,13 @@ Decided against:
 - Inert mentions and Slack's marks, checked against fakes only: that Slack shows `&lt;`, `&gt;` and `&amp;` as the
   characters inside code blocks, inline code and link labels, and still reads `&gt; ` at a line's start as a quote,
   is from how Slack itself stores messages, not seen in a workspace; nor that Discord pings nobody on a send or an
-  edit carrying `allowed_mentions: { parse: [] }`. Not covered: the streamed preview on Slack goes as `markdown_text`,
-  which this change does not escape; whether Slack resolves `<!channel>` there is not known. An answer split into
-  parts can cut an escape (`&amp;`) in two, and each half is then shown as typed.
+  edit carrying `allowed_mentions: { parse: [] }`. The streamed preview (`markdown_text`) gets a zero-width space after
+  every `<` rather than escapes, because whether Slack resolves mentions there, or decodes `&lt;`, is not known; a
+  zero-width space in a watch alert's output keeps backticks apart, and is copied with it. Known and left:
+  - an answer split into parts can cut an escape (`&amp;`) in two, and each half is then shown as typed;
+  - a fence with no closing line (an answer cut at the token limit) is converted as text;
+  - a pasted Slack link whose label already holds `&amp;` is escaped twice and shows `&amp;`;
+  - `<mailto:…|…>`, `<HTTPS://…>`, `[l](<url>)` and `[l](url "title")` are shown as text, not as links.
 
 - A read outside the workspace answered with a real button: live, only the refusal path ran (a scenario has no
   platform). Keychain items through securityd: reachable by commands, not closed (refusing the keychain service
