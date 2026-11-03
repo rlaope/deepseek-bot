@@ -172,6 +172,8 @@ Decided against:
   be a knob that does nothing.
 - **`docs/demo.gif` and `docs/banner.svg` are no longer shown in the README.** The CHANGELOG names `demo.gif` and
   `tui/render/banner.ts` says `banner.svg` is for the README, so both stay until one of them is changed on purpose.
+  The README's wordmark is `docs/assets/wordmark.png` (and `.svg`), drawn from the same block letters as
+  `banner.ts` with a hyphen added, so the comment there is now out of date as well.
 
 ## Unverified
 
