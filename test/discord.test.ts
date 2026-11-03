@@ -190,6 +190,22 @@ function message(overrides = {}) {
   await t.post({ channel: 'C1', threadTs: null }, `\`\`\`js\n${'let x = 1\n'.repeat(300)}\`\`\``)
   const fenceParts = sentSince(atFence)
   check('a code block across parts is closed and reopened with its language', fenceParts.length === 2 && /\n```$/.test(fenceParts[0]) && fenceParts[1].startsWith('```js\nlet x = 1\n'), JSON.stringify(fenceParts.map((p) => [p.slice(0, 12), p.slice(-12)])))
+  // A reopened fence costs its line in every part. One about as long as a part left room for a character or two: a
+  // flood of parts, each over the limit (refused, and the answer with it). It is reopened without its info string
+  // when that is long, and not at all when even its mark is.
+  const code1000 = 'let x = 1\n'.repeat(1000)
+  for (const [name, answer, bare] of [
+    ['an info string of 1990 characters', `\`\`\`${'i'.repeat(1990)}\n${code1000}\`\`\``, true],
+    ['an info string longer than a part', `\`\`\`${'i'.repeat(2500)}\n${code1000}\`\`\``, true],
+    ['a fence of 1990 backticks', `${'`'.repeat(1990)}\n${code1000}${'`'.repeat(1990)}`, false],
+  ] as const) {
+    const at = api.rest.length
+    await t.post({ channel: 'C1', threadTs: null }, answer)
+    const sent = api.rest.slice(at).filter((c) => c.path === '/channels/C1/messages' && c.method === 'POST').map((c) => String(c.body?.content ?? ''))
+    const most = Math.ceil(answer.length / 1000) + 1
+    check(`${name}: every part fits and the parts stay proportional to the answer`, sent.length <= most && sent.every((p) => p.length <= 2000), `${sent.length} parts (at most ${most}), largest ${Math.max(...sent.map((p) => p.length))}`)
+    if (bare) check(`${name}: the code is reopened without it`, sent.slice(2, -1).every((p) => /^\(\d+\/\d+\)\n```\nlet x = 1\n/.test(p) && /\n```$/.test(p)), JSON.stringify(sent.slice(2, 4).map((p) => p.slice(0, 20))))
+  }
   // Buttons go with the last part, where the question ends: a long approval request has one set.
   const atButtons = api.rest.length
   await t.post({ channel: 'C1', threadTs: null }, 'q'.repeat(2500), { buttons: [{ id: 'a1', label: 'Allow' }, { id: 'd1', label: 'Deny' }] })

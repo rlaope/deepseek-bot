@@ -234,7 +234,9 @@ the caveat about version numbers is at the bottom.
   and Telegram do, and that cutter now ends a part, within the second half of its room, after a blank line, else a
   line end, else a space; never inside a surrogate pair, a `<…>` token, an `&…;` entity or a fence's line; and a cut
   inside a code block closes it at the end of the part and opens it again, with its language, at the start of the
-  next. This changes Discord and Telegram too: their parts used to end exactly where the room did, mid-word, and a
+  next (without its info string when that would take more than a quarter of the part, and not at all when the bare
+  mark would: a reopen as long as a part left a character per part, each over the limit). This changes Discord and
+  Telegram too: their parts used to end exactly where the room did, mid-word, and a
   code block across parts was shown as backticks on Telegram (each part is rendered on its own) and with a fence left
   open in one part and a stray one in the next on Discord; their parts now end at the same boundaries and each part's code opens and closes. An
   answer that fits one message is unchanged, and the Block Kit path (one part with buttons) and streaming are not
