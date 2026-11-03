@@ -93,10 +93,22 @@ function main(): void {
       withdraw(ids) { return connection?.send({ type: 'withdraw', ids }) === true },
       action(id) { if (!connection?.send({ type: 'action', id })) app.notice(t().notSent, 'error') },
       view(kind, id, owner) { connection?.send({ type: 'view', kind, ...(id !== undefined ? { id } : {}), ...(owner !== undefined ? { owner } : {}) }) },
-      agentSend(id, text) { const frame: ClientFrame = { type: 'agent.send', id, text }; if (!connection?.send(frame)) app.notice(tooLarge(frame) ?? t().notSent, 'error') },
+      agentSend(id, text) {
+        const frame: ClientFrame = { type: 'agent.send', id, text }
+        const sent = connection?.send(frame) === true
+        if (!sent) app.notice(tooLarge(frame) ?? t().notSent, 'error')
+        return sent
+      },
       agentInterrupt(id) { connection?.send({ type: 'agent.interrupt', id }) },
       jobKill(id, owner) { connection?.send({ type: 'job.kill', id, owner }) },
-      answer(id, answers) { const frame: ClientFrame = { type: 'answer', id, answers }; if (!connection?.send(frame)) app.notice(tooLarge(frame) ?? t().answerNotSent, 'error') },
+      // Too large, the answer is refused and stays to be shortened; not connected, the question opens again on reconnect.
+      answer(id, answers) {
+        const frame: ClientFrame = { type: 'answer', id, answers }
+        if (connection?.send(frame) === true) return true
+        const big = tooLarge(frame)
+        app.notice(big ?? t().answerNotSent, 'error')
+        return big === null
+      },
     },
     onExit(code) {
       connection?.close()

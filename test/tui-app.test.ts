@@ -2602,6 +2602,30 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('complete: tab on /model puts it in with a space for its argument', t.app.editor.text === '/model ', JSON.stringify(t.app.editor.text))
 }
 
+{
+  // (i) An answer or a subagent message the backend refuses (too large to send) stays where it was typed.
+  const answered = [], toAgent = []
+  let ok = false
+  const backend = {
+    send: () => true, cancel: () => {}, action: () => {}, view: () => {},
+    answer: (id, answers) => { answered.push(answers); return ok },
+    agentSend: (id, text) => { toAgent.push(text); return ok },
+  }
+  const t = setup({ cols: 100, rows: 34, extra: { backend } })
+  t.app.ask('q-big', [{ id: 'p', question: 'logs?', options: [{ label: 'none' }], multiSelect: false }]); t.clock.advance(20)
+  t.key('long words'); t.key('\r'); t.clock.advance(20)
+  check('refused: an answer not sent leaves the question open, its words in the box', answered.length === 1 && t.app.question !== null && t.app.question.typing === true && t.app.editor.text === 'long words', JSON.stringify({ n: answered.length, open: t.app.question !== null, text: t.app.editor.text }))
+  ok = true
+  t.key('\r'); t.clock.advance(20)
+  check('refused: and sent again, the same words, the question closed', answered.length === 2 && answered[1][0]?.custom === 'long words' && t.app.question === null && t.app.editor.text === '', JSON.stringify(answered.at(-1)))
+  ok = false
+  t.app.setPanel([{ id: 'child-1', label: 'research links', mode: 'continuable', status: 'running', since: t.clock.now(), settledMs: 0, tokens: 0 }], [])
+  t.clock.advance(20)
+  t.key('\t'); t.key('\x1b[B'); t.key('\r'); t.clock.advance(20)
+  t.key('더 짧게 해줘\r'); t.clock.advance(20)
+  check('refused: a subagent message not sent stays in the box', t.app.view.kind === 'agent' && toAgent.length === 1 && t.app.editor.text === '더 짧게 해줘', JSON.stringify({ view: t.app.view.kind, n: toAgent.length, text: t.app.editor.text }))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

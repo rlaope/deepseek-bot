@@ -92,6 +92,11 @@ export class QuestionFlow {
     this.record({ id: q.id, selected, ...(text.trim() !== '' ? { custom: text.trim() } : {}) })
   }
 
+  /** Take back the last answer (its batch was refused): that question is the current one again. */
+  undo(): void {
+    if (this.answers.pop() !== undefined) this.index--
+  }
+
   /** Esc: leave this question unanswered. */
   skip(): void {
     const q = this.current
