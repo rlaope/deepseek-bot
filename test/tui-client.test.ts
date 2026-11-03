@@ -15,7 +15,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { spawnSync } from 'node:child_process'
 import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DSH_HOME = mkdtempSync(join(tmpdir(), 'deepbot-dshhome-'))
@@ -26,6 +26,8 @@ process.env.DSH_HOME = DSH_HOME
 const listenPath = (stateDir) => process.platform === 'win32'
   ? JSON.parse(readFileSync(join(DSH_HOME, 'run', 'deepbot-tui', 'default.json'), 'utf8')).socket
   : join(stateDir, 'tui.sock')
+// Where a test's own server listens: a socket in its directory, or on Windows a pipe named after it (a path is refused).
+const serverPath = (dir, name) => process.platform === 'win32' ? `\\\\.\\pipe\\${basename(dir)}-${name}` : join(dir, name)
 
 const { App } = await import('../dist/tui/app.js')
 const { Connection, discover, lookup, tooLarge } = await import('../dist/tui/client.js')
@@ -530,7 +532,7 @@ for (const platform of ['win32', 'darwin']) {
 {
   // A gateway that takes the connection and never says ready: the hello times out, as a failed connect.
   const dir = mkdtempSync(join(tmpdir(), 'deepbot-mute-'))
-  const path = join(dir, 'mute.sock')
+  const path = serverPath(dir, 'mute.sock')
   let accepted = 0
   const held = []
   const mute = createServer((s) => { accepted++; held.push(s) })
@@ -552,7 +554,7 @@ for (const platform of ['win32', 'darwin']) {
 
   // A hello sent again after a refused switch has its own timeout.
   const dir2 = mkdtempSync(join(tmpdir(), 'deepbot-refuse-'))
-  const path2 = join(dir2, 'refuse.sock')
+  const path2 = serverPath(dir2, 'refuse.sock')
   let lines = 0
   const held2 = []
   const refuser = createServer((s) => {
