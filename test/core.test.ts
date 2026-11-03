@@ -2493,8 +2493,11 @@ for (const remove of [false, true]) {
   t.done()
 }
 
-// 41b. A thread the tenant map does not name is its channel's tenant, and stays so: the thread's own id was looked up,
-// found nothing, and the conversation fell to the default — the home here, another tenant's in a deployment with one.
+// 41b. A thread the tenant map does not name is its channel's tenant: the thread's own id was looked up, found nothing,
+// and the conversation fell to the default — the home here, another tenant's in a deployment with one. The parent is
+// recorded (only the thread's messages carry it) and the tenant resolved from the map each time, as for a channel:
+// moving a channel to another tenant moves its threads. A thread whose parent the platform could not tell, and none
+// recorded, is not served with isolation on: its turn would have run in the default workspace.
 {
   const home = mkdtempSync(join(tmpdir(), 'home-'))
   const tenants = mkdtempSync(join(tmpdir(), 'tenants-'))
@@ -2504,15 +2507,39 @@ for (const remove of [false, true]) {
   await sleep(400)
   const sent = t.followups.map(textOf).join('\n')
   check('tenant: a thread under a tenant\'s channel works in that tenant', /Your home is \S*acme\./.test(sent), (sent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
-  check('tenant: and it is recorded, as only its messages carry the parent', t.read().tenantOf?.T_ACME === 'acme', JSON.stringify(t.read().tenantOf))
+  check('tenant: its parent is recorded, not its tenant', t.read().parentOf?.T_ACME === 'C_ACME' && t.read().tenantOf?.T_ACME === undefined, JSON.stringify({ parentOf: t.read().parentOf, tenantOf: t.read().tenantOf }))
   // The control: a thread under a channel the map does not name stays in the home.
   const before = t.followups.length
   t.transport.deliver(t.transport.message({ eventId: 'e-home-thread', text: 'home 질문', target: { channel: 'T_HOME', threadTs: null }, parent: 'C_HOME' }))
   await sleep(400)
   const homeSent = t.followups.slice(before).map(textOf).join('\n')
-  check('tenant: a thread under an unmapped channel stays in the home', homeSent.includes(`Your home is ${home}.`) && t.read().tenantOf?.T_HOME === undefined, (homeSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
-  for (const dir of [home, tenants]) rmSync(dir, { recursive: true, force: true })
+  check('tenant: a thread under an unmapped channel stays in the home', homeSent.includes(`Your home is ${home}.`), (homeSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
+  // A parent the platform could not tell: no turn, said in the log.
+  const unknown = t.followups.length
+  t.transport.deliver(t.transport.message({ eventId: 'e-unknown-parent', text: 'where am I', target: { channel: 'T_LOST', threadTs: null }, parentUnknown: true }))
+  await sleep(300)
+  check('tenant: a thread whose parent is unknown is not served with isolation on', t.followups.length === unknown && t.transport.historyCalls.every((c) => c.target?.channel !== 'T_LOST'),
+    `${t.followups.length - unknown} turn(s)`)
+  check('tenant: and the log says why', t.logs.some((l) => /T_LOST.*parent/.test(l)), t.logs.filter((l) => /T_LOST/.test(l)).join(' | '))
   t.done()
+
+  // A parent recorded earlier stands in for one the platform could not tell now; and the map is read each time.
+  const moved = boot({ agent: 'ready', home, state: { parentOf: { T_ACME: 'C_ACME' } }, config: { targetChannels: ['*'], tenantIsolation: true, tenantChannels: { C_ACME: 'globex' }, tenantRoot: tenants } })
+  await sleep(80)
+  moved.transport.deliver(moved.transport.message({ text: 'after the move', target: { channel: 'T_ACME', threadTs: null }, parentUnknown: true }))
+  await sleep(400)
+  const movedSent = moved.followups.map(textOf).join('\n')
+  check('tenant: a channel moved to another tenant takes its threads with it', /Your home is \S*globex\./.test(movedSent), (movedSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
+  moved.done()
+
+  // The control: without isolation an unknown parent changes nothing.
+  const open = boot({ agent: 'ready', home, config: { targetChannels: ['*'] } })
+  await sleep(80)
+  open.transport.deliver(open.transport.message({ text: 'no tenants here', target: { channel: 'T_LOST', threadTs: null }, parentUnknown: true }))
+  await sleep(400)
+  check('tenant: without isolation, an unknown parent is served as before', open.followups.length === 1, `${open.followups.length} turn(s)`)
+  open.done()
+  for (const dir of [home, tenants]) rmSync(dir, { recursive: true, force: true })
 }
 
 // 42. A platform the adapter does not know is a config error. 'slak' fell through to Slack, and a deployment

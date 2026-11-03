@@ -543,7 +543,7 @@ export function apply(ctx, config) {
   }
   let saveTimer = null
   function loadState() {
-    if (!existsSync(STATE)) return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, models: {}, routes: {}, muted: {}, usage: emptyUsageStore() }
+    if (!existsSync(STATE)) return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, parentOf: {}, models: {}, routes: {}, muted: {}, usage: emptyUsageStore() }
     try {
       const raw = JSON.parse(readFileSync(STATE, 'utf8'))
       return {
@@ -559,6 +559,9 @@ export function apply(ctx, config) {
         // --tenant): null for the home. Recorded once and authoritative, because a session resumes
         // in the directory it was created in, and it must not be handed another tenant's notes.
         tenantOf: raw.tenantOf ?? {},
+        // The channel a thread is in (a Discord thread, a forum post), with tenant isolation: only the thread's messages
+        // say it, and the tenant map is read through it each time, so a channel moved to another tenant takes its threads.
+        parentOf: raw.parentOf ?? {},
         // A conversation's own model, from /model.
         models: raw.models ?? {},
         // The route each conversation last ran on, so a change of model is told to the model.
@@ -574,7 +577,7 @@ export function apply(ctx, config) {
         // this process's running turns for lost ones; and a new turn never finds an old record in its way.
         restartLost: { ...(raw.restartLost ?? {}), ...(raw.inflight ?? {}) },
       }
-    } catch { return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, models: {}, routes: {}, muted: {}, usage: emptyUsageStore() } }
+    } catch { return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, parentOf: {}, models: {}, routes: {}, muted: {}, usage: emptyUsageStore() } }
   }
   /**
    * Drop what has gone quiet.
@@ -603,6 +606,7 @@ export function apply(ctx, config) {
       delete state.standing[key]
       delete state.history[key]
       if (state.tenantOf) delete state.tenantOf[key]
+      if (state.parentOf) delete state.parentOf[key]
       if (state.models) delete state.models[key]
       if (state.routes) delete state.routes[key]
       if (state.muted) delete state.muted[key]
@@ -723,6 +727,8 @@ export function apply(ctx, config) {
     if (typeof map[key] === 'string') return map[key]
     const channel = key.split(':')[0]
     if (typeof map[channel] === 'string') return map[channel]
+    const parent = state.parentOf?.[key]
+    if (typeof parent === 'string' && typeof map[parent] === 'string') return map[parent]
     return typeof cfg.tenantDefault === 'string' && cfg.tenantDefault !== '' ? cfg.tenantDefault : null
   }
 
@@ -3296,16 +3302,8 @@ export function apply(ctx, config) {
    * asked for, else the configured one, else the home. A terminal can ask to move a conversation, so
    * its workspace is fixed from here on; a platform that cannot ask keeps following the configuration.
    */
-  function bindTenant(key: string, parent?: string): void {
+  function bindTenant(key: string): void {
     if (cfg.tenantIsolation !== true || state.tenantOf?.[key] !== undefined) return
-    // A thread the map does not name is its channel's (a Discord thread, a forum post). Only its messages say which
-    // channel that is, so it is recorded with the first; otherwise it fell to the default, another tenant's or the home.
-    const map = (cfg.tenantChannels ?? {}) as Record<string, string>
-    if (parent !== undefined && typeof map[parent] === 'string' && map[key] === undefined && map[targetFromKey(key).channel] === undefined) {
-      state.tenantOf = { ...(state.tenantOf ?? {}), [key]: map[parent] }
-      saveState()
-      return
-    }
     if (typeof via(targetFromKey(key)).tenantFor !== 'function') return
     state.tenantOf = { ...(state.tenantOf ?? {}), [key]: tenantChosenByTransport(key) ?? configuredTenant(key) }
     saveState()
@@ -3436,6 +3434,16 @@ export function apply(ctx, config) {
     // says which by whether it supplies a thread.
     const threadTs = target.threadTs
     const key = threadTs === null ? channel : `${channel}:${threadTs}`
+    // With tenant isolation a thread is its channel's tenant (configuredTenant). Its parent is recorded, as only its
+    // messages carry it; one the platform could not tell, none recorded and the map not naming the thread, is not served:
+    // its turn would run in the default workspace, outside the tenant it belongs to.
+    if (cfg.tenantIsolation === true) {
+      if (message.parent !== undefined && state.parentOf?.[key] !== message.parent) { state.parentOf = { ...(state.parentOf ?? {}), [key]: message.parent }; saveState() }
+      if (message.parentUnknown === true && state.parentOf?.[key] === undefined && typeof (cfg.tenantChannels ?? {})[channel] !== 'string') {
+        log(`ignored: channel ${channel} — its parent could not be told, so with tenant isolation neither could its workspace`)
+        return
+      }
+    }
       // Whitespace and zero-width characters are nothing to say. Found by the edge sweep:
       // an empty string was refused, but "   " and a run of zero-width spaces each started
       // a turn — an expensive way to answer nothing, and a question the model can only guess at.
@@ -3448,7 +3456,7 @@ export function apply(ctx, config) {
       : message.text.slice(0, cfg.maxPromptChars)
     // Chatter does not keep it listening: a mention does, and a reply of its own (below).
     if (!quiet) state.touched[key] = Date.now()
-    bindTenant(key, message.parent)
+    bindTenant(key)
     if (!prompt) return
 
     // A pending approval turns the next message into a decision, so it is consumed
