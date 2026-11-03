@@ -490,12 +490,14 @@ the caveat about version numbers is at the bottom.
   salute for a quiet word shows under each, as it is the answer. Any other value is refused at start.
 - **The model may react instead of replying, or as well.** Told so in its standing block, with the emoji its platform
   takes: an answer of exactly `[react:👍]` (backticks and a full stop let pass) puts 👍 on the person's message and
-  posts nothing; on its own first line before text, it reacts and posts the text. The list is 👍 👎 ✅ ❌ 👀 🙏 🔥 🎉 😂
-  ❤️ 🤔 🫡 (Slack by its names, `+1`, `heart`, …); Telegram's own list has no ✅, ❌ or 😂, and a token for one the
-  platform cannot put is posted as its text, or with none the emoji, never as another reaction. The marks never take
+  posts nothing; on its own first line before text, it reacts once the text is out and posts it. The list is 👍 👎 ✅ ❌
+  👀 🙏 🔥 🎉 😂 ❤️ 🤔 🫡, skin tones let pass (Slack by its names, `+1`, `heart`, …); Telegram's own list has no ✅,
+  ❌ or 😂, and a token for one the platform cannot put, or one off the list, is posted as its text, or with none what
+  it named, never as another reaction and never as the token. The marks never take
   the model's reaction off, even a 👀 or a ✅; on Telegram, one reaction per message, it takes the place of 👌 and a
   failure still replaces it. It is put under `marks: off` too, and on a turn for a thread message that did not
-  mention the bot. Anything else with `[react:` in it is text. Refused, it is logged, and nothing is posted instead.
+  mention the bot. A token not alone on its line, or not well formed, is text. Refused, it is logged, and nothing is
+  posted instead. `marks:` left empty is the default.
 
   Checked in the core, failures, Slack, Discord and Telegram suites against the fake transport and mocked APIs; the
   core's checks were red before the change, the marks' ones shown red by removing their line. Not seen live: Slack's

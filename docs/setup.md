@@ -423,10 +423,12 @@ and the plugin refuses to start, naming the three.
 
 The model is told it may answer with a reaction. An answer of exactly `[react:👍]` (in backticks, or with a full
 stop after it, as models write it) puts 👍 on the person's message and posts nothing; `[react:👍]` on its own first
-line, then text, puts it on and posts the text. Anything else with `[react:` in it is posted as it is. The emoji are
-👍 👎 ✅ ❌ 👀 🙏 🔥 🎉 😂 ❤️ 🤔 🫡, and the model is told only those its platform takes: Telegram's bots may use
-only Telegram's own list, which has no ✅, ❌ or 😂. A token for an emoji the platform cannot put is never swapped
-for another: the text after it is posted, or with none the emoji itself, as text. On Slack and Discord the reaction
+line, then text, puts it on and posts the text, once the text went out (a refused answer gets the cross alone). A
+token not alone on its line, or not well formed, is posted as it is. The emoji are 👍 👎 ✅ ❌ 👀 🙏 🔥 🎉 😂 ❤️ 🤔 🫡
+(a skin tone is let pass: 👍🏽 is 👍), and the model is told only those its platform takes: Telegram's bots may use
+only Telegram's own list, which has no ✅, ❌ or 😂. A token for an emoji the platform cannot put, or one off the
+list (`[react:💯]`), is never swapped for another and never shown as the token: the text after it is posted, or
+with none what it named (💯), as text. On Slack and Discord the reaction
 stays beside the end mark; Telegram shows one reaction of the bot's per message, so there it takes the place of 👌
 (a failure still shows 😢). In a thread under `replyMode: thread`, a message that did not mention the bot may get a
 reaction instead of an answer. A reaction needs what the marks need (`reactions:write`, *Add Reactions*); refused,
