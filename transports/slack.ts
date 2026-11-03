@@ -184,17 +184,39 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     })
   }
 
-  /** DSH emits standard Markdown; Slack uses its own dialect, which has no tables. */
+  /**
+   * DSH emits standard Markdown; Slack uses its own dialect, which has no tables.
+   *
+   * What the model writes is text: `&`, `<` and `>` are escaped, so `<!channel>`, `<!here>`, `<!subteam^…>` or
+   * `<@U…>` in an answer is shown, not sent as a ping (nothing here mentions anyone on purpose). Escaped inside code
+   * too, where Slack shows `&lt;` as `<`. Code is set aside before the rules and restored after, so a `# comment` or
+   * a `- ` line in it is not made bold or a bullet. Links are set aside as well, their label escaped: a Markdown one
+   * as `<url|label>`, and one already in Slack's form (the thread's own link is handed to the model so) as it is.
+   */
   function toSlackMarkdown(md) {
-    return tablesAsLists(md)
-      // Links first, so the bold rule cannot reach inside one. Slack wants <url|label>; a bare URL
-      // is linked by Slack itself, so it is left alone. A local path cannot be made clickable here —
+    const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const kept: string[] = []
+    const keep = (text: string) => `\u0000${kept.push(text) - 1}\u0000`
+    // The placeholders are NUL-delimited, so a NUL in the text itself is dropped first.
+    const text = escape(tablesAsLists(String(md ?? '')).replace(/\u0000/g, '')
+      .replace(/```[\s\S]*?```/g, (code: string) => keep(escape(code)))
+      .replace(/`[^`\n]+`/g, (code: string) => keep(escape(code)))
+      // A bare URL is linked by Slack itself, so it is left alone. A local path cannot be made clickable here —
       // that needs an upload, which is a separate job.
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s<>]+)\)/g, (_, label: string, url: string) => keep(`<${url}|${escape(label)}>`))
+      .replace(/<(https?:\/\/[^\s<>|]+)(?:\|([^<>\n]*))?>/g, (_, url: string, label?: string) =>
+        keep(label === undefined ? `<${url}>` : `<${url}|${escape(label)}>`)))
+      // Italics before bold, which would otherwise come out as italics: a mark followed by a non-space opens and one
+      // after a non-space closes, so a list marker ("* item") or a product ("2 * 3") is not emphasis.
+      .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, '$1_$2_')
       .replace(/\*\*(.+?)\*\*/g, '*$1*')
+      .replace(/~~(.+?)~~/g, '~$1~')
       .replace(/^#{1,6}\s+(.*)$/gm, '*$1*')
       // Within a line: \s crossed line ends and ate the blank line before every list.
       .replace(/^[ \t]*[-*][ \t]+/gm, '• ')
+    // A link's label can hold code set aside before it, so what is restored is restored in turn.
+    const restore = (s: string): string => s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => restore(kept[Number(i)]))
+    return restore(text)
   }
 
   async function say(botToken, channel, threadTs, text, replaceTs = null) {

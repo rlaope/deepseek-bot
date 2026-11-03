@@ -30,7 +30,7 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
@@ -104,6 +104,13 @@ Decided against:
   be a knob that does nothing.
 
 ## Unverified
+
+- Inert mentions and Slack's marks, checked against fakes only: that Slack shows `&lt;`, `&gt;` and `&amp;` as the
+  characters inside code blocks, inline code and link labels, and still reads `&gt; ` at a line's start as a quote,
+  is from how Slack itself stores messages, not seen in a workspace; nor that Discord pings nobody on a send or an
+  edit carrying `allowed_mentions: { parse: [] }`. Not covered: the streamed preview on Slack goes as `markdown_text`,
+  which this change does not escape; whether Slack resolves `<!channel>` there is not known. An answer split into
+  parts can cut an escape (`&amp;`) in two, and each half is then shown as typed.
 
 - A read outside the workspace answered with a real button: live, only the refusal path ran (a scenario has no
   platform). Keychain items through securityd: reachable by commands, not closed (refusing the keychain service
