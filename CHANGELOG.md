@@ -111,6 +111,16 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **The README read as text with a few stills.** It is image-led now, every terminal image drawn from real output:
+  a pixel wordmark made from the terminal banner's block letters (`docs/assets/wordmark.png`), a hero picture (a
+  generated pixel whale, not DeepSeek's logo), the real `dsh` welcome screen, four numbered scenes as SVG panels
+  whose rows are copied from the recording's screens with their colours (`docs/assets/showcase-01…03`: a tool call,
+  a note saved and recalled after `/new`, a delete asked and denied) and from a real run of
+  `test/confined-runner.test.ts` (`showcase-04`, 212/212), two stills side by side and the session GIF. Slack,
+  Discord and Telegram have a table of what is verified and no picture, since none has been captured. The stills
+  replace `docs/dsh-tools.png`, `docs/dsh-recall.png` and `docs/dsh-approval.png`, which are removed. The recording
+  is the OpenGateway route's, and the page says so; DeepSeek's own API stays the default.
+
 - **The README was long and its demo a single question.** It is a page now: the tagline, a demo of a real `dsh`
   session (`docs/dsh-demo.gif`: a tool call, a note saved and recalled after `/new`, a delete asked and denied), a
   quick start with a block to paste into an agent, four short scenes with a still each (`docs/dsh-tools.png`,
