@@ -57,6 +57,7 @@ import { createDiscordTransport } from './transports/discord.js'
 import { createLocalTransport, LOCAL_CHANNEL } from './transports/local.js'
 import { createCompositeTransport } from './transports/composite.js'
 import { safeFileName } from './transports/attachments.js'
+import { OWN_MARKER } from './transports/history.js'
 import { MARKS_MODES, REACTIONS } from './transports/marks.js'
 import { createProgressTracker, tenthsOf, typicalTurns } from './progress.js'
 import { LANGUAGES, languageOf } from './i18n.js'
@@ -1046,10 +1047,13 @@ export function apply(ctx, config) {
    * Quoted text cannot carry the adapter's own markers. The recall indexer reads a session's channel from
    * the "[this conversation]" block before the first "[user message]", and the persona and notes files
    * come before that block — files the agent can write. A block forged there filed every later session,
-   * DMs included, under the channel it named. In quoted text a marker is marked as quoted.
+   * DMs included, under the channel it named. In quoted text a marker is marked as quoted, in any case or spacing and
+   * in wide brackets too. `ownLines`: a history, whose lines the transport may begin with the bot's own marker
+   * (OWN_MARKER, exactly, at a line's start, and nowhere a person wrote: their brackets are shown as parentheses).
    */
-  function defuse(text: string): string {
-    return text.replace(/\[(this conversation|user message|speaker)\]/g, '[$1 (quoted)]')
+  function defuse(text: string, ownLines = false): string {
+    return text.replace(/[[\uff3b]\s*(this\s+conversation|user\s+message|speaker|your\s+earlier\s+message)\s*[\]\uff3d]/gi, (marker, words, at) =>
+      ownLines && marker === OWN_MARKER && (at === 0 || text[at - 1] === '\n') ? marker : `[${words} (quoted)]`)
   }
 
   async function contextPreamble(origin = null, historyText = '', attachmentText = '', sessionKey = null, prompt = '', sessionId = '') {
@@ -1157,7 +1161,7 @@ export function apply(ctx, config) {
     const parts = []
     if (includeStanding) parts.push(standingText)
     if (typeof attachmentText === 'string' && attachmentText !== '') parts.push(defuse(attachmentText))
-    if (typeof historyText === 'string' && historyText !== '') parts.push(defuse(historyText))
+    if (typeof historyText === 'string' && historyText !== '') parts.push(defuse(historyText, true))
     // Dynamic, never standing: the standing block is digest-gated for prompt-cache safety, so
     // a per-turn block there would invalidate the cache on every turn.
     // Not for a message that did not mention it: chatter would bring the past into every line of a thread.

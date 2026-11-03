@@ -140,7 +140,9 @@ Define success criteria. Loop until verified.
 - **Slack's working status belongs to the thread**, not to a message. The transport counts the
   messages working in each thread and sends a thread's status calls one at a time.
 - **The adapter's markers** — `[this conversation]`, `[speaker]`, `[user message]` — are read back by
-  the recall indexer. Any quoted text that enters the prompt goes through `defuse` first.
+  the recall indexer. Any quoted text that enters the prompt goes through `defuse` first. The fourth,
+  `[your earlier message]`, begins the bot's own lines in a history; in a history, names and words people wrote
+  have their brackets shown as parentheses (`quoted` in `transports/history.ts`), so none of theirs can carry it.
 
 ## Map
 

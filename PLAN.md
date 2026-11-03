@@ -154,11 +154,14 @@ Decided against:
 
 - History deltas (the bot's own messages left out with a pointer and given, as its own, to a new session; nothing
   newer than the message answered; the pointer past it; a gap past one page and a cut for length dropping the oldest,
-  said so; a person named as the bot's label quoted, with their id), checked against fake APIs only
+  said so; the bot's own lines marked `[your earlier message]`, people's brackets shown as parentheses), checked
+  against fake APIs only
   (`test/slack.test.ts` delta, waiting, own, gap, bound, cut and label, `test/discord.test.ts` 16-19,
   `test/telegram.test.ts` 23-25). Not seen live: that Slack's `conversations.replies` pages oldest first with
   `latest`, `oldest`, `inclusive` and a cursor as the fake does, nor how its rate limits take up to 6 calls in one
-  turn. The label check is by text: a name in lookalike letters (a Cyrillic о) is not caught. Not seen live: that Discord's `before` gives the newest page under an id and `after`
+  turn. Not seen with a real model: that it takes only lines beginning with the marker as its own (the header says
+  so; a line a person wrote cannot begin with a square bracket). Brackets in people's words, code included, read as
+  parentheses in a history. Not seen live: that Discord's `before` gives the newest page under an id and `after`
   the page right after one (the fake models it so; Discord's reference says only that the three are exclusive), and
   that the bot's own Slack messages carry its user id in `conversations.replies` (they carry `bot_id` too). What the bot
   posts outside a turn, a watch's alert, is given to a new session but left out of a delta, so a turn in a conversation
