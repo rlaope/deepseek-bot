@@ -481,6 +481,24 @@ function message(overrides = {}) {
     u.calls[1] === 'PUT ❌@C1/114' && u.calls.filter((x) => x.startsWith('DELETE')).length === 10 && u.calls.length === 12, JSON.stringify(u.calls))
 }
 
+// 12. Deleting the bot's own message: the core posts a slow turn's answer as a new message, which notifies, and
+// takes the working message away. The bot needs no permission to delete its own; a refusal is a false, said in the
+// log, never a throw that would reach the turn after its answer is out.
+{
+  const api = fakeDiscord()
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')))
+  await t.identity()
+  const ok = await t.remove({ channel: 'C1', threadTs: null }, 'm7')
+  check('remove: a DELETE of that message', ok === true && api.rest.some((c) => c.method === 'DELETE' && c.path === '/channels/C1/messages/m7'), JSON.stringify(api.rest.map((c) => `${c.method} ${c.path}`)))
+  const refusing = { ...api, fetchImpl: async (url, init) => (init?.method === 'DELETE'
+    ? { ok: false, status: 403, json: async () => ({}), text: async () => '{"message": "Missing Permissions", "code": 50013}' }
+    : api.fetchImpl(url, init)) }
+  const t2 = transportFor(refusing, mkdtempSync(join(tmpdir(), 'dc-')))
+  await t2.identity()
+  const refused = await t2.remove({ channel: 'C1', threadTs: null }, 'm8')
+  check('remove: a refusal is false, and said', refused === false && t2.logs.some((l) => /delete failed: .*HTTP 403/.test(l)), t2.logs.join(' | '))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -677,10 +677,14 @@ one that arrives after the turn is over posts nothing.
 The progress message **is edited in place** as tools run, with tool names and elapsed time; on a
 platform with typing it appears only once a turn has run for `progressAfterMs` (8 s). When the turn
 ends it gives way to the answer, so a turn leaves one message rather than a stale "working on it"
-plus an answer. On Slack the answer is posted as a **new message and the progress message is
-deleted** (`chat.delete`, which `chat:write` covers): an edit raises no notification, so with the
-progress message on every turn, every answer would have reached a phone as "작업 중". Where a
-platform cannot delete, the answer edits the progress message instead. Slack streams the turn instead of
+plus an answer. On Slack, Discord and Telegram the answer is posted as a **new message and the progress
+message is deleted** (`chat.delete`, which `chat:write` covers; Discord's message DELETE, which needs no
+permission for the bot's own message; Telegram's `deleteMessage`, for a message under 48 hours old): an edit
+raises no notification, so with the progress message on every turn, every answer would have reached a phone as
+"작업 중", and the answer sat above anything said while the turn ran. An answer in parts posts every part first;
+the progress message goes after the last. A refused delete leaves the progress message where it is, said in the
+log; the answer is out once either way. Where a platform cannot delete, the answer edits the progress message
+instead. Slack streams the turn instead of
 editing a progress message: text in batches (`streamFlushMs`, 1.5 s), a tool by its name only; another message
 in the thread comes after all that was streamed; the answer is posted new at once, and the streamed message is
 then stopped and deleted (the stop tried again when refused, over a minute; one never stopped is left, and said

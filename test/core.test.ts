@@ -26,6 +26,8 @@ import { fileURLToPath } from 'node:url'
 import { apply, credentialFiles } from '../dist/index.js'
 import { recallIndexPath } from '../dist/recallContext.js'
 import { createFakeTransport, type FakeTransportOptions } from './fake-transport.ts'
+import { createDiscordTransport } from '../dist/transports/discord.js'
+import { createTelegramTransport } from '../dist/transports/telegram.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -1488,6 +1490,117 @@ for (const remove of [false, true]) {
   check(`no working message is left behind (${remove ? 'delete' : 'edit'} platform)`, created.length >= 1 && orphans.length === 0,
     `created ${created.map((p) => p.ts).join(',') || 'none'}; orphaned ${orphans.join(',') || 'none'}`)
   t.done()
+}
+
+// 31d. Discord and Telegram, through their real transports against fake APIs: a slow turn's answer is a new message,
+// which notifies, and the working message is deleted after its last part. Edited in place, the answer raised no
+// notification and sat above anything said while the turn ran. A refused delete leaves the working message, as on
+// Slack, and the answer still goes out exactly once.
+{
+  /** The platform's calls, recorded as `METHOD path` (Discord) or the Bot API method (Telegram), with their bodies. */
+  const fakeDiscordRest = (refuseDelete: boolean) => {
+    const calls: Array<{ call: string; body: any }> = []
+    let n = 0
+    const fetchImpl = async (url, init: RequestInit = {}) => {
+      const path = String(url).replace('https://discord.com/api/v10', '')
+      const method = init.method ?? 'GET'
+      calls.push({ call: `${method} ${path}`, body: init.body ? JSON.parse(String(init.body)) : null })
+      const reply = (value, status = 200) => ({ ok: status < 300, status, json: async () => value, text: async () => JSON.stringify(value) })
+      if (path === '/users/@me') return reply({ id: '9', username: 'testbot', bot: true })
+      if (method === 'DELETE' && /^\/channels\/[^/]+\/messages\/[^/]+$/.test(path)) return refuseDelete ? reply({ message: 'Missing Permissions', code: 50013 }, 403) : reply(undefined, 204)
+      if (method === 'POST' && /^\/channels\/[^/]+\/messages$/.test(path)) return reply({ id: `m${++n}`, channel_id: 'C_ALLOWED' })
+      if (method === 'PATCH') return reply({ id: path.split('/').pop(), channel_id: 'C_ALLOWED' })
+      return reply(undefined, 204)
+    }
+    return { calls, fetchImpl }
+  }
+  const fakeTelegramApi = (refuseDelete: boolean) => {
+    const calls: Array<{ call: string; body: any }> = []
+    let n = 0
+    const fetchImpl = async (url, init: RequestInit = {}) => {
+      const method = String(url).split('/').pop()
+      const body = init.body ? JSON.parse(String(init.body)) : {}
+      calls.push({ call: method, body })
+      const reply = (value) => ({ ok: value.ok, status: value.ok ? 200 : 400, json: async () => value })
+      if (method === 'getMe') return reply({ ok: true, result: { id: 42, username: 'deepbot_test', is_bot: true } })
+      if (method === 'sendMessage') return reply({ ok: true, result: { message_id: 500 + ++n, chat: { id: 7 } } })
+      if (method === 'editMessageText') return reply({ ok: true, result: { message_id: body.message_id, chat: { id: 7 } } })
+      if (method === 'deleteMessage') return reply(refuseDelete ? { ok: false, error_code: 400, description: "Bad Request: message can't be deleted" } : { ok: true, result: true })
+      return reply({ ok: true, result: true })
+    }
+    return { calls, fetchImpl }
+  }
+  /** The core on a real transport whose inbound side is a function: everything it sends goes through the fake API. */
+  const onPlatform = (platform: 'discord' | 'telegram', text: string, refuseDelete = false) => {
+    const api = platform === 'discord' ? fakeDiscordRest(refuseDelete) : fakeTelegramApi(refuseDelete)
+    let deliver: ((m: unknown) => void) | null = null
+    const t = boot({
+      agent: 'answer', answer: { text, delayMs: 300 }, home: mkdtempSync(join(tmpdir(), `deepbot-${platform}-`)),
+      config: {
+        platform,
+        transportFactory: (host) => {
+          const made = (platform === 'discord' ? createDiscordTransport : createTelegramTransport)({
+            ...host, cfg: { ...host.cfg, discordTokenRef: 'D', telegramTokenRef: 'T' }, credential: async () => 'token', fetchImpl: api.fetchImpl,
+          })
+          return Object.assign(made, { connect: async (handlers) => { await made.authenticate(); deliver = handlers.onMessage } })
+        },
+      },
+    })
+    const send = () => deliver?.({ eventId: `e-${platform}-${Math.random()}`, target: { channel: 'C_ALLOWED', threadTs: null }, ts: '100', text: 'slow one', user: '5', addressed: true, files: [], raw: {} })
+    return { t, api, send }
+  }
+  const posts = (api, platform) => api.calls.filter((c) => platform === 'discord' ? c.call === 'POST /channels/C_ALLOWED/messages' : c.call === 'sendMessage')
+  const edits = (api, platform) => api.calls.filter((c) => platform === 'discord' ? c.call.startsWith('PATCH ') : c.call === 'editMessageText')
+  const deletes = (api, platform) => api.calls.filter((c) => platform === 'discord' ? /^DELETE \/channels\/C_ALLOWED\/messages\/[^/]+$/.test(c.call) : c.call === 'deleteMessage')
+  const textOf = (c, platform) => String(platform === 'discord' ? c.body?.content : c.body?.text)
+  const deletedId = (c, platform) => platform === 'discord' ? c.call.split('/').pop() : String(c.body?.message_id)
+  const firstId = (platform) => platform === 'discord' ? 'm1' : '501'
+
+  for (const platform of ['discord', 'telegram'] as const) {
+    // A slow turn: the working message, then the answer as a new message, then the working message deleted.
+    const a = onPlatform(platform, 'the answer')
+    await sleep(80)
+    a.send()
+    await sleep(700)
+    const sent = posts(a.api, platform)
+    check(`${platform}: a slow turn puts up the working message`, sent.length >= 1 && /작업 중/.test(textOf(sent[0], platform)), JSON.stringify(sent.map((c) => textOf(c, platform))))
+    check(`${platform}: the answer is a new message, not an edit of the working message`,
+      sent.length === 2 && textOf(sent[1], platform) === 'the answer' && edits(a.api, platform).every((c) => textOf(c, platform) !== 'the answer'),
+      JSON.stringify(a.api.calls.map((c) => c.call)))
+    const gone = deletes(a.api, platform)
+    check(`${platform}: and the working message is deleted, after the answer`,
+      gone.length === 1 && deletedId(gone[0], platform) === firstId(platform) && a.api.calls.indexOf(gone[0]) > a.api.calls.indexOf(sent[1]),
+      JSON.stringify(a.api.calls.map((c) => c.call)))
+    a.t.done()
+
+    // A refused delete: the answer is still out exactly once, and the working message is left as it was.
+    const r = onPlatform(platform, 'the answer', true)
+    await sleep(80)
+    r.send()
+    await sleep(700)
+    const once = [...posts(r.api, platform), ...edits(r.api, platform)].filter((c) => textOf(c, platform) === 'the answer')
+    check(`${platform}: a refused delete still leaves exactly one answer`, once.length === 1 && deletes(r.api, platform).length === 1,
+      JSON.stringify(r.api.calls.map((c) => c.call)))
+    check(`${platform}: and the working message is left, said in the log`, edits(r.api, platform).length === 0 && r.t.logs.some((l) => /working message \S+ left in C_ALLOWED: delete refused/.test(l)),
+      r.t.logs.filter((l) => /delete|left/.test(l)).join(' | '))
+    r.t.done()
+
+    // An answer in parts: every part a new message, in order, and the working message deleted after the last.
+    const long = platform === 'discord' ? 'x'.repeat(4500) : 'x'.repeat(9000)
+    const p = onPlatform(platform, long)
+    await sleep(80)
+    p.send()
+    await sleep(900)
+    const parts = posts(p.api, platform).slice(1)
+    const removed = deletes(p.api, platform)
+    check(`${platform}: an answer in parts goes out as new messages, in order`,
+      parts.length === 3 && parts.every((c, i) => textOf(c, platform).startsWith(`(${i + 1}/3)`)) && edits(p.api, platform).length === 0,
+      JSON.stringify(p.api.calls.map((c) => c.call)))
+    check(`${platform}: and the working message is deleted after its last part`,
+      removed.length === 1 && deletedId(removed[0], platform) === firstId(platform) && p.api.calls.indexOf(removed[0]) > p.api.calls.indexOf(parts[2]),
+      JSON.stringify(p.api.calls.map((c) => c.call)))
+    p.t.done()
+  }
 }
 
 // 32. A transport with native typing uses it instead, and the typing ends with the turn.
