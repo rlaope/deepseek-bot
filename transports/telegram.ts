@@ -8,8 +8,10 @@
  *
  * Two platform facts shape the code below:
  *
- * - Telegram has no threads. `threadTs` is null, which the core reads as "one
- *   session per conversation" rather than one per thread.
+ * - Telegram has no threads, but a supergroup with topics has topics. A topic's id is
+ *   `threadTs`, so each topic is its own session, as a Slack thread is; elsewhere (a
+ *   private chat, a group, a forum's General) it is null, one session per chat. What is
+ *   sent to a topic names it, or Telegram puts it in General.
  * - Telegram has no history API. There is no way to ask for what was said before
  *   the bot arrived, so the transport keeps a bounded ring of the messages it has
  *   seen and serves the delta from that. Anything said before the process started
@@ -51,6 +53,11 @@ interface TelegramMessage {
   video?: TelegramFileRef
   voice?: TelegramFileRef
   reply_to_message?: TelegramMessage
+  /** The topic, in a supergroup with topics; set on a reply in any supergroup too, so only `is_topic_message` says it is one. */
+  message_thread_id?: number
+  is_topic_message?: boolean
+  /** The service message that opens a topic: every message in the topic replies to it. */
+  forum_topic_created?: unknown
   /** An album: one message per item, sharing this id; the caption is on one of them. */
   media_group_id?: string
 }
@@ -90,6 +97,19 @@ export function toTelegramHtml(markdown: string): string {
   return text.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)])
 }
 const MESSAGE_LIMIT = 4096
+
+/** The message's topic, or null outside one (General has none). */
+function topicOf(message: TelegramMessage | undefined): string | null {
+  return message?.is_topic_message === true && typeof message.message_thread_id === 'number' ? String(message.message_thread_id) : null
+}
+/** The topic as the Bot API takes it on what is sent, and nothing for a conversation that is the chat itself. */
+function inTopic(target: Target): { message_thread_id?: number } {
+  return target.threadTs !== null ? { message_thread_id: Number(target.threadTs) } : {}
+}
+/** A conversation's key in this transport: the chat, or the chat and its topic. */
+function conversationOf(chat: string, topic: string | null): string {
+  return topic === null ? chat : `${chat}:${topic}`
+}
 
 export interface TelegramTransport extends Transport {
   authenticate(): Promise<void>
@@ -171,7 +191,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     const stop = () => { if (timer !== null) { clearInterval(timer); timer = null } }
     const send = () => {
       if (failed) return
-      call('sendChatAction', { chat_id: target.channel, action: 'typing' }).catch((e) => {
+      call('sendChatAction', { chat_id: target.channel, ...inTopic(target), action: 'typing' }).catch((e) => {
         if (failed) return
         failed = true
         stop()
@@ -185,7 +205,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
   }
 
   /**
-   * Send a file with sendDocument, as a reply in the conversation when there is one. `bytes`, when
+   * Send a file with sendDocument, in the conversation's topic when it is one. `bytes`, when
    * given, are what the caller read from the file it checked; the path then only names it.
    */
   async function uploadFile(target: Target, filePath: string, title?: string, bytes?: Uint8Array): Promise<boolean> {
@@ -194,7 +214,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
       const data = bytes !== undefined ? Buffer.from(bytes) : readFileSync(filePath)
       const form = new FormData()
       form.append('chat_id', target.channel)
-      if (target.threadTs !== null) form.append('reply_to_message_id', target.threadTs)
+      if (target.threadTs !== null) form.append('message_thread_id', target.threadTs)
       if (title) form.append('caption', title.slice(0, 1024))
       form.append('document', new Blob([data]), name)
       const res = await doFetch(`${API_BASE}/bot${requireToken()}/sendDocument`, { method: 'POST', body: form })
@@ -250,19 +270,21 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
    *
    * A private chat is always a conversation with the bot. In a group, Telegram
    * mentions arrive two ways — `@username` in text, or a text_mention entity when
-   * the client resolves it — and replying to the bot counts as well.
+   * the client resolves it — and so does a command with its name (`/help@thisbot`); a bare `/help` may be any bot's.
+   * Replying to the bot counts as well, but not the topic's first message, which every message in a topic replies to.
    */
   function addressedToBot(message: TelegramMessage): boolean {
     if (message.chat.type === 'private') return true
     const text = message.text ?? message.caption ?? ''
     for (const entity of [...(message.entities ?? []), ...(message.caption_entities ?? [])]) {
       if (entity.type === 'text_mention' && entity.user?.id === botId) return true
-      if (entity.type === 'mention' && botUsername !== null) {
-        const mentioned = text.slice(entity.offset, entity.offset + entity.length)
-        if (mentioned.toLowerCase() === `@${botUsername.toLowerCase()}`) return true
-      }
+      if (botUsername === null) continue
+      const named = text.slice(entity.offset, entity.offset + entity.length).toLowerCase()
+      if (entity.type === 'mention' && named === `@${botUsername.toLowerCase()}`) return true
+      if (entity.type === 'bot_command' && named.endsWith(`@${botUsername.toLowerCase()}`)) return true
     }
-    return message.reply_to_message?.from?.id === botId
+    const replied = message.reply_to_message
+    return replied?.from?.id === botId && replied?.forum_topic_created === undefined
   }
 
   /** Strip the mention so the model does not read its own name as part of the request. */
@@ -291,7 +313,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
 
   /** Remember what was said, so a later turn can be given the conversation so far. */
   function remember(message: TelegramMessage, text: string) {
-    const chat = String(message.chat.id)
+    const chat = conversationOf(String(message.chat.id), topicOf(message))
     const ring = seenMessages.get(chat) ?? []
     ring.push({
       ts: String(message.message_id),
@@ -315,7 +337,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     else if (text.trim() !== '') remember(said, text)
     return {
       eventId: `tg-${message.chat.id}-${message.message_id}`,
-      target: { channel: String(message.chat.id), threadTs: null },
+      target: { channel: String(message.chat.id), threadTs: topicOf(message) },
       ts: String(message.message_id),
       text: addressed ? stripMention(text) : text,
       user: String(message.from?.id ?? 'unknown'),
@@ -391,7 +413,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
         void call('answerCallbackQuery', { callback_query_id: query.id }).catch((e) => log(`telegram answerCallbackQuery failed: ${String((e as Error)?.message ?? e)}`))
         const chat = query.message?.chat?.id
         if (typeof query.data === 'string' && chat !== undefined && onAction !== null) {
-          onAction({ id: query.data, target: { channel: String(chat), threadTs: null }, user: String(query.from?.id ?? '') })
+          onAction({ id: query.data, target: { channel: String(chat), threadTs: topicOf(query.message) }, user: String(query.from?.id ?? '') })
         }
         continue
       }
@@ -470,8 +492,12 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
       void pollLoop().catch((e) => log('telegram poll loop ended', String((e as Error)?.message ?? e)))
     },
 
-    /** Telegram edits only recent messages; if the edit is refused, send a new one. */
-    async post(target: Target, markdown: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
+    /**
+     * Telegram edits only recent messages; if the edit is refused, send a new one. An answer in a group replies to the
+     * question it answers, on its first part, so a busy group can tell which; in a private chat it follows the question
+     * anyway, and a quote there is noise. A group's chat id is negative, a person's is their own id.
+     */
+    async post(target: Target, markdown: string, options?: { replace?: string | null; buttons?: ActionButton[]; answer?: boolean; replyTo?: string }): Promise<PostedMessage | null> {
       // Tables become lists before the answer is cut into parts: a table across the cut kept its pipes.
       const text = tablesAsLists(markdown)
       // Buttons as an inline keyboard on the last part, where the question ends. callback_data is capped
@@ -493,7 +519,9 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
         if (sent === null) {
           sent = await rendered<TelegramMessage>('sendMessage', {
             chat_id: target.channel,
-            ...(target.threadTs !== null ? { reply_to_message_id: Number(target.threadTs) } : {}),
+            ...inTopic(target),
+            ...(i === 0 && options?.answer === true && options.replyTo !== undefined && Number(target.channel) < 0
+              ? { reply_to_message_id: Number(options.replyTo), allow_sending_without_reply: true } : {}),
             ...(keyboard.length > 0 && i === chunks.length - 1 ? { reply_markup: { inline_keyboard: [keyboard] } } : {}),
           }, body)
         }
@@ -508,7 +536,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
      * Telegram offers no history endpoint, so a fresh process genuinely has none.
      */
     async fetchHistory(target: Target, options: { currentTs: string; sinceTs: string | null; limit: number; maxChars: number }) {
-      const ring = seenMessages.get(target.channel) ?? []
+      const ring = seenMessages.get(conversationOf(target.channel, target.threadTs)) ?? []
       const lines: string[] = []
       let chars = 0
       let lastTs: string | null = null

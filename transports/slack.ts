@@ -350,6 +350,20 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
   }
 
   /**
+   * Mentions taken, by channel and ts. A group DM's mention comes as its message event (Slack does not say whether an
+   * app_mention comes too), so the two are one turn: the first is taken and the other dropped. Bounded: the pair
+   * arrives together.
+   */
+  const mentionsTaken = new Set<string>()
+  function firstMention(channel: string, ts: string): boolean {
+    const key = `${channel}:${ts}`
+    if (mentionsTaken.has(key)) return false
+    mentionsTaken.add(key)
+    if (mentionsTaken.size > 500) mentionsTaken.delete(mentionsTaken.values().next().value as string)
+    return true
+  }
+
+  /**
    * Turn one platform event into something the core can use, or null when it is
    * not for this agent.
    *
@@ -367,8 +381,11 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     const files = event.files ?? []
     if (!event.text?.trim() && files.length === 0) return null
     const isMention = event.type === 'app_mention'
-    const isDm = isDirectChannel(event.channel) || event.channel_type === 'im' || event.channel_type === 'mpim'
-    if (!isDm && !isMention) {
+    // A group DM is several people, so it is a channel here: taken as a DM, every message in it was a turn.
+    const isDm = isDirectChannel(event.channel) || event.channel_type === 'im'
+    const groupMention = event.channel_type === 'mpim' && !isMention && botUserId !== null && (event.text ?? '').includes(`<@${botUserId}>`)
+    if ((isMention || groupMention) && !firstMention(event.channel, event.ts)) return null
+    if (!isDm && !isMention && !groupMention) {
       if (cfg.replyMode === 'mention') return null
       // One that mentions the bot comes again as its app_mention, which is the turn: taking both answered it twice.
       if (botUserId !== null && (event.text ?? '').includes(`<@${botUserId}>`)) return null
@@ -389,8 +406,8 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
       ts: event.ts,
       text,
       user: event.user,
-      addressed: isDm || isMention || cfg.replyMode === 'all',
-      ...(!isDm && !isMention && cfg.replyMode === 'all' ? { byMode: true } : {}),
+      addressed: isDm || isMention || groupMention || cfg.replyMode === 'all',
+      ...(!isDm && !isMention && !groupMention && cfg.replyMode === 'all' ? { byMode: true } : {}),
       files,
       raw: event,
     }
