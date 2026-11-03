@@ -5,7 +5,8 @@
  */
 import { graphemes, graphemeWidth } from '../dist/tui/render/width.js'
 
-export function emulator(cols, rows) {
+/** `widthOf`: how wide this terminal draws a grapheme — one may draw an emoji made by VS16 narrower than we count. */
+export function emulator(cols, rows, widthOf = graphemeWidth) {
   const grid: Array<{ ch: string; style: string; link?: string }> = Array.from({ length: cols * rows }, () => ({ ch: ' ', style: '' }))
   let x = 0, y = 0, pen = '', link = ''
   const state = { cursorVisible: true, cursor: { x: 0, y: 0 }, altScreen: false, mouse: false }
@@ -40,7 +41,7 @@ export function emulator(cols, rows) {
       let end = data.indexOf('\x1b', i)
       if (end === -1) end = data.length
       for (const g of graphemes(data.slice(i, end))) {
-        const w = graphemeWidth(g)
+        const w = widthOf(g)
         if (x < cols && y < rows) {
           grid[y * cols + x] = link === '' ? { ch: g, style: pen } : { ch: g, style: pen, link }
           if (w === 2 && x + 1 < cols) grid[y * cols + x + 1] = link === '' ? { ch: '', style: pen } : { ch: '', style: pen, link }

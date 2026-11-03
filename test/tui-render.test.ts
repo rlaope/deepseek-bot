@@ -12,7 +12,7 @@
 import './dist-fresh.ts'   // fails loudly on a stale dist
 
 import { EventEmitter } from 'node:events'
-import { fit, graphemes, graphemeWidth, stringWidth } from '../dist/tui/render/width.js'
+import { fit, graphemes, graphemeWidth, stringWidth, stripControls } from '../dist/tui/render/width.js'
 import { Screen, diff, SYNC_BEGIN, SYNC_END } from '../dist/tui/render/screen.js'
 import { InputParser } from '../dist/tui/render/input.js'
 import { Terminal, ENTER, RESTORE, restoreOnExit } from '../dist/tui/render/terminal.js'
@@ -20,7 +20,7 @@ import { wrapPlain, layout, extract } from '../dist/tui/render/text.js'
 import { Transcript } from '../dist/tui/render/transcript.js'
 import { Editor } from '../dist/tui/render/editor.js'
 import { banner, BANNER_WIDTHS } from '../dist/tui/render/banner.js'
-import { welcomeBlock, answerBlock, toolCallBlock } from '../dist/tui/blocks.js'
+import { welcomeBlock, answerBlock, toolCallBlock, userBlock } from '../dist/tui/blocks.js'
 import { copy, osc52 } from '../dist/tui/render/clipboard.js'
 import { emulator, fakeTerminal, fakeClock } from './tui-fakes.ts'
 import { sgr, detectColorMode, rgbTo256, backgroundOf, useBackground, themeGeneration, theme, palette } from '../dist/tui/render/style.js'
@@ -592,6 +592,67 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   check('tables: a line not starting with a pipe ends a table that has them', plain(ended[ended.length - 1]) === 'following paragraph with a | pipe' && ended.filter((l) => drawn(l).includes('│')).length === 2, JSON.stringify(ended.map(drawn)))
   const bare = md(['a | b', '---|---', '1 | 2', '3 | 4'].join('\n'))
   check('tables: a table without outer pipes still takes its rows', bare.filter((l) => drawn(l).includes('│')).length === 3 && bare.some((l) => drawn(l).includes('│ 3 │ 4 │')), JSON.stringify(bare.map(drawn)))
+}
+
+// What the review of the render pass found, and a frame drawn on a terminal that counts an emoji narrower.
+{
+  // A terminal that draws an emoji made by VS16 (⚠️) one column wide, as xterm and pyte do; we count it two.
+  const narrow = (g) => (g.includes('️') ? 1 : graphemeWidth(g))
+  // Every cell whose glyph both sides agree on must hold it: a cell after a shifted run would not.
+  const agreed = (emu, screen) => {
+    for (let i = 0; i < screen.cells.length; i++) {
+      const cell = screen.cells[i]
+      if (cell.ch === '' || [...cell.ch].length > 1) continue
+      if (emu.grid[i].ch !== cell.ch) return `cell ${i % screen.cols},${Math.floor(i / screen.cols)}: terminal ${JSON.stringify(emu.grid[i].ch)} vs frame ${JSON.stringify(cell.ch)}`
+    }
+    return null
+  }
+  // The approval that rewrapped: a row ending in ")" redrawn as a line with ⚠️ in it.
+  const cols = 40
+  const before = new Screen(cols, 2), after = new Screen(cols, 2)
+  before.put(0, 0, `${'x'.repeat(cols - 2)})`)
+  after.put(0, 0, '● ⚠️ I need permission: rm')
+  const term = emulator(cols, 2, narrow)
+  term.apply(diff(null, before)); term.apply(diff(before, after))
+  check('diff: a row redrawn over a narrower emoji leaves nothing of the old row', agreed(term, after) === null && !term.row(0).includes(')'), `${agreed(term, after)} | ${JSON.stringify(term.row(0))}`)
+  // Control: the same frames on a terminal that counts as we do.
+  const same = emulator(cols, 2)
+  same.apply(diff(null, before)); same.apply(diff(before, after))
+  check('diff: (control) and on a terminal that counts as we do, the frame exactly', sameScreen(same, after) === null, sameScreen(same, after) ?? '')
+  // And over random edits with such emoji in them.
+  const EMOJI = ['a', ' ', '가', '⚠️', '❤️', '👍', ')', '│']
+  let prev = null, frame = null, bad = null
+  const fuzz = emulator(30, 4, narrow)
+  for (let n = 0; n < 300 && bad === null; n++) {
+    frame = new Screen(30, 4)
+    for (let k = 0; k < 4; k++) frame.put(rand(10), rand(4), Array.from({ length: 1 + rand(20) }, () => EMOJI[rand(EMOJI.length)]).join(''), STYLES[rand(STYLES.length)])
+    fuzz.apply(diff(prev, frame))
+    bad = agreed(fuzz, frame)
+    prev = frame
+  }
+  check('diff: random edits with VS16 emoji leave every agreed cell right on a narrower terminal', bad === null, bad ?? '')
+
+  check('strip: SS2 and SS3 take the character they shift', stripControls('a\x1bNxb\x1bOPc\x8eyd\x8fze') === 'abcde', JSON.stringify(stripControls('a\x1bNxb\x1bOPc\x8eyd\x8fze')))
+  check('strip: (control) a lone escape at the end still goes', stripControls('ab\x1b') === 'ab')
+
+  const st = { text: 'T', bold: 'B', italic: 'I', boldItalic: 'BI', strike: 'S', code: 'C', heading: 'H', quote: 'Q', codeBlock: 'K', dim: 'D', link: 'L', keyword: 'KW', string: 'ST', comment: 'CM', number: 'N' }
+  const md = (text, width = 60) => markdown(text, width, st, { text: '  ', style: '' })
+  const plain = (line) => line.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join('')
+  const open = md('keep ~~this ~~ as written')
+  check('strike: ~~ after a space does not close', plain(open[0]) === 'keep ~~this ~~ as written' && !open[0].spans.some((sp) => sp.style === 'S'), JSON.stringify(open[0].spans))
+  const closed = md('drop ~~this~~ now')
+  check('strike: (control) ~~ after a word closes', plain(closed[0]) === 'drop this now' && closed[0].spans.some((sp) => sp.style === 'S' && sp.text === 'this'), JSON.stringify(closed[0].spans))
+  const codeCell = md(['| a | b |', '|---|---|', '| `x<br>y` | z<br>w |'].join('\n'))
+  const cellText = codeCell.map((l) => l.spans.map((sp) => sp.text).join(''))
+  check('tables: <br> inside a code span stays in the cell, one outside breaks it', cellText.some((l) => l.includes('x<br>y')) && cellText.some((l) => l.includes(' w ')) && !cellText.some((l) => l.includes('z<br>w')), JSON.stringify(cellText))
+
+  const edit = toolCallBlock({ name: 'edit', callId: 'e1', title: 'a.go', diff: [{ path: 'a\x1b[31m.go', old: 'x', new: '\tx' }] }, { expanded: true }, 'none')
+  const editRows = edit.lines(60).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
+  const added = editRows.find((r) => r.startsWith('+ ')) ?? ''
+  check('diff rows: a tab is counted from the line\'s own start, not from the + mark', added.indexOf('x') === 10, JSON.stringify(added))
+  check('diff rows: the file\'s name is drawn without its escapes', editRows.length > 0 && !editRows.some((r) => r.includes('[31m')) && editRows.some((r) => r.includes('a.go')), JSON.stringify(editRows))
+  const user = userBlock('\x1b[31mred\tend', 'none').lines(60).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
+  check('user block: what was typed or asked is drawn without escapes, its tabs at stops of 8', user.includes('red     end'), JSON.stringify(user))
 }
 
 const failed = results.filter((r) => !r.ok)

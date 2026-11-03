@@ -102,7 +102,7 @@ const en = {
     completion: (at: number, of: number) => `${at > 0 ? `${at}/${of} · ` : ''}↑↓ pick · tab insert · ↵ run · esc close`,
     picker: (efforts: boolean) => `type to filter · ↑↓ pick${efforts ? ' · ←→ effort' : ''} · ↵ choose · esc close`,
     typing: 'type, then ↵ · esc back to the options',
-    question: (multi: boolean) => `↑↓ move${multi ? ' · space select' : ''} · ↵ confirm · esc skip · type to answer in your own words`,
+    question: (multi: boolean, fold: 'more' | 'less' | null) => `↑↓ move${multi ? ' · space select' : ''}${fold === null ? '' : fold === 'more' ? ' · ctrl+o whole question' : ' · ctrl+o fold'} · ↵ confirm · esc skip · type to answer in your own words`,
     panel: '↑↓ move · ↵ open · esc back to the input',
     agent: (label: string) => `↵ send to ${label} · ctrl+x stop · esc back to main`,
     job: 'ctrl+x end · wheel scroll · esc back to main',

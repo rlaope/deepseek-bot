@@ -85,6 +85,15 @@ export class Screen {
   }
 }
 
+/**
+ * A grapheme of more than one code point (an emoji made by VS16, a ZWJ sequence, a flag, a base with its
+ * marks): terminals disagree on how wide they draw it. ⚠️ is two columns in some and one in xterm's, and a
+ * run written after a narrower one lands a column to the left, leaving its old last cell on screen.
+ */
+function uncertain(g: string): boolean {
+  return g.length > 2 || (g.length === 2 && g.codePointAt(0)! < 0x10000)
+}
+
 function same(a: Cell, b: Cell): boolean {
   return a === b || (a.ch === b.ch && a.style === b.style && a.link === b.link)
 }
@@ -129,7 +138,12 @@ export function diff(prev: Screen | null, next: Screen): string {
         // A hyperlink is opened where its cells start and closed where they end, within the run.
         if ((cell.link ?? '') !== link) { link = cell.link ?? ''; out += `\x1b]8;;${link}\x07` }
         if (pen !== cell.style) { out += cell.style === '' ? '\x1b[0m' : cell.style; pen = cell.style }
-        out += cell.ch
+        if (uncertain(cell.ch)) {
+          // Its cells blanked first, then the glyph, then the cursor put where the next cell is, however wide the
+          // terminal drew it.
+          const w = k + 1 < next.cols && next.cells[row + k + 1].ch === '' ? 2 : 1
+          out += `${' '.repeat(w)}\x1b[${y + 1};${k + 1}H${cell.ch}\x1b[${y + 1};${k + w + 1}H`
+        } else out += cell.ch
       }
       if (link !== '') out += '\x1b]8;;\x07'
       x = end

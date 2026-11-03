@@ -176,6 +176,16 @@ function services(overrides = {}) {
   check('bridge: watch with nothing to watch is harmless', typeof bridge.watch(() => {}) === 'function')
 }
 
+{
+  // A huge first read keeps its tail; a cut that falls inside an escape sequence must not leave its rest as text.
+  const big = `${'x'.repeat(250_000)}\x1b[31m${'y'.repeat(199_985)}\nlast line\n`
+  const jobs = { readAt: () => ({ chunks: [{ at: 0, text: big }], next: big.length }), get: () => ({ status: 'running' }) }
+  const bridge = createBridge({ get: (n) => (n === 'jobs' ? jobs : undefined), on: () => undefined }, () => {})
+  const out = bridge.jobOutput('r', 'j', 0)
+  const rest = out?.text.split('\n').slice(1).join('\n') ?? ''
+  check('bridge: a cut tail starts on a line of its own, never inside an escape', out !== null && out.text.startsWith('… ') && !/^\[?31m/.test(rest) && rest.endsWith('last line\n'), JSON.stringify(rest.slice(0, 20)))
+}
+
 // In English, whatever the deployment's language: a subagent's state, a shell's run, the tokens.
 {
   const now = Date.now()

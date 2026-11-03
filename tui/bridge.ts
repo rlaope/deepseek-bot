@@ -260,8 +260,11 @@ export function createBridge(services: Services, log: (...parts: unknown[]) => v
         const read = service.readAt(id, from, owner)
         const job = service.get?.(id, owner)
         const all = (read?.chunks ?? []).map((c: { text?: string }) => String(c?.text ?? '')).join('')
-        // The newest output is what a person watching wants; a huge first read keeps its tail.
-        const text = all.length <= MAX_OUTPUT_CHARS ? all : `… ${words.charsLeftOut(all.length - MAX_OUTPUT_CHARS)}\n${all.slice(-MAX_OUTPUT_CHARS)}`
+        // The newest output is what a person watching wants; a huge first read keeps its tail, from its first
+        // whole line: the cut may fall inside an escape sequence, whose rest would show as text.
+        let tail = all.slice(-MAX_OUTPUT_CHARS)
+        if (tail.length < all.length && tail.includes('\n')) tail = tail.slice(tail.indexOf('\n') + 1)
+        const text = tail.length === all.length ? all : `… ${words.charsLeftOut(all.length - tail.length)}\n${tail}`
         return { text, next: Number(read?.next ?? from), status: String(job?.status ?? 'unknown') }
       } catch {
         return null
