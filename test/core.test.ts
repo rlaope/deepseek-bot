@@ -2514,6 +2514,10 @@ for (const remove of [false, true]) {
   await sleep(400)
   const homeSent = t.followups.slice(before).map(textOf).join('\n')
   check('tenant: a thread under an unmapped channel stays in the home', homeSent.includes(`Your home is ${home}.`), (homeSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
+  // A message with nothing in it opens nothing, and leaves nothing behind for a thread that has nothing else.
+  t.transport.deliver(t.transport.message({ eventId: 'e-empty-thread', text: ' \u200b ', target: { channel: 'T_EMPTY', threadTs: null }, parent: 'C_ACME' }))
+  await sleep(700)
+  check('tenant: an empty message records no parent', t.read().parentOf?.T_EMPTY === undefined, JSON.stringify(t.read().parentOf))
   // A parent the platform could not tell: no turn, said in the log.
   const unknown = t.followups.length
   t.transport.deliver(t.transport.message({ eventId: 'e-unknown-parent', text: 'where am I', target: { channel: 'T_LOST', threadTs: null }, parentUnknown: true }))

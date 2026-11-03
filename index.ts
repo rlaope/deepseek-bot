@@ -3434,9 +3434,15 @@ export function apply(ctx, config) {
     // says which by whether it supplies a thread.
     const threadTs = target.threadTs
     const key = threadTs === null ? channel : `${channel}:${threadTs}`
+      // Whitespace and zero-width characters are nothing to say. Found by the edge sweep:
+      // an empty string was refused, but "   " and a run of zero-width spaces each started
+      // a turn — an expensive way to answer nothing, and a question the model can only guess at.
+      // Files are something to say, though: sent without words, the model is told so, by the names the manifest uses.
+      const wordless = message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === ''
+      if (wordless && message.files.length === 0) return
     // With tenant isolation a thread is its channel's tenant (configuredTenant). Its parent is recorded, as only its
-    // messages carry it; one the platform could not tell, none recorded and the map not naming the thread, is not served:
-    // its turn would run in the default workspace, outside the tenant it belongs to.
+    // messages carry it (not for an empty message, whose entry nothing would prune); one the platform could not tell,
+    // none recorded and the map not naming the thread, is not served: its turn would run in the default workspace.
     if (cfg.tenantIsolation === true) {
       if (message.parent !== undefined && state.parentOf?.[key] !== message.parent) { state.parentOf = { ...(state.parentOf ?? {}), [key]: message.parent }; saveState() }
       if (message.parentUnknown === true && state.parentOf?.[key] === undefined && typeof (cfg.tenantChannels ?? {})[channel] !== 'string') {
@@ -3444,12 +3450,6 @@ export function apply(ctx, config) {
         return
       }
     }
-      // Whitespace and zero-width characters are nothing to say. Found by the edge sweep:
-      // an empty string was refused, but "   " and a run of zero-width spaces each started
-      // a turn — an expensive way to answer nothing, and a question the model can only guess at.
-      // Files are something to say, though: sent without words, the model is told so, by the names the manifest uses.
-      const wordless = message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === ''
-      if (wordless && message.files.length === 0) return
     const howMany = message.files.length === 1 ? 'a file' : `${message.files.length} files`
     const prompt = wordless
       ? `(sent ${howMany} without text: ${message.files.map((file) => safeFileName(file.name)).join(', ')})`
