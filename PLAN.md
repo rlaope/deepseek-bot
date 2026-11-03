@@ -139,6 +139,13 @@ is built before the thing it stands on. The detailed history of each milestone i
   `transports/marks.ts` and `OWN_MARKER` from `transports/history.ts`: they belong in a neutral shared module both
   sides import. `handleEvent` in `index.ts` would read better split into a gates step (allowlist, mute, approvals,
   stop and quiet words) and an answer step (the turn job and what its answer is).
+- **The terminal's Markdown, what is still left** (from the QA pass that fixed tabs, fences and escapes):
+  - a tab outside a fence goes to its stop counted in the line as written, markers included, so `**a**\tb` lines
+    up two columns off what a line without markers would;
+  - a lone carriage return (a progress bar's) is removed, not taken as a return to the line's start, so a tool's
+    progress line shows every step run together;
+  - emphasis inside emphasis takes the inner style only (`**a *b* c**`: `b` italic, not bold italic); only
+    `***x***` is both.
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim
   through its first messenger, so `dsh gateway setup` keeps one at a time. Serving two needs each
   conversation routed to the platform it came from, including the messages the bot sends first
@@ -342,6 +349,9 @@ Decided against:
   tmux only. Without them it flickers or loses the mouse, and keeps working.
 - The terminal's thinking block: the model route used here streams no `reasoning-delta`, so it is
   pinned against fakes only. (Tool calls, their results and an edit's diff card are verified live.)
+- The terminal's flag and keycap widths (2 columns), tab stops and struck-through text: pinned in the suite's
+  fakes, not looked at in a real emulator; an emulator that draws a flag as two letters puts what follows a column
+  off.
 - Clicking a link in the terminal: the OSC 8 bytes are checked, a click is not — the terminal has
   mouse tracking on, where most emulators want a modifier (cmd or shift) with the click.
 - With several platforms, the "already reported" stop removing a working message put up after the

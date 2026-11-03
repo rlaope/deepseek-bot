@@ -1,6 +1,7 @@
 /**
  * Just enough Markdown for a chat answer: code blocks (highlighted for the common languages),
- * headings, lists, quotes, rules, tables, and inline **bold**, *emphasis*, `code`, [links](url) —
+ * headings, lists, quotes, rules, tables, and inline **bold**, *emphasis*, ***both***, ~~strike~~,
+ * `code`, [links](url), \*escapes\* —
  * plus the Slack forms the core's own messages use (*bold*, :warning:), because those are written
  * for Slack and reach the terminal unchanged.
  *
@@ -8,13 +9,15 @@
  * styles; a code line wraps where it overflows, never at its spaces. A link's text carries its
  * target, which the screen turns into a clickable OSC 8 hyperlink.
  */
-import { fit, graphemes, graphemeWidth, stringWidth } from './width.js'
+import { expandTabs, fit, graphemes, graphemeWidth, stringWidth } from './width.js'
 import type { Line, Span } from './text.js'
 
 export interface MarkdownStyles {
   text: string
   bold: string
   italic: string
+  boldItalic: string
+  strike: string
   code: string
   heading: string
   quote: string
@@ -69,9 +72,11 @@ export function inline(text: string, base: string, s: MarkdownStyles): Span[] {
   const push = (t: string, style: string, link?: string) => { if (t !== '') out.push(link === undefined ? { text: t, style } : { text: t, style, link }) }
   // Emphasis only at word edges, as Markdown has it: snake_case_names and 2*3*4 stay as written. A
   // link's label and target are bounded, so a run of brackets cannot make each one scan to the end.
-  // A bare URL is printable ASCII (it ends where Korean begins), bounded, without the brackets
-  // around it, and it stops before ")(http": the next bracketed URL is a URL of its own.
-  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|((?<![\w*])\*[^*\s][^*\n]*?\*(?![\w*]))|((?<![\w_])_[^_\s][^_\n]*?_(?![\w_]))|(\[[^\]\n]{1,200}\]\([^)\s]{1,2100}\))|(:[a-z0-9_+]+:)|(https?:\/\/(?:(?!\)\(https?:\/\/)[\x21-\x3b\x3d\x3f-\x5a\x5c\x5e-\x7e]){1,2001})/g
+  // A link's target may hold one level of balanced brackets (…/wiki/Foo_(bar)). A bare URL is
+  // printable ASCII (it ends where Korean begins), bounded, without the brackets around it, and it
+  // stops before ")(http": the next bracketed URL is a URL of its own. A backslash before ASCII
+  // punctuation shows that character as it is, as in CommonMark.
+  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|((?<![\w*])\*[^*\s][^*\n]*?\*(?![\w*]))|((?<![\w_])_[^_\s][^_\n]*?_(?![\w_]))|(\[[^\]\n]{1,200}\]\((?:[^()\s]|\([^()\s]{0,2100}\)){1,2100}\))|(:[a-z0-9_+]+:)|(https?:\/\/(?:(?!\)\(https?:\/\/)[\x21-\x3b\x3d\x3f-\x5a\x5c\x5e-\x7e]){1,2001})|(\\[!-\/:-@[-`{-~])|((?<![\w*])\*\*\*[^*\s][^*\n]*?\*\*\*(?![\w*]))|(~~[^~\s][^~\n]*?~~)/g
   let last = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
@@ -87,7 +92,7 @@ export function inline(text: string, base: string, s: MarkdownStyles): Span[] {
     else if (m[3] || m[4]) out.push(...inline(token.slice(1, -1), m[3] ? s.bold : s.italic, s))
     else if (m[5]) {
       const label = token.slice(1, token.indexOf(']'))
-      const url = token.slice(token.indexOf('(') + 1, -1)
+      const url = token.slice(token.indexOf(']') + 2, -1)
       const target = safeUrl(url)
       for (const piece of inline(label, s.link, s)) out.push(target === undefined ? { text: piece.text, style: piece.style } : { ...piece, link: target })
       // Shown as well, for a terminal without hyperlinks and for a copy.
@@ -103,6 +108,9 @@ export function inline(text: string, base: string, s: MarkdownStyles): Span[] {
       const cutShort = (continues && !/^https?:\/\/[^/?#]+\/?$/.test(token)) || m[0].length - m[0].indexOf('//') - 2 >= 2001
       push(token, cutShort ? base : s.link, cutShort ? undefined : safeUrl(token))
     }
+    else if (m[8]) push(token.slice(1), base)
+    else if (m[9]) out.push(...inline(token.slice(3, -3), s.boldItalic, s))
+    else if (m[10]) out.push(...inline(token.slice(2, -2), s.strike, s))
     else push(SHORTCODES[token.slice(1, -1)], base)
     last = at + token.length
   }
@@ -236,6 +244,8 @@ function highlight(line: string, lang: string, s: MarkdownStyles): Span[] {
 const isRow = (raw: string) => /^\s*\|.*\|\s*$/.test(raw) || (raw.includes('|') && !/^\s*$/.test(raw))
 // By cells, not by one pattern over the line: nested optional spaces backtrack quadratically on a long blank run.
 const isSeparator = (raw: string) => raw.includes('-') && cellsOf(raw).every((cell) => /^:?-+:?$/.test(cell))
+// A line break written into a cell as HTML, the one way a GFM cell holds two lines.
+const BREAK = /<br\s*\/?>/gi
 const cellsOf = (raw: string) => raw.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'))
 
 /** A column is not narrowed below this many cells, or below what it needs when that is less. */
@@ -261,14 +271,15 @@ function fitColumns(natural: number[], room: number): number[] | null {
  */
 function table(header: string[], aligns: Array<'left' | 'right' | 'center'>, body: string[][], room: number, s: MarkdownStyles): Span[][] | null {
   const columns = header.length
-  const cell = (row: string[], c: number, base: string) => inline(row[c] ?? '', base, s)
+  // A cell is its lines: one, or more where it says <br>.
+  const cell = (row: string[], c: number, base: string) => (row[c] ?? '').split(BREAK).map((part) => inline(part.trim(), base, s))
   const rows = [header.map((_, c) => cell(header, c, s.bold)), ...body.map((row) => header.map((_, c) => cell(row, c, s.text)))]
   const widthOf = (spans: Span[]) => stringWidth(spans.map((sp) => sp.text).join(''))
-  const widths = fitColumns(header.map((_, c) => Math.max(1, ...rows.map((row) => widthOf(row[c])))), room - 1 - 3 * columns)
+  const widths = fitColumns(header.map((_, c) => Math.max(1, ...rows.flatMap((row) => row[c].map(widthOf)))), room - 1 - 3 * columns)
   if (widths === null) return null
   const border = (left: string, mid: string, right: string): Span[] => [{ text: `${left}${widths.map((w) => '─'.repeat(w + 2)).join(mid)}${right}`, style: s.dim }]
-  const drawRow = (row: Span[][]): Span[][] => {
-    const pieces = row.map((spans, c) => wrapSpans(spans, widths[c], false).map((piece) => piece.spans))
+  const drawRow = (row: Span[][][]): Span[][] => {
+    const pieces = row.map((parts, c) => parts.flatMap((spans) => wrapSpans(spans, widths[c], false).map((piece) => piece.spans)))
     return Array.from({ length: Math.max(...pieces.map((p) => p.length)) }, (_, k) => {
       const spans: Span[] = [{ text: '│ ', style: s.dim }]
       for (let c = 0; c < columns; c++) {
@@ -294,7 +305,10 @@ function table(header: string[], aligns: Array<'left' | 'right' | 'center'>, bod
  * per row, its first cell in bold, the rest after a dash and, with three columns or more, named by
  * their header.
  */
-function tableAsList(header: string[], body: string[][], s: MarkdownStyles): Span[][] {
+function tableAsList(cells: string[], rows: string[][], s: MarkdownStyles): Span[][] {
+  // A list item is one line of text: a <br> in a cell is a space in it.
+  const header = cells.map((cell) => cell.replace(BREAK, ' '))
+  const body = rows.map((row) => row.map((cell) => cell.replace(BREAK, ' ')))
   const joined = (parts: Span[][], between: string) => parts.flatMap((part, k) => (k > 0 ? [{ text: between, style: s.dim }, ...part] : part))
   // As in the drawn table, cells past the header are not part of it.
   const filled = body.map((row) => row.slice(0, header.length)).filter((row) => row.some((cell) => cell !== ''))
@@ -312,6 +326,9 @@ function tableAsList(header: string[], body: string[][], s: MarkdownStyles): Spa
   })
 }
 
+/** Tab stops in an answer, as CommonMark reads tabs. */
+const TAB_STOP = 4
+
 /**
  * Lay out a Markdown answer under a prefix (e.g. two spaces), as transcript lines.
  */
@@ -327,23 +344,33 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
   }
   // A list item's mark is drawn once; its wrapped lines hang under its text.
   const item = (spans: Span[], mark: string) => emit(spans, [{ text: mark, style: s.dim }], false, [{ text: ' '.repeat(stringWidth(mark)), style: s.dim }])
-  const raws = text.split('\n')
-  let fence: string | null = null
+  // Tabs to stops of 4 columns, CommonMark's, from the start of each line: a code block keeps its
+  // indentation, a list its nesting, and tab-separated text its columns.
+  const raws = text.split('\n').map((raw) => expandTabs(raw, TAB_STOP))
+  // A fence as CommonMark has it: three or more backticks or tildes, then an info string whose first
+  // word is the language (none with a backtick, after backticks). It is closed by a run of the same
+  // mark at least as long, alone on its line, so a ```` fence can show a ``` one.
+  let fence: { mark: string; size: number; lang: string } | null = null
   for (let i = 0; i < raws.length; i++) {
     const raw = raws[i]
-    const open = /^\s*```(\S*)\s*$/.exec(raw)
-    if (open !== null) {
-      if (fence === null) { fence = open[1]; if (fence !== '') lines.push({ spans: lead([{ text: `${fence}`, style: s.dim }]), soft: false }) }
-      else fence = null
+    const run = /^\s*(`{3,}|~{3,})(.*)$/.exec(raw)
+    if (run !== null && fence === null && !(run[1][0] === '`' && run[2].includes('`'))) {
+      const lang = run[2].trim().split(/\s+/)[0]
+      fence = { mark: run[1][0], size: run[1].length, lang }
+      if (lang !== '') lines.push({ spans: lead([{ text: lang, style: s.dim }]), soft: false })
       continue
     }
-    if (fence !== null) { emit(highlight(raw, fence, s), [{ text: '│ ', style: s.dim }], true); continue }
+    if (run !== null && fence !== null && run[1][0] === fence.mark && run[1].length >= fence.size && run[2].trim() === '') { fence = null; continue }
+    if (fence !== null) { emit(highlight(raw, fence.lang, s), [{ text: '│ ', style: s.dim }], true); continue }
     // A table needs a separator row with as many cells as its header (so "a | b" over a rule is not one).
     if (isRow(raw) && i + 1 < raws.length && isSeparator(raws[i + 1]) && cellsOf(raws[i + 1]).length === cellsOf(raw).length) {
       const header = cellsOf(raw)
       const aligns = cellsOf(raws[i + 1]).map((d) => (d.endsWith(':') ? (d.startsWith(':') ? 'center' : 'right') : 'left') as 'left' | 'right' | 'center')
+      // A row is shaped like the header: it starts with a pipe if the header does. GFM would take any
+      // line up to a blank one, but an answer often goes on with a sentence right under its table.
+      const piped = raw.trim().startsWith('|')
       let end = i + 2
-      while (end < raws.length && isRow(raws[end]) && raws[end].trim() !== '') end++
+      while (end < raws.length && isRow(raws[end]) && raws[end].trim() !== '' && (!piped || raws[end].trim().startsWith('|'))) end++
       const body = raws.slice(i + 2, end).map(cellsOf)
       const drawn = table(header, aligns, body, Math.max(1, width - widthOfDecor([])), s)
       if (drawn !== null) for (const row of drawn) lines.push({ spans: [...lead(), ...row], soft: false })

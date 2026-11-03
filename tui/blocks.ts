@@ -9,7 +9,7 @@ import { banner, BANNER_WIDTHS } from './render/banner.js'
 import { t } from './strings.js'
 import { palette, sgr, theme, type ColorMode } from './render/style.js'
 import { blink, currentFrame, shimmer } from './render/motion.js'
-import { fit, stringWidth } from './render/width.js'
+import { fit, stringWidth, stripControls } from './render/width.js'
 import { layout, type Line, type Span } from './render/text.js'
 import { markdown, type MarkdownStyles } from './render/markdown.js'
 import { lineDiff } from './render/linediff.js'
@@ -18,6 +18,7 @@ import { stripState } from './interview.js'
 function markdownStyles(mode: ColorMode): MarkdownStyles {
   return {
     text: sgr(theme.assistant, mode), bold: sgr(theme.bold, mode), italic: sgr(theme.italic, mode), code: sgr(theme.code, mode),
+    boldItalic: sgr({ ...theme.bold, ...theme.italic }, mode), strike: sgr({ ...theme.assistant, strike: true }, mode),
     heading: sgr(theme.heading, mode), quote: sgr(theme.quote, mode), codeBlock: sgr(theme.codeBlock, mode), dim: sgr(theme.muted, mode), link: sgr(theme.link, mode),
     keyword: sgr(theme.codeKeyword, mode), string: sgr(theme.codeString, mode), comment: sgr(theme.codeComment, mode), number: sgr(theme.codeNumber, mode),
   }
@@ -77,7 +78,8 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
     finish(text) { if (text !== undefined) block.text = text; block.streaming = false; block.version++ },
     lines(width) {
       // A deep interview's state blocks are for the gauges, not for reading.
-      const shown = stripState(block.text)
+      // An escape sequence the model wrote (or a shell's colours, in a job's output) is not drawn as "[31m".
+      const shown = stripControls(stripState(block.text))
       if (shown === '' && !block.streaming) return []
       const mark = sgr(theme.answerMark, mode)
       const lines = markdown(shown, width, markdownStyles(mode), pad('  '))
@@ -93,7 +95,7 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
 
 export function toolBlock(name: string, detail: string, mode: ColorMode): Block {
   // As a call is written in the main transcript: Name(what it was asked).
-  const text = detail === '' ? callName(name) : `${callName(name)}(${detail})`
+  const text = stripControls(detail === '' ? callName(name) : `${callName(name)}(${detail})`)
   return { id: nextId('tool'), version: 0, lines: (width) => layout(text, width, sgr(theme.tool, mode), { first: pad('● ', sgr(theme.toolMark, mode)), rest: pad('  ') }) }
 }
 
@@ -158,7 +160,7 @@ export function thinkingBlock(detail: Detail, mode: ColorMode, now: () => number
     reset() { block.text = ''; began = null; own++ },
     done() { if (block.streaming) ended = now(); block.streaming = false; own++ },
     lines(width) {
-      const text = block.text.trim()
+      const text = stripControls(block.text).trim()
       if (text === '') return []
       const head = sgr(theme.thinking, mode)
       const body = sgr(theme.thinkingBody, mode)
@@ -242,7 +244,7 @@ export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): 
       const removed = sgr(theme.danger, mode)
       const removedRow = sgr(theme.diffRemoved, mode)
       const addedRow = sgr(theme.diffAdded, mode)
-      const title = (step.title ?? '').split('\n')[0]
+      const title = stripControls(step.title ?? '').split('\n')[0]
       const mark = outcome !== null ? (outcome.ok ? marks.ok : marks.failed) : settled ? marks.settled : blink(currentFrame()) ? marks.on : marks.off
       // As Claude Code writes a call: the tool's name, then what it was asked in brackets.
       const shownName = callName(step.name)
@@ -262,7 +264,7 @@ export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): 
         // of the row does not carry it.
         const rows = f.sure.flatMap((d) => {
           const rowStyle = d.op === '-' ? removedRow : addedRow
-          const laid = layout(`${d.op} ${d.text === '' ? ' ' : d.text}`, width, rowStyle, { first: pad('      '), rest: pad('      ') })
+          const laid = layout(stripControls(`${d.op} ${d.text === '' ? ' ' : d.text}`), width, rowStyle, { first: pad('      '), rest: pad('      ') })
           for (const row of laid) { const used = widthOf(row); if (used < width) row.spans.push(pad(' '.repeat(width - used), rowStyle)) }
           return laid
         })
@@ -276,7 +278,8 @@ export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): 
               : t().diffNoDifference
       if (note !== '') out.push({ spans: [pad('    '), { text: note, style }], soft: false })
       if (outcome !== null) {
-        const text = outcome.text.replace(/\s+$/, '')
+        // A tool's colours and cursor moves are its terminal's, not ours: removed, its tabs kept.
+        const text = stripControls(outcome.text).replace(/\s+$/, '')
         // The gateway's count, from before it cut a long result; a "no matches" answer is none.
         const kind = resultKind(step.name)
         const none = (kind === 'search' || kind === 'files') && /^(no (matches|files|results)( found)?|found 0\b)/i.test(text)
@@ -324,7 +327,7 @@ export function noticeBlock(text: string, kind: NoticeKind, mode: ColorMode): Bl
     version: 0,
     lines: (width) => {
       const style = sgr(kind === 'error' ? theme.danger : kind === 'warn' ? theme.warn : kind === 'ok' ? theme.ok : theme.muted, mode)
-      return layout(text, width, style, { first: pad(mark, style), rest: pad('  ') })
+      return layout(stripControls(text), width, style, { first: pad(mark, style), rest: pad('  ') })
     },
   }
 }

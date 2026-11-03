@@ -71,9 +71,46 @@ export function graphemeWidth(grapheme: string): 0 | 1 | 2 {
   if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0
   if (ZERO_WIDTH.test(grapheme)) return 0
   if (isWide(cp)) return 2
+  // A flag is a pair of regional indicators, and the terminals in use draw it wide; one alone is a letter.
+  if (cp >= 0x1f1e6 && cp <= 0x1f1ff) return grapheme.length > 2 ? 2 : 1
+  // A keycap (1️⃣, #️⃣) is drawn wide, with or without its VS16.
+  if (grapheme.includes('\u20e3')) return 2
   // A text-presentation symbol made an emoji by VS16 (❤️, ☀️) is drawn wide by the terminals in use.
-  if (grapheme.includes('️') && /\p{Extended_Pictographic}/u.test(grapheme)) return 2
+  if (grapheme.includes('️') && (/\p{Extended_Pictographic}/u.test(grapheme) || /\p{Emoji}/u.test(String.fromCodePoint(cp)))) return 2
   return 1
+}
+
+/**
+ * Tabs as spaces to the next multiple of `stop`, counted in columns from the start of each line. A tab
+ * is a control character, 0 columns to the screen, so a tab left in the text is never drawn at all.
+ */
+export function expandTabs(text: string, stop: number): string {
+  if (!text.includes('\t')) return text
+  let out = ''
+  let col = 0
+  for (const g of graphemes(text)) {
+    if (g === '\t') { const n = stop - (col % stop); out += ' '.repeat(n); col += n }
+    else if (g === '\n') { out += g; col = 0 }
+    else { out += g; col += graphemeWidth(g) }
+  }
+  return out
+}
+
+// Escape sequences, as a terminal reads them: CSI (ESC [ or C1 0x9b) up to its final byte; a string (OSC,
+// DCS, SOS, PM, APC) up to BEL or ST — or the line's end, so one left open hides no more than its line;
+// any other ESC with what it takes. An unfinished one at the end (a streamed answer cut mid-sequence) too.
+const ESCAPES = /(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]?|(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)?|\x1b[ -/]*[0-~]?/g
+// The C0 and C1 controls left once those are gone, but for tab and newline.
+const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
+
+/**
+ * Text a model or a tool wrote, without what a terminal would read as a command: escape sequences (a
+ * tool's colours, a cursor move, a hyperlink of its own) and other control characters. Drawn as they
+ * are, their ESC is dropped as 0 columns and the rest shows as "[31m". A CRLF is a newline.
+ */
+export function stripControls(text: string): string {
+  if (!/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text)) return text
+  return text.replace(/\r\n/g, '\n').replace(ESCAPES, '').replace(CONTROLS, '')
 }
 
 export function stringWidth(text: string): number {
