@@ -38,6 +38,11 @@ is built before the thing it stands on. The detailed history of each milestone i
 
 ## Open
 
+- **Under `marks: off`, digits an earlier process left are never taken off.** The marks read what the bot left on a
+  message only when a turn's first mark is not "taken" (after a restart); with every mark off, nothing is asked of
+  that message again, so the eyes or digit a lost turn left there stay. Known and left: switching to `off` across a
+  restart that lost a turn is rare, and the restart's cross is not shown under `off` either.
+
 - **A wordless turn opens even when no attachment is usable.** A message of files alone is a turn whether or not
   anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
   no download URL, a Telegram voice note or animation, a Discord voice message. It costs a model call that can only say

@@ -715,8 +715,22 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
     check(`react: "${text}" is the reaction ${emoji}`, JSON.stringify(put(x)) === JSON.stringify([`${emoji}@3000.1`]) && said(x).length === 0, `${JSON.stringify(put(x))} ${JSON.stringify(said(x))}`)
     x.done()
   }
-  // All or nothing: not one of the list, not alone on its line, not well formed — the whole answer is text.
-  for (const text of ['[react:🐙]', 'see [react:👍]', '[react:👍] thanks', '[react:👍', '[react:]', '[react:👍👍]', '[react:thumbsup]', 'thanks\n[react:👍]']) {
+  // A skin tone is not another emoji: 👍🏽 is 👍.
+  const tone = await reacting('[react:👍🏽]')
+  check('react: "[react:👍🏽]" is the reaction 👍', JSON.stringify(put(tone)) === '["👍@3000.1"]' && said(tone).length === 0, `${JSON.stringify(put(tone))} ${JSON.stringify(said(tone))}`)
+  tone.done()
+  // A well-formed token for one off the list is never shown as the token: the text after it, or with none, what it named.
+  for (const [text, shown] of [['[react:💯]', '💯'], ['[react:🐙]', '🐙'], ['[react:+1]', '+1'], ['[react:👍👍]', '👍👍'], ['[react:💯]\nnice work', 'nice work']] as const) {
+    const x = await reacting(text)
+    check(`react: "${text.replace(/\n/g, '\\n')}" (off the list) posts ${JSON.stringify(shown)}, with no reaction`, put(x).length === 0 && JSON.stringify(said(x)) === JSON.stringify([shown]), `${JSON.stringify(put(x))} ${JSON.stringify(said(x))}`)
+    x.done()
+  }
+  // A reaction before text whose post is refused is not put: the turn ends failed, with no 👍 beside the cross.
+  const pf = await reacting('[react:👍]\nthanks', { fake: { refuseAnswer: true } })
+  check('react: a reaction whose answer was refused is not put, and the turn ends failed', put(pf).length === 0 && kinds(pf).at(-1) === 'failed', `${JSON.stringify(put(pf))} ${JSON.stringify(kinds(pf))}`)
+  pf.done()
+  // All or nothing: not alone on its line, or not well formed — the whole answer is text.
+  for (const text of ['see [react:👍]', '[react:👍] thanks', '[react:👍', '[react:]', '[react: 👍]', 'thanks\n[react:👍]']) {
     const x = await reacting(text)
     check(`react: "${text.replace(/\n/g, '\\n')}" is posted as text, with no reaction`, put(x).length === 0 && JSON.stringify(said(x)) === JSON.stringify([text.trim()]), `${JSON.stringify(put(x))} ${JSON.stringify(said(x))}`)
     x.done()
@@ -753,7 +767,7 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
 {
   const refusal = (marks: unknown) => { try { boot({ config: { marks } }).done(); return '' } catch (err) { return String((err as Error).message) } }
   check('marks: a value it does not have is a config error', /marks: must be 'progress', 'simple' or 'off' \(got: loud\)/.test(refusal('loud')), refusal('loud').split('\n')[1] ?? 'accepted')
-  for (const marks of ['progress', 'simple', 'off', undefined]) check(`marks: ${String(marks)} is accepted`, refusal(marks) === '', refusal(marks))
+  for (const marks of ['progress', 'simple', 'off', undefined, null, '']) check(`marks: ${String(marks)} is accepted`, refusal(marks) === '', refusal(marks))
 }
 
 // 4. The same platform event twice is handled once.

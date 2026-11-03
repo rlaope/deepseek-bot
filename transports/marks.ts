@@ -53,7 +53,7 @@ export interface MarkHost {
   refusal: string
   /** The pause unit between tries of the end (×1, ×5, ×15). */
   retryMs: number
-  /** The `marks` setting, validated at start; unset is `progress`. */
+  /** The `marks` setting, validated at start; unset or empty is `progress`. */
   mode?: MarksMode
   /** The model's reactions this platform can put (of `REACTIONS`), each with the name it is sent by. */
   reactions: Partial<Record<(typeof REACTIONS)[number], string>>
@@ -74,7 +74,8 @@ export interface Marks {
 
 export function reactionMarks(host: MarkHost): Marks {
   const { names, log, remove } = host
-  const mode = host.mode ?? 'progress'
+  // Unset or empty is the default.
+  const mode = host.mode || 'progress'
   // By the name without U+FE0F, which a platform may write either way (a keycap, ⏹️): the name this sends.
   const bare = (name: string) => name.replace(/\uFE0F/g, '')
   const ours = new Map([names.seen, ...names.working, names.done, names.failed, names.stopped, names.quiet].map((n) => [bare(n), n]))

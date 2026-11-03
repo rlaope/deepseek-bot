@@ -386,17 +386,18 @@ function saysNothing(text: string): boolean {
 const isQuietAnswer = (text: string) => /^\[quiet\]$/i.test(text.trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1'))
 /**
  * The model's reaction, `[react:👍]`: the whole answer, or its first line with the answer after it (`rest`). As models
- * write it, one pair of backticks around it and one full stop after it are let pass. All or nothing: an emoji not on
- * the shared list, or a token not alone on its line, and the answer is text. The emoji is compared without VS16.
+ * write it, one pair of backticks around it and one full stop after it are let pass. A token not alone on its line, or
+ * not well formed, and the answer is text. The emoji is compared without VS16 and without a skin tone; one still off the
+ * shared list comes back as written, which no platform can put, so the person never sees the token itself.
  */
 function reactionIn(text: string): { emoji: string; rest: string } | null {
   const answer = text.trim()
   const cut = answer.indexOf('\n')
   const first = (cut === -1 ? answer : answer.slice(0, cut)).trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1')
   const token = /^\[react:([^\]\s]+)\]$/.exec(first)
-  const bare = (e: string) => e.replace(/\uFE0F/g, '')
-  const emoji = token === null ? undefined : REACTIONS.find((e) => bare(e) === bare(token[1]))
-  return emoji === undefined ? null : { emoji, rest: cut === -1 ? '' : answer.slice(cut + 1).trim() }
+  if (token === null) return null
+  const bare = (e: string) => e.replace(/[\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '')
+  return { emoji: REACTIONS.find((e) => bare(e) === bare(token[1])) ?? token[1], rest: cut === -1 ? '' : answer.slice(cut + 1).trim() }
 }
 /** A whole message, in any language, that tells it to stay out of the conversation until it is named again. */
 const QUIET_WORDS = defaultWords('quiet')
@@ -478,7 +479,8 @@ export function apply(ctx, config) {
   for (const setting of ['backgroundKeepMs', 'maxKeptAgents']) {
     if (!Number.isInteger(cfg[setting]) || cfg[setting] < 0) problems.push(`${setting}: must be a whole number, 0 or more (got: ${String(cfg[setting])})`)
   }
-  if (cfg.marks != null && !MARKS_MODES.includes(cfg.marks)) problems.push(`marks: must be 'progress', 'simple' or 'off' (got: ${String(cfg.marks)})`)
+  // Unset or empty (`marks:` with nothing after it) is the default, as for language.
+  if (cfg.marks != null && String(cfg.marks).trim() !== '' && !MARKS_MODES.includes(cfg.marks)) problems.push(`marks: must be 'progress', 'simple' or 'off' (got: ${String(cfg.marks)})`)
   if (!['ask', 'deny'].includes(cfg.readOutside)) problems.push(`readOutside: must be 'ask' or 'deny' (got: ${String(cfg.readOutside)})`)
   if (!['open', 'local', 'public'].includes(cfg.commandNetwork)) problems.push(`commandNetwork: must be 'open', 'local' or 'public' (got: ${String(cfg.commandNetwork)})`)
   if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
@@ -3675,7 +3677,7 @@ export function apply(ctx, config) {
           if (token !== null) {
             const part = via(replyTarget)
             reaction = typeof part.react === 'function' && Array.isArray(part.reactions) && part.reactions.includes(token.emoji) ? token.emoji : null
-            if (reaction === null) log(`reaction ${token.emoji}: not one this platform can put — said as text`)
+            if (reaction === null) log(`reaction ${token.emoji}: not one it can put here — said as text`)
             r = { ...r, text: token.rest !== '' || reaction !== null ? token.rest : token.emoji }
           }
           // Said with the answer, so it reads before it and keeps the platform's working status (a message of its own
@@ -3740,8 +3742,9 @@ export function apply(ctx, config) {
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
           // The check once the answer is out: a refused post is a cross. Only an answer that went out is a typical
           // turn, timed without the waits for an approval.
-          if (reaction !== null) via(replyTarget).react(replyTarget, ts, reaction)
           const out = await replyInPlaceOf(replyTarget, r.text, placeholderTs, true, ts)
+          // Only with an answer that went out: a refused one ends with a cross, and a 👍 beside it would say otherwise.
+          if (out && reaction !== null) via(replyTarget).react(replyTarget, ts, reaction)
           if (out && !quiet) typical.record(ran)
           ended(out ? 'done' : 'failed')
           // After the answer, which may have promised to tell them when the job finishes.
