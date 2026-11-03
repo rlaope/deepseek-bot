@@ -12,18 +12,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../dist/index.js'
 
-export function bootAround(transport: unknown, home: string, config: Record<string, unknown> = {}) {
+/** `answer`: each turn completes and answers with it, as a model would; without it a turn ends with no answer. */
+export function bootAround(transport: unknown, home: string, config: Record<string, unknown> = {}, fake: { answer?: string } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-around-'))
   writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({ sessions: {}, seen: {}, standing: {}, history: {} }))
   const logs: string[] = []
   const followups: unknown[] = []
-  const agent = (options) => ({
-    agent: {
-      session: { header: { id: options?.sessionId ?? 's1' }, seq: 0, eventAt: () => undefined },
-      followup: (message) => { followups.push(message) }, whenIdle: async () => {}, cancel: () => {},
-    },
-    dispose: async () => {},
-  })
+  const agent = (options) => {
+    const events: unknown[] = []
+    return {
+      agent: {
+        session: { header: { id: options?.sessionId ?? 's1' }, get seq() { return events.length }, eventAt: (i) => events[i] },
+        followup: (message) => {
+          followups.push(message)
+          if (typeof fake.answer === 'string') {
+            events.push({ type: 'turn/start' }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: fake.answer }] } } },
+              { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+          }
+        },
+        whenIdle: async () => {}, cancel: () => {},
+      },
+      dispose: async () => {},
+    }
+  }
   const stubs: Record<string, unknown> = {
     agents: { create: async (options) => agent(options), resume: async (options) => agent(options) },
     sessions: { flush: async () => {} },
