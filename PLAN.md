@@ -124,8 +124,6 @@ is built before the thing it stands on. The detailed history of each milestone i
     next turn's history replays it, and the model may read it as asked again and mute once more.
   - Under `replyMode: all`, each top-level message starts its own thread: a mute said there covers only that
     message's thread, and the next top-level message is heard.
-  - A mention that waited behind the turn that answered `[quiet]` runs (it named the bot), but does not unmute: the
-    unmute is checked only when a message arrives, and it arrived before the mute.
   - The model's reaction and the marks compare emoji differently: `reactionIn` ignores VS16 and skin tones,
     `transports/marks.ts` only VS16.
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim

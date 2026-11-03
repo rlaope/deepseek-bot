@@ -249,7 +249,8 @@ the caveat about version numbers is at the bottom.
   own turn in the muted thread, and could post. A turn for a message without a mention, or one only the mode gives it,
   now checks the mute when it would start, and does not run (no model call, no status; the latter's mark ends
   stopped). Checking at the start rather than withdrawing waiting messages in the `[quiet]` branch covers a mute however
-  it was set, with one rule.
+  it was set, with one rule. A mention that waited the same way ran but left the conversation muted, though naming
+  the bot again unmutes it; it now unmutes when its turn starts, as it would have on arrival.
 - **A quiet word left a streamed answer up.** Said while Slack streamed the running turn, it stopped the turn and took
   down the working message, but the streamed preview stayed until the stream went idle. It is reset with the turn.
 - **A history rewrote what people wrote.** To show their brackets as parentheses, the whole text went through NFKC,

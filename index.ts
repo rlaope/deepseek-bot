@@ -3659,6 +3659,13 @@ export function apply(ctx, config) {
         settleInflight(key)
         return
       }
+      // Named while it waited (a mention, a reply to it, a DM), and muted since: named again, as at intake — it is back
+      // in the conversation, and this is an ordinary turn.
+      if (!quiet && message.byMode !== true && state.muted?.[key] !== undefined) {
+        delete state.muted[key]
+        saveStateNow()
+        log(`unmuted ${key}: named again (it waited)`)
+      }
       // A later message waits behind it: one that did not mention it gives way, and comes to that turn as history
       // (the thread's pointer stops before it). A burst of chatter is one turn, not one each.
       // Not one with files: they would not be fetched for the later turn.

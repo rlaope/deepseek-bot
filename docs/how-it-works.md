@@ -754,8 +754,8 @@ key) — until someone names it again.
   channel message is ignored and only a mention or a DM is taken, as under `mention`. The same is checked again when
   a waiting message's turn would start, so one taken before the mute (it waited behind the turn that answered
   `[quiet]`) does not run either: no model call, no status, and no mark for one without a mention; a plain channel
-  message under `all` ends with the stopped mark, as a quiet word's withdrawal ends it. A waiting mention still
-  runs. Those messages still reach the next turn as the thread's history. The notice that a restart lost a turn is not posted there (the marks still
+  message under `all` ends with the stopped mark, as a quiet word's withdrawal ends it. A waiting mention runs,
+  and unmutes the conversation as one arriving would. Those messages still reach the next turn as the thread's history. The notice that a restart lost a turn is not posted there (the marks still
   end, and a working message left behind is taken down). Watches, reminders and a background job's report still
   arrive: the person set them up.
 - **Undoing it**: a mention of the bot, or a reply to its own message (Telegram, Discord), unmutes the conversation and
