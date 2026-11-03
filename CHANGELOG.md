@@ -111,6 +111,20 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **Slack's progress marks had their own copy of the algorithm Discord and Telegram share.** `slack.ts` kept a
+  second implementation of what `marks.ts` does (the wanted mark added before the old ones come off, a burst merged
+  into its newest mark, the end tried again after 1×, 5× and 15× `markRetryMs`, a restart's own marks read back and
+  taken off, every mark stopped after a lasting refusal, said once), so a fix had to be made twice. Slack now hands
+  `marks.ts` its calls (`reactions.add`, `reactions.remove`, `reactions.get`) and keeps only how Slack's answers are
+  read. Two things Slack did that `marks.ts` could not say are now part of its interface, not a platform check: an
+  `unreachable` answer (a message or channel gone, `message_not_found` and the like) lets the message go without
+  taking ours off, where `gone` (too many reactions) still takes them off first; and the removes made while letting
+  a message go are marked `clearing`, so Slack does not log their failures, as before. The refusal line names
+  Slack's error as before. Behaviour is unchanged: the Slack, Discord and Telegram suites pass as they were, with
+  seven Slack checks added for what they did not pin (the refusal and failure lines, no remove on a message gone
+  after its eyes, the quiet removes on a full message, four tries of a failing end, the digit's clamp, a missing
+  token), each passing on the code before and failing against a mutant of the code after.
+
 - **`npm install` failed in the sandbox, and the agent told the person to `sudo chown` their `~/.npm`.** Package
   managers keep their caches in the user's home, which a command cannot write: npm failed with EPERM, uv and go
   stopped, pip turned its cache off, and pnpm put its store in the project. The runner now points them into a cache
