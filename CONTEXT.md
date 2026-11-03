@@ -59,8 +59,9 @@ Never say just "home".
 - **standing block** — the part of the prompt that does not change between turns (persona, notes
   list, where the conversation is). Sent once per conversation and again only when it changes.
 - **markers** — the adapter's own labels in the prompt: `[this conversation]`, `[speaker]`,
-  `[user message]`. The recall indexer reads them back, so quoted text is **defused** — its
-  markers marked as quoted — before it enters a prompt.
+  `[user message]`, and `[your earlier message]` at the start of the bot's own lines in a history. The recall
+  indexer reads the first three back, so quoted text is **defused** — its markers marked as quoted — before it
+  enters a prompt; in a history, what people wrote has its square brackets shown as parentheses.
 - **recall** — bringing passages of earlier conversations into a turn. The **recall index** is built
   from session logs by the **indexer**, read only by the adapter, and scoped to the channel.
   Not "memory", which here means the notes and persona files.

@@ -237,9 +237,10 @@ the caveat about version numbers is at the bottom.
   the pointer behind the question. Now, on every platform, history is what came after the pointer and before the
   message being answered, and the pointer passes the message being answered. The bot's own messages are left out of a
   delta (the session has them) and given to a new session (a thread under a watch's alert, a session whose log is
-  gone, a pruned conversation), marked "you (earlier)" rather than as someone else's; a person whose name is that
-  label (or begins with "you", in any case) is shown quoted, with their id, so their lines are not taken for the
-  bot's. A Slack thread is paged up to the question, reading on from halfway to it when a gap is long, in at most 6
+  gone, a pruned conversation), each beginning with the adapter's marker `[your earlier message]` rather than shown
+  as someone else's. In a history, names and words people wrote have their square brackets (wide ones and other
+  bracket forms too) shown as parentheses, so no person's line can begin with the marker, whatever letters it is spelt
+  in; `defuse` marks the marker as quoted anywhere else (in any case or spacing), as it does the other three. A Slack thread is paged up to the question, reading on from halfway to it when a gap is long, in at most 6
   calls; Discord reads `before` it, its newest page. What a full page or a cut for length leaves out is the
   oldest, and the history says "(earlier messages not shown)". Telegram's ring is per topic already, and an album is
   remembered under its own id, so its caption is no longer the next turn's history. Checked against fake APIs only,

@@ -1,22 +1,29 @@
 /**
- * What every transport's history delta shares: which lines fit, and the words for what was left out or is the bot's.
+ * What every transport's history delta shares: which lines fit, the marker on the bot's own lines, and what people
+ * wrote as a history shows it.
  */
 
 /** Said in place of what a history leaves out, before what it shows. */
 export const EARLIER_NOT_SHOWN = '(earlier messages not shown)'
 
-/** Who a line is from when it is the bot's own: given only to a new session, which has none of them. */
-export const OWN_EARLIER = 'you (earlier)'
+/**
+ * The adapter's marker at the start of each of the bot's own earlier lines, given only to a new session, which has
+ * none of them. One of the markers the core's `defuse` marks as quoted anywhere it did not put one.
+ */
+export const OWN_MARKER = '[your earlier message]'
 
 /**
- * A person's name as a history shows it. Anyone can call themselves "you (earlier)" (a Slack display name, a Telegram
- * first name, an old Discord username), and their lines read as the bot's own earlier messages. A name the label can
- * be read in, one that starts with "you" or holds "you (" in any case and spacing, is quoted and given the person's id,
- * which the bot's own lines never carry.
+ * What a person wrote, a name or words, as a history shows it: one line, its square brackets as parentheses. A name
+ * was the label before, and a person named after the bot's label was read as the bot; matching names by text left
+ * lookalike letters through. With no bracket in anything a person wrote, no line of theirs can be or begin with a
+ * marker, whatever letters it is spelt in. Wide and other bracket forms are folded first (NFKC, then any opening or
+ * closing punctuation but round and curly brackets); whitespace, line separators included, is one space.
  */
-export function personName(name: string, id: string): string {
-  const shown = String(name).replace(/\s+/g, ' ').trim() || id
-  return /^you\b|you\s*\(/i.test(shown) ? `"${shown}" (${id})` : shown
+export function quoted(text: string): string {
+  return String(text ?? '').normalize('NFKC')
+    .replace(/[\p{Ps}]/gu, (c) => (c === '(' || c === '{' ? c : '('))
+    .replace(/[\p{Pe}]/gu, (c) => (c === ')' || c === '}' ? c : ')'))
+    .replace(/\s+/g, ' ').trim()
 }
 
 /**
