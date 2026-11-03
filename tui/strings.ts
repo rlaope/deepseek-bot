@@ -135,6 +135,7 @@ const en = {
   cacheShare: (pct: number) => `cache ${pct}%`,
   choiceTitle: 'Choose one',
   noMatch: 'no match',
+  outputCut: '… earlier output not kept',
   moreKeys: (n: number) => `+${n} more · /help lists them all`,
   shortcutsTitle: 'Shortcuts',
   welcomeKeys: '/help for help · ? for shortcuts · esc to interrupt',

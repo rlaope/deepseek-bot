@@ -245,7 +245,8 @@ the caveat about version numbers is at the bottom.
 - **The terminal's panels on a short or narrow pane, a stray character after an emoji, and text drawn with its
   escapes.** Found filming the terminal and reviewing its render pass; each checked by a test that failed first.
   - A question longer than three lines was cut at the third with nothing saying so. It wraps whole now: three lines,
-    the last ending in "…", and ctrl+o shows it all (and folds it again). An option row or the hint too wide for the
+    the last ending in "…", and ctrl+o shows it all (and folds it again). While such a question is open ctrl+o is
+    its own (the hint says so); the transcript's ctrl+o folds wait until it closes. An option row or the hint too wide for the
     pane ends in "…" instead of mid-word.
   - On a short pane a question's options and the hint went off the bottom (40×10: no hint; 40×7: no option, while
     the keys still picked one unseen). The panel now takes what is left after a row of transcript: its words give way
@@ -261,9 +262,11 @@ the caveat about version numbers is at the bottom.
     blanked cells with the cursor put where the next cell is, however wide the terminal drew it.
   - A shell's output (the job view) was drawn as Markdown answers, one per read: tabs at stops of 4, a `#` line as a
     heading, a line that went on in the next read broken in two, and an escape sequence split between two reads left
-    as "1m". It is one block now, laid out as tool output is (tabs at stops of 8, no Markdown) and stripped whole. A
-    first read cut to its last 200,000 characters starts at its first whole line, so the cut cannot fall inside an
-    escape sequence.
+    as "1m". It is one block now, laid out as tool output is (tabs at stops of 8, no Markdown): each whole line
+    stripped and laid out once, the line still arriving joined with the next read before it is stripped. It keeps
+    the last 200,000 characters, cut at a line's start under a line that says so (25 reads of 180,000 characters:
+    7.7 s → 1.1 s, and its memory bounded). A first read the bridge cuts to its last 200,000 characters starts at
+    its first whole line, so the cut cannot fall inside an escape sequence.
   - Escape sequences and tabs reached the screen raw on surfaces that did not strip them: a prompt (a subagent's
     task included), a diff's file name, a question's words, header and options, an approval's title and options, a
     picker's title and rows (a session's title), the panel's labels, the status line (the model, the running tool,

@@ -94,17 +94,52 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
   return block
 }
 
+/** What the job view keeps of a shell's output: its last characters, from a line's start, as the bridge's first read. */
+const OUTPUT_KEEP = 200_000
+
 /**
- * A shell's output as it arrives, in reads: one text, laid out as its terminal showed it (no Markdown, tabs at
- * stops of 8) and stripped whole, so an escape sequence split between two reads goes whole.
+ * A shell's output as it arrives, in reads, laid out as its terminal showed it (no Markdown, tabs at stops of 8).
+ * Each whole line is stripped and laid out once for a width; the line still arriving is kept raw and joined with
+ * the next read before it is stripped, so an escape sequence split between two reads goes whole. Only the last
+ * OUTPUT_KEEP characters are kept, cut at a line's start, under a line that says so. `work`, for a test, hears
+ * how many lines each layout took.
  */
-export function outputBlock(mode: ColorMode): Block & { append(text: string): void } {
-  let text = ''
+export function outputBlock(mode: ColorMode, work?: (lines: number) => void): Block & { append(text: string): void } {
+  let rows: Array<{ text: string; lines: Line[] | null }> = []
+  let chars = 0
+  let tail = ''
+  let cut = false
+  let laidFor = ''
+  const lead = { first: pad('  '), rest: pad('  ') }
   const block = {
     id: nextId('output'),
     version: 0,
-    append(more: string) { text += more; block.version++ },
-    lines: (width: number) => layout(stripControls(text).replace(/\n$/, ''), width, sgr(theme.tool, mode), { first: pad('  '), rest: pad('  ') }),
+    append(more: string) {
+      tail += more
+      const end = tail.lastIndexOf('\n')
+      if (end !== -1) {
+        for (const text of stripControls(tail.slice(0, end)).split('\n')) { rows.push({ text, lines: null }); chars += text.length + 1 }
+        tail = tail.slice(end + 1)
+      }
+      let drop = 0
+      while (chars > OUTPUT_KEEP && drop < rows.length) chars -= rows[drop++].text.length + 1
+      if (drop > 0) { rows = rows.slice(drop); cut = true }
+      if (tail.length > OUTPUT_KEEP) { tail = tail.slice(-OUTPUT_KEEP); cut = true }
+      block.version++
+    },
+    lines(width: number): Line[] {
+      const style = sgr(theme.tool, mode)
+      // Laid out again only for another width or palette.
+      if (laidFor !== `${width}\n${style}`) { laidFor = `${width}\n${style}`; for (const row of rows) row.lines = null }
+      const out: Line[] = cut ? layout(t().outputCut, width, sgr(theme.muted, mode), lead) : []
+      for (const row of rows) {
+        if (row.lines === null) { row.lines = layout(row.text, width, style, lead); work?.(1) }
+        for (const line of row.lines) out.push(line)
+      }
+      const last = stripControls(tail)
+      if (last !== '') { work?.(1); out.push(...layout(last, width, style, lead)) }
+      return out
+    },
   }
   return block
 }
