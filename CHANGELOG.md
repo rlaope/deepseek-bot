@@ -212,6 +212,14 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A message of files alone got nothing, on every platform.** A Discord upload without text, a Telegram photo
+  without a caption and a file shared in a Slack DM were each dropped: the core returned on the empty text, and
+  Slack's transport before it (a DM's `file_share` has empty text, and an app_mention with only a file has nothing
+  left once the mention is taken out). Such a message is a turn now: the model gets the attachment list as for any
+  message, and the person's message reads `(sent a file without text: <name>)`. A message with neither text nor
+  files still opens nothing, and other Slack subtypes still do not come in. An unaddressed one in a thread the bot
+  takes part in (`replyMode: thread`) is a quiet turn, as a message with words is. Checked in the Discord, Telegram
+  and Slack suites through the core, red before; against fake platform APIs only.
 - **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
   puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat
   above anything said while the turn ran. Both transports can delete now (Discord's message DELETE, Telegram's

@@ -362,21 +362,23 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     if (event.bot_id || (event.subtype && !shared) || (event as { edited?: unknown }).edited) return null
     if (!event.user || event.user === botUserId) return null
     if (!event.channel || !event.ts) return null
-    if (!event.text?.trim()) return null
+    // Files are a message without words too: a file_share in a DM has empty text, and an app_mention only the mention.
+    const files = event.files ?? []
+    if (!event.text?.trim() && files.length === 0) return null
     const isMention = event.type === 'app_mention'
     const isDm = isDirectChannel(event.channel) || event.channel_type === 'im' || event.channel_type === 'mpim'
     if (!isDm && !isMention) {
       if (cfg.replyMode === 'mention') return null
       // One that mentions the bot comes again as its app_mention, which is the turn: taking both answered it twice.
-      if (botUserId !== null && event.text.includes(`<@${botUserId}>`)) return null
+      if (botUserId !== null && (event.text ?? '').includes(`<@${botUserId}>`)) return null
       // 'thread': a message in a thread comes in unaddressed, and the core takes it only in a thread the bot takes
       // part in; one at the top of a channel needs a mention.
       if (cfg.replyMode === 'thread' && (typeof event.thread_ts !== 'string' || event.thread_ts === event.ts)) return null
     }
     const text = botUserId === null
-      ? event.text
-      : event.text.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim()
-    if (!text) return null
+      ? event.text ?? ''
+      : (event.text ?? '').replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim()
+    if (!text && files.length === 0) return null
     return {
       eventId,
       target: { channel: event.channel, threadTs: event.thread_ts ?? event.ts },
@@ -384,7 +386,7 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
       text,
       user: event.user,
       addressed: isDm || isMention || cfg.replyMode === 'all',
-      files: event.files ?? [],
+      files,
       raw: event,
     }
   }

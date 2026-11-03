@@ -56,6 +56,7 @@ import { createTelegramTransport } from './transports/telegram.js'
 import { createDiscordTransport } from './transports/discord.js'
 import { createLocalTransport, LOCAL_CHANNEL } from './transports/local.js'
 import { createCompositeTransport } from './transports/composite.js'
+import { safeFileName } from './transports/attachments.js'
 import { createProgressTracker, tenthsOf, typicalTurns } from './progress.js'
 import { LANGUAGES, languageOf } from './i18n.js'
 import { defaultWords, messages } from './messages.js'
@@ -3388,8 +3389,13 @@ export function apply(ctx, config) {
       // Whitespace and zero-width characters are nothing to say. Found by the edge sweep:
       // an empty string was refused, but "   " and a run of zero-width spaces each started
       // a turn — an expensive way to answer nothing, and a question the model can only guess at.
-      if (message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === '') return
-    const prompt = message.text.slice(0, cfg.maxPromptChars)
+      // Files are something to say, though: sent without words, the model is told so, by the names the manifest uses.
+      const wordless = message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === ''
+      if (wordless && message.files.length === 0) return
+    const howMany = message.files.length === 1 ? 'a file' : `${message.files.length} files`
+    const prompt = wordless
+      ? `(sent ${howMany} without text: ${message.files.map((file) => safeFileName(file.name)).join(', ')})`
+      : message.text.slice(0, cfg.maxPromptChars)
     // Chatter does not keep it listening: a mention does, and a reply of its own (below).
     if (!quiet) state.touched[key] = Date.now()
     bindTenant(key)

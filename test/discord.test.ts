@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDiscordTransport } from '../dist/transports/discord.js'
+import { bootAround } from './core-around.ts'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -497,6 +498,26 @@ function message(overrides = {}) {
   await t2.identity()
   const refused = await t2.remove({ channel: 'C1', threadTs: null }, 'm8')
   check('remove: a refusal is false, and said', refused === false && t2.logs.some((l) => /delete failed: .*HTTP 403/.test(l)), t2.logs.join(' | '))
+}
+
+// 13. A file sent with no words opens a turn, and the model is told so and given the file; a message with neither opens
+// nothing. Through the core: the transport let a file-only message through, and the core dropped it for its empty text.
+{
+  const home = mkdtempSync(join(tmpdir(), 'dc-home-'))
+  const api = fakeDiscord({ updates: [
+    { id: '700', channel_id: 'D7', content: '', author: { id: '5', username: 'alice' }, attachments: [{ id: 'A7', filename: 'notes.txt', content_type: 'text/plain', size: 9, url: 'https://cdn.discordapp.com/A7' }] },
+    { id: '701', channel_id: 'D8', content: '', author: { id: '5', username: 'alice' }, attachments: [] },
+  ] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(600)
+  await t.close()
+  const said = core.texts()
+  check('files only: a Discord upload without text opens one turn', said.length === 1, `${said.length} turn(s)`)
+  check('files only: the model is told the person sent a file without text', /sent a file without text: notes\.txt/.test(said[0] ?? ''), (said[0] ?? '').slice(-200))
+  check('files only: and is given the file', /\[attachments[^\n]*\]\n- notes\.txt[^\n]*→ \S*700-notes\.txt/.test(said[0] ?? '') && /file body/.test(said[0] ?? ''), (said[0] ?? '').slice(0, 300))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

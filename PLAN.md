@@ -224,6 +224,11 @@ Decided against:
   (Slack `event.user`, Telegram `from.id`, Discord `author.id`), checked through the fake transport.
 - Discord and Telegram typing, uploads and approval buttons, and Telegram's HTML rendering: mocked
   APIs only, no live server or bot.
+- A message of files alone (an upload without text, a photo without a caption, a file in a Slack DM or with only a
+  mention): fake platform APIs only. The event shapes are from the platforms' documentation, not seen: that a Slack
+  DM's `file_share` arrives with empty text, an app_mention with only a file carries the file and only the mention,
+  and a Telegram photo without a caption has no `text`. Whether a model asks or guesses on a picture with no words
+  is not measured.
 - Slack approval buttons in a real workspace: they need Interactivity turned on in the app's
   settings; without it a press does nothing and the person types the answer, which the request offers.
 - Slack's working status in a live workspace: no turn has run on this code there yet. Which method a

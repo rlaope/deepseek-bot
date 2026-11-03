@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createTelegramTransport, toTelegramHtml } from '../dist/transports/telegram.js'
+import { bootAround } from './core-around.ts'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -500,6 +501,26 @@ function groupMessage(overrides = {}) {
   await t2.identity()
   const refused = await t2.remove({ channel: '7', threadTs: null }, '121')
   check('remove: a refusal is false, and said', refused === false && t2.logs.some((l) => /delete failed: .*can't be deleted/.test(l)), t2.logs.join(' | '))
+}
+
+// 18. A photo sent with no caption opens a turn, and the model is told so and shown the picture; a message with neither
+// opens nothing. Through the core: the transport let a file-only message through, and the core dropped it.
+{
+  const home = mkdtempSync(join(tmpdir(), 'tg-home-'))
+  const api = fakeApi({ updates: [
+    privateMessage({ text: undefined, photo: [{ file_id: 'small-PHOTO1', file_size: 4 }, { file_id: 'large-PHOTO1', file_size: 12 }] }),
+    { update_id: 3, message: { message_id: 12, from: { id: 5, username: 'alice' }, chat: { id: 9, type: 'private' } } },
+  ] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(900)
+  await t.close()
+  const said = core.texts()
+  check('files only: a Telegram photo without a caption opens one turn', said.length === 1, `${said.length} turn(s)`)
+  check('files only: the model is told the person sent a file without text', /sent a file without text: photo-PHOTO1\.jpg/.test(said[0] ?? ''), (said[0] ?? '').slice(-200))
+  check('files only: and is given the photo, written and shown', /- photo-PHOTO1\.jpg \(image\/jpeg[^\n]*→ \S*10-photo-PHOTO1\.jpg/.test(said[0] ?? '') && core.images()[0]?.length === 1, `${JSON.stringify(core.images())} ${(said[0] ?? '').slice(0, 300)}`)
+  core.done()
+  rmSync(home, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)
