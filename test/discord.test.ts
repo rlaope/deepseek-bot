@@ -187,6 +187,16 @@ function message(overrides = {}) {
   const bare = hugeParts.map((p) => p.replace(/^\(\d+\/\d+\)\n/, ''))
   check('every part of a long answer fits, its number included', hugeParts.length === 3 && hugeParts.every((p) => p.length <= 2000) && hugeParts.every((p, i) => p.startsWith(`(${i + 1}/3)\n`)), JSON.stringify(hugeParts.map((p) => p.length)))
   check('the parts are the whole answer, no character cut in half', bare.join('') === huge && bare[0].length === 1993 && bare.every((p) => !/[\ud800-\udbff]$/.test(p)), JSON.stringify(bare.map((p) => p.length)))
+  // A cut prefers a paragraph's end to the middle of a word, and a code block across it is closed and reopened.
+  const sentSince = (n) => api.rest.slice(n).filter((c) => c.path === '/channels/C1/messages' && c.method === 'POST').map((c) => String(c.body?.content ?? '').replace(/^\(\d+\/\d+\)\n/, ''))
+  const atPara = api.rest.length
+  await t.post({ channel: 'C1', threadTs: null }, `${'a '.repeat(600)}\n\n${'b '.repeat(600)}`)
+  const paraParts = sentSince(atPara)
+  check('a part ends at a paragraph, not inside a word', paraParts.length === 2 && paraParts[0] === `${'a '.repeat(600)}\n\n`, JSON.stringify(paraParts.map((p) => p.slice(-8))))
+  const atFence = api.rest.length
+  await t.post({ channel: 'C1', threadTs: null }, `\`\`\`js\n${'let x = 1\n'.repeat(300)}\`\`\``)
+  const fenceParts = sentSince(atFence)
+  check('a code block across parts is closed and reopened with its language', fenceParts.length === 2 && /\n```$/.test(fenceParts[0]) && fenceParts[1].startsWith('```js\nlet x = 1\n'), JSON.stringify(fenceParts.map((p) => [p.slice(0, 12), p.slice(-12)])))
   // Buttons go with the last part, where the question ends: a long approval request has one set.
   const atButtons = api.rest.length
   await t.post({ channel: 'C1', threadTs: null }, 'q'.repeat(2500), { buttons: [{ id: 'a1', label: 'Allow' }, { id: 'd1', label: 'Deny' }] })

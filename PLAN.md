@@ -30,7 +30,7 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again; one part cutter (`parts.ts`) for every platform, cutting at a paragraph, line or word and never inside a character, a Slack link, an escape or a code fence's line, a code block closed and reopened across parts |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
@@ -75,9 +75,6 @@ is built before the thing it stands on. The detailed history of each milestone i
     On Slack too.
   - Discord's message DELETE, like its sends and edits, has no 429 handling: a rate-limited delete is refused and
     leaves the working message.
-- **Slack's own part cutter** (`postChunked`) keeps its number's room but does not recount it when the parts
-  reach ten (about 36 000 characters at 4000), and can cut a surrogate pair. `transports/parts.ts` does both;
-  Slack can use it.
 - **A background job outlives its turn, within limits.** An agent that owns a running job is kept after
   its turn (up to `backgroundKeepMs` from its first keeping, at most `maxKeptAgents`), the harness's wake turn
   answers when the job settles, and the agent is released after it. Checked with fakes, and against a real
@@ -149,7 +146,6 @@ Decided against:
   edit carrying `allowed_mentions: { parse: [] }`. The streamed preview (`markdown_text`) gets a zero-width space after
   every `<` rather than escapes, because whether Slack resolves mentions there, or decodes `&lt;`, is not known; a
   zero-width space in a watch alert's output keeps backticks apart, and is copied with it. Known and left:
-  - an answer split into parts can cut an escape (`&amp;`) in two, and each half is then shown as typed;
   - a fence with no closing line (an answer cut at the token limit) is converted as text;
   - a pasted Slack link whose label already holds `&amp;` is escaped twice and shows `&amp;`;
   - `<mailto:…|…>`, `<HTTPS://…>`, `[l](<url>)` and `[l](url "title")` are shown as text, not as links.
@@ -159,6 +155,13 @@ Decided against:
   - the streamed preview shows a link as `<` and a zero-width space before `https://…` until the answer replaces it;
   - entity forms (`&lt;!channel&gt;`) and a bare `@here` in the preview's `markdown_text` are not changed; what Slack
     does with them there is not known.
+
+- A long answer's parts (`transports/parts.ts`, every platform), checked against fake APIs only: not seen live how
+  Slack, Discord and Telegram show a code block closed at the end of one part and reopened, with its language, at the
+  start of the next. Known and left: a `<…>` token, an `&…;` entity or a fence's info string longer than a part is
+  still cut where the room ends; inline code, bold and other marks across a cut are not closed and reopened; an emoji
+  of several code points can still fall across one; and a part can end up to half its room early, so a long answer
+  can take more parts than before.
 
 - A slow turn's answer as a new message on Discord and Telegram, the working message deleted after it: checked
   against fake APIs only (`test/core.test.ts` 31d, through the real transports, and their own suites). Not seen live:
