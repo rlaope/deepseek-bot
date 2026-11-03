@@ -12,10 +12,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../dist/index.js'
 
-/** `answer`: each turn completes and answers with it, as a model would; without it a turn ends with no answer. */
-export function bootAround(transport: unknown, home: string, config: Record<string, unknown> = {}, fake: { answer?: string } = {}) {
+/**
+ * `answer`: each turn completes and answers with it, as a model would; without it a turn ends with no answer.
+ * `state`: what the state file starts with. `gone`: sessions whose log is gone; resuming one fails as the harness does.
+ */
+export function bootAround(transport: unknown, home: string, config: Record<string, unknown> = {}, fake: { answer?: string; state?: Record<string, unknown>; gone?: string[] } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-around-'))
-  writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({ sessions: {}, seen: {}, standing: {}, history: {} }))
+  writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({ sessions: {}, seen: {}, standing: {}, history: {}, ...(fake.state ?? {}) }))
   const logs: string[] = []
   const followups: unknown[] = []
   const agent = (options) => {
@@ -36,7 +39,13 @@ export function bootAround(transport: unknown, home: string, config: Record<stri
     }
   }
   const stubs: Record<string, unknown> = {
-    agents: { create: async (options) => agent(options), resume: async (options) => agent(options) },
+    agents: {
+      create: async (options) => agent(options),
+      resume: async (options) => {
+        if ((fake.gone ?? []).includes(options?.resumeSessionId)) throw new Error(`session "${options.resumeSessionId}" not found`)
+        return agent(options)
+      },
+    },
     sessions: { flush: async () => {} },
     agentDefaultModel: { currentSelection: () => ({ provider: 'fake', model: 'fake' }) },
     agentPresets: { resolve: async (id) => ({ id }), acquireScope: () => ({ key: {}, [Symbol.asyncDispose]: async () => {} }), mount: async () => {} },

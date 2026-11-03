@@ -30,13 +30,20 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again; one part cutter (`parts.ts`) for every platform, cutting at a paragraph, line or word and never inside a character, a Slack link, an escape or a code fence's line, a code block closed and reopened across parts; history is what came after the pointer and before the message answered, never the bot's own, and the pointer passes that message |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again; one part cutter (`parts.ts`) for every platform, cutting at a paragraph, line or word and never inside a character, a Slack link, an escape or a code fence's line, a code block closed and reopened across parts; history is what came after the pointer and before the message answered, the bot's own only to a new session (marked as its own), newest first when cut, and the pointer passes that message |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
 | Round 67 | one-line install; the home's `.env` refused; recall read only by the adapter, ranked by rare words and offered without a trigger word; failures in the bot's voice without host paths, a stop reported once; a restart tells the conversation its turn was lost; the probe alerts on failed scenarios; no agent socket of the user's reachable from the sandbox, hard links pinned by a test; uploads send the checked bytes; approval buttons and uploads on every platform; Markdown rendered on Telegram; review fixes — forged conversation blocks defused, approval buttons tied to their request, the .env gate by case and link, per-thread Slack status, separate alert limits, restart recovery race, one index per home, installer validation and kept service settings |
 
 ## Open
+
+- **Other bots' messages in history differ by platform.** Slack's history drops another bot's `bot_message`
+  subtype; Discord's REST path keeps other bots' messages, and its fallback ring (what the process saw) drops them.
+  Not fixed.
+- **A Slack thread more than 1000 messages past the pointer is read only to its 1000th.** History pages the thread
+  (5 pages of 200) up to the message answered; past that bound the newest are not read, the log says so and the
+  history ends "(later messages not shown)". Not fixed.
 
 - **A wordless turn opens even when no attachment is usable.** A message of files alone is a turn whether or not
   anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
@@ -131,12 +138,15 @@ Decided against:
 
 ## Unverified
 
-- History deltas (the bot's own messages left out, nothing newer than the message answered, the pointer past it),
-  checked against fake APIs only (`test/slack.test.ts` delta and waiting, `test/discord.test.ts` 16-17,
-  `test/telegram.test.ts` 21). Not seen live: that Discord's `before` gives the newest page under an id and `after`
+- History deltas (the bot's own messages left out with a pointer and given, as its own, to a new session; nothing
+  newer than the message answered; the pointer past it; a gap past one page and a cut for length dropping the oldest,
+  said so), checked against fake APIs only (`test/slack.test.ts` delta, waiting, own, gap and cut,
+  `test/discord.test.ts` 16-18, `test/telegram.test.ts` 21-22). Not seen live: that Slack's `conversations.replies`
+  pages oldest first with `latest`, `oldest` and a cursor as the fake does. Not seen live: that Discord's `before` gives the newest page under an id and `after`
   the page right after one (the fake models it so; Discord's reference says only that the three are exclusive), and
   that the bot's own Slack messages carry its user id in `conversations.replies` (they carry `bot_id` too). What the bot
-  posts outside a turn, a watch's alert on Slack, is left out of history as well, so a later turn is not shown it.
+  posts outside a turn, a watch's alert, is given to a new session but left out of a delta, so a turn in a conversation
+  already going is not shown an alert posted into it meanwhile.
 
 - Muting a conversation (quiet words, `[quiet]`), checked against the fake transport and mocked platform APIs only:
   not seen that Slack takes `saluting_face` and Discord and Telegram 🫡 on a live message, nor that a real model

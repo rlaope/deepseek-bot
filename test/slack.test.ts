@@ -1394,14 +1394,133 @@ function transportFor(api) {
   say('8.000100', 'U8', 'CHATTER-C ask finance')
   ask('8.000100', 'QUESTION-B and by when?')
   await sleep(900)
-  await t.close()
   const a = historyOf('QUESTION-A')
   const b = historyOf('QUESTION-B')
   check('waiting: the earlier turn is not given the message that waited, nor what came after it', /ROOT-TWO/.test(a) && !/QUESTION-B|CHATTER-C/.test(a), JSON.stringify(a.slice(-300)))
   check('waiting: the waiting message\'s own turn is given what was said between the two', /CHATTER-C/.test(b) && !/QUESTION-A|ROOT-TWO/.test(b), JSON.stringify(b.slice(-300)))
+
+  // A thread under the bot's own message (a watch's alert): its first turn is a new session, which has none of the
+  // bot's messages, so the alert is given, as the bot's own. Left out, the model did not know what had changed.
+  say('9.000100', 'U1', ':eyes: *disk usage* changed. WATCH-ALERT 91%', '9.000100')
+  ask('9.000100', 'WHY-CHANGED why did this change?')
+  await sleep(700)
+  await t.close()
+  const alert = historyOf('WHY-CHANGED')
+  check('own: a new session under the bot\'s own message is given it, as the bot\'s own', /you \(earlier\): :eyes: \*disk usage\* changed\. WATCH-ALERT 91%/.test(alert) && /Lines from "you \(earlier\)" are your own earlier messages/.test(alert), JSON.stringify(alert.slice(-400)))
+  check('own: and only there: a turn with a pointer is not told of lines of its own', !/Lines from "you/.test(second), JSON.stringify(second.slice(0, 200)))
   core.done()
   rmSync(home, { recursive: true, force: true })
   globalThis.fetch = realFetch
+}
+
+// A session whose log is gone: the turn starts a new one and refetches the thread whole (no pointer), and the new
+// session is given the bot's own messages in it, as its own, with the people's.
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const store = [
+    { ts: '9.500100', user: 'U1', bot_id: 'B1', text: 'WATCH-ALERT-TWO memory changed' },
+    { ts: '9.500120', user: 'U8', text: 'PEOPLE-ONE it was the deploy' },
+  ]
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (url) => {
+    const u = new URL(String(url))
+    const method = u.pathname.split('/api/')[1] ?? ''
+    const reply = (value) => ({ ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) })
+    if (method === 'auth.test') return reply({ ok: true, user: 'bot', user_id: 'U1', team: 'T1', team_id: 'T1ID' })
+    if (method === 'users.list') return reply({ ok: true, members: [{ id: 'U1', name: 'deepbot' }, { id: 'U7', name: 'asker' }, { id: 'U8', name: 'bystander' }] })
+    if (method === 'conversations.replies') {
+      const oldest = u.searchParams.get('oldest')
+      return reply({ ok: true, messages: store.filter((m) => oldest === null || Number(m.ts) > Number(oldest)) })
+    }
+    return reply({ ok: true, ts: '9.900000' })
+  }) as typeof fetch
+  const home = mkdtempSync(join(tmpdir(), 'deepbot-slack-gone-'))
+  const sockets = []
+  class EventSocket {
+    handlers: Record<string, Array<(data: unknown) => void>>
+    constructor() { this.handlers = {}; sockets.push(this) }
+    addEventListener(type, fn) { (this.handlers[type] ??= []).push(fn) }
+    send() {}
+    close() {}
+    emit(type, data) { for (const fn of this.handlers[type] ?? []) fn(data) }
+  }
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 20, historyMaxChars: 4000 },
+    log: () => {}, sessionCwd: async () => home, credential: async () => 'token-for-test', onHealth: () => {},
+    WebSocketImpl: EventSocket,
+  })
+  const key = 'C1:9.500100'
+  const core = bootAround(t, home, {}, { answer: 'ANSWERED', gone: ['gone-1'], state: { sessions: { [key]: 'gone-1' }, standing: { [key]: 'old' }, history: { [key]: '9.500150' } } })
+  await sleep(300)
+  store.push({ ts: '9.500200', user: 'U7', text: '<@U1> GONE-ASK what now?' })
+  sockets[0].emit('message', { data: JSON.stringify({ envelope_id: 'Eg1', type: 'events_api', payload: { event_id: 'Eg1', event: { type: 'app_mention', channel: 'C1', user: 'U7', ts: '9.500200', thread_ts: '9.500100', text: '<@U1> GONE-ASK what now?' } } }) })
+  await sleep(700)
+  await t.close()
+  const turn = core.texts().find((text) => /GONE-ASK/.test(text.split('[user message]').at(-1) ?? '')) ?? ''
+  const history = turn.split('[user message]').slice(0, -1).join('[user message]')
+  check('own: a gone session\'s new one is given the thread whole, the bot\'s own marked as its own', /you \(earlier\): WATCH-ALERT-TWO/.test(history) && /bystander: PEOPLE-ONE/.test(history), JSON.stringify(history.slice(-300)))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+  globalThis.fetch = realFetch
+}
+
+// A gap of more than one page since the pointer: a thread is read oldest first, so one page was the oldest 200 after
+// the pointer, and the lines right before the question were dropped. Paged up to the question (latest), the newest
+// `historyLimit` shown, and what is left out said.
+{
+  const realFetch = globalThis.fetch
+  const asked = []
+  const thread = Array.from({ length: 450 }, (_, i) => ({ ts: `7.${String(i + 1).padStart(6, '0')}`, user: 'U7', text: `line ${i + 1}` }))
+  globalThis.fetch = (async (url) => {
+    const u = new URL(String(url))
+    if (u.pathname.endsWith('conversations.replies')) {
+      asked.push(String(url))
+      const oldest = u.searchParams.get('oldest')
+      const latest = u.searchParams.get('latest')
+      const from = Number(u.searchParams.get('cursor') ?? 0)
+      const range = thread.filter((m) => (oldest === null || Number(m.ts) > Number(oldest)) && (latest === null || Number(m.ts) < Number(latest)))
+      const page = range.slice(from, from + 200)
+      const more = from + 200 < range.length
+      const body = { ok: true, messages: page, has_more: more, response_metadata: { next_cursor: more ? String(from + 200) : '' } }
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+    }
+    const body = { ok: true, members: [], response_metadata: { next_cursor: '' } }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+  }) as typeof fetch
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 20, historyMaxChars: 100000 },
+    log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+  })
+  await t.authenticate()
+  const h = await t.fetchHistory({ channel: 'C1', threadTs: '7.000000' }, { currentTs: '7.000441', sinceTs: '7.000010', limit: 20, maxChars: 100000 })
+  globalThis.fetch = realFetch
+  const shown = [...h.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
+  check('gap: a thread more than a page past the pointer gives the lines right before the question', shown.length === 20 && shown[0] === 421 && shown.at(-1) === 440, `${shown.length} line(s), ${shown[0]}..${shown.at(-1)}, ${asked.length} call(s)`)
+  check('gap: and says earlier ones are not shown', /\]\n\(earlier messages not shown\)\n/.test(h.text), JSON.stringify(h.text.slice(0, 40)))
+  check('gap: read up to the question', /[?&]latest=7\.000441(&|$)/.test(asked[0] ?? ''), asked[0])
+}
+
+// Cut for length: from the oldest, said so, and the pointer still passes the question. Cut from the top, the lines
+// right before the question were lost, and the pointer stopped behind it, so the next turn was given it again.
+{
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (url) => {
+    const body = String(url).includes('conversations.replies')
+      ? { ok: true, messages: Array.from({ length: 10 }, (_, i) => ({ ts: `8.${String(i + 1).padStart(2, '0')}`, user: 'U7', text: `line ${i + 1} ${'x'.repeat(40)}` })) }
+      : { ok: true, members: [], response_metadata: { next_cursor: '' } }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+  }) as typeof fetch
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 20, historyMaxChars: 250 },
+    log: () => {}, sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
+  })
+  await t.authenticate()
+  const h = await t.fetchHistory({ channel: 'C1', threadTs: '8.00' }, { currentTs: '8.11', sinceTs: null, limit: 20, maxChars: 250 })
+  globalThis.fetch = realFetch
+  const shown = [...h.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
+  check('cut: what is left out for length is the oldest', shown.length > 0 && shown.length < 10 && shown.at(-1) === 10, JSON.stringify(shown))
+  check('cut: said so', /\(earlier messages not shown\)/.test(h.text), JSON.stringify(h.text.slice(0, 60)))
+  check('cut: the pointer still passes the question', h.lastTs === '8.11', String(h.lastTs))
 }
 
 const failed = results.filter((r) => !r.ok)
