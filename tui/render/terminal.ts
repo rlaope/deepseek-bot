@@ -15,6 +15,16 @@ import { diff, Screen } from './screen.js'
 export const ENTER = '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h'
 export const RESTORE = '\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l'
 
+/**
+ * How long a lone ESC waits for the rest of a sequence. At 30 ms an arrow split over a slow link (ssh, a loaded
+ * machine) read as Esc, which stops the turn, and "[A" typed. 100 ms is vim's ttimeoutlen in its defaults, and
+ * not a wait anyone feels on a key that stops something.
+ */
+export const ESCAPE_MS = 100
+
+/** The rest of a key's sequence, without its ESC: CSI (an SGR mouse report too) or SS3. */
+const SEQUENCE_REST = /^(\[<?[\d;]*[A-Za-z~^$@]|O[A-DHF])/
+
 export interface TerminalIO {
   write(data: string): void
   columns(): number
@@ -44,6 +54,8 @@ export class Terminal {
   private prev: Screen | null = null
   private active = false
   private escTimer: unknown = null
+  /** Until when the rest of a sequence is still taken as one, after the wait took its ESC as Esc. */
+  private lateUntil = -Infinity
   private frameTimer: unknown = null
   private lastFrame = -Infinity
   private unsubscribe: Array<() => void> = []
@@ -52,7 +64,7 @@ export class Terminal {
 
   constructor(options: TerminalOptions) {
     this.o = {
-      escapeMs: 30,
+      escapeMs: ESCAPE_MS,
       frameMs: 16,
       now: () => performance.now(),
       setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -119,11 +131,17 @@ export class Terminal {
 
   private input(chunk: string): void {
     if (this.escTimer !== null) { this.o.clearTimer(this.escTimer); this.escTimer = null }
+    // Later still than the wait: its Esc has gone, but the rest of the sequence right behind it is that key, not
+    // "[A" typed into the box.
+    if (this.o.now() < this.lateUntil && SEQUENCE_REST.test(chunk)) chunk = `\x1b${chunk}`
+    this.lateUntil = -Infinity
     for (const event of this.parser.feed(chunk)) this.o.onEvent(event)
     if (this.parser.pending) {
       this.escTimer = this.o.setTimer(() => {
         this.escTimer = null
+        const lone = this.parser.lone
         for (const event of this.parser.flush()) this.o.onEvent(event)
+        if (lone) this.lateUntil = this.o.now() + this.o.escapeMs
       }, this.o.escapeMs)
     }
   }

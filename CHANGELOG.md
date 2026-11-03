@@ -235,6 +235,37 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The terminal's input box split characters, lost a message too large to send, and took a split arrow for Esc.**
+  Found in a QA pass over the input path; each checked by a test that failed first.
+  - A character of several code points (a ZWJ family 👨‍👩‍👧, a flag, a skin tone, ❤️ with VS16, a keycap, e and a
+    combining accent) comes from the terminal one key per code point, and each was put in the box as a character of
+    its own: the cursor stood columns off, Backspace took one code point, the arrows stepped inside. What is typed is
+    now segmented with the character on either side, so it joins the one before it.
+  - A message over the gateway's frame limit (`MAX_FRAME_BYTES`, 1 MB: three pastes at the cap can pass it) was sent; the
+    gateway's reader dropped it, and the box was already empty. It is now refused before sending, by the bytes of the
+    frame as written, with a notice that says so (not "not connected"), and stays in the box.
+  - A lone ESC waited 30 ms for the rest of a sequence, so an arrow split over a slow link stopped the turn and typed
+    `[A`. It waits 100 ms (`ESCAPE_MS`, vim's ttimeoutlen in its defaults), and the rest of a sequence arriving within
+    another 100 ms after an ESC taken as Esc is that key, not typed text.
+  - A gateway that took the connection and never answered the hello left the terminal "connecting…" for good. After
+    10 s it is a failed connect, retried with the backoff, and the status line says the gateway did not answer.
+  - The wait before a reconnect read "reconnecting in 1000ms" and never changed; it counts down in seconds.
+  - The paste cap cut by UTF-16 units and could split a surrogate pair; it cuts where a character ends. One final
+    newline of a paste is dropped, so it leaves no empty last line to send. A paste of more than 1,000 characters on
+    however few lines is a chip (`[paste #1 150,000 chars]`), as one of more than ten lines is: a 150 KB line was a
+    box of thousands of rows.
+  - Words: alt+b and alt+f, alt+← and alt+→ (rxvt's `ESC ESC [ D` too, which typed an ESC and `[D`), ctrl+← and
+    ctrl+→ move by word (alt+b and alt+f typed letters, ctrl+← moved one character); a chip is one word.
+  - ctrl+z gives the terminal back and stops `dsh` as a shell stops a job; `fg` draws it again whole (not on
+    Windows, which has no job control).
+  - Enter on `/model` or `/tenant` in the completion list only put the command in, as if its argument were needed;
+    both run without one, so Enter runs them. Tab still leaves a space for the argument.
+
+  Checked in `test/tui-app.test.ts` 80 and `test/tui-client.test.ts` 5, against a fake terminal, the real local
+  transport and a socket that never answers; and in tmux against a fake gateway (typed code points one at a time, an
+  arrow split 60 ms apart while a turn ran, ctrl+z and `fg`, the reconnect countdown, a 1.1 MB message refused, a
+  silent gateway). Not seen in Terminal.app, iTerm2, kitty or Windows Terminal (PLAN.md, Unverified).
+
 - **The terminal drew what a model or a tool wrote wrongly in seven ways.** Found by a QA pass against a fake gateway:
   - Tabs were never drawn: a tab is a control character, 0 columns, and the screen skips those, so a tab-indented Go
     fence lost its indentation and `a\tb\tc` ran together. Tabs now go to the next tab stop from the start of their

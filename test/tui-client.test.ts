@@ -13,7 +13,7 @@ import './dist-fresh.ts'   // fails loudly on a stale dist
 
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { connect } from 'node:net'
+import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,12 +28,13 @@ const listenPath = (stateDir) => process.platform === 'win32'
   : join(stateDir, 'tui.sock')
 
 const { App } = await import('../dist/tui/app.js')
-const { Connection, discover, lookup } = await import('../dist/tui/client.js')
+const { Connection, discover, lookup, tooLarge } = await import('../dist/tui/client.js')
+const { encode, MAX_FRAME_BYTES } = await import('../dist/tui/protocol.js')
 const { bind, createCommands, harnessCli, parseArgs, resumeHint, route, usage } = await import('../dist/tui/cli.js')
 const USAGE = usage()
 const { createLocalTransport } = await import('../dist/transports/local.js')
 const { t: words } = await import('../dist/tui/strings.js')
-const { fakeTerminal } = await import('./tui-fakes.ts')
+const { fakeClock, fakeTerminal } = await import('./tui-fakes.ts')
 
 const results = []
 function check(name, ok, detail = '') {
@@ -317,7 +318,7 @@ async function until(predicate, ms = 3000) {
   check('restart: the conversation continues', await until(() => term.screen.text().includes('답: 다시 연결됨')) && received[received.length - 1].target.threadTs === conversation)
 
   term.type('\x1b')
-  await sleep(80)
+  await sleep(150)   // past the wait for the rest of a sequence (ESCAPE_MS, 100 ms)
   check('escape: with nothing running, sends no cancel', !received.some((m) => m.text === '그만'))
   app.turnStarted()
   term.type('\x1b')
@@ -462,6 +463,104 @@ for (const platform of ['win32', 'darwin']) {
   app.stop(0)
   await local.close()
   rmSync(stateDir, { recursive: true, force: true })
+}
+
+// 5. What the socket must not do: send a frame the gateway cannot read, wait for ever on a gateway that says
+// nothing, or say a retry's wait in milliseconds that never change.
+{
+  const stateDir = mkdtempSync(join(tmpdir(), 'deepbot-big-'))
+  const received = []
+  const local = createLocalTransport({ cfg: {}, stateDir, log: () => {}, sessionCwd: async () => '/home/agent' })
+  await local.connect({ onMessage: (m) => { received.push(m) }, onStatus: () => {} })
+  // Why the terminal must refuse: the gateway's reader drops a line that grows past MAX_FRAME_BYTES before its
+  // newline arrives, and the text is gone. (Whether one just over the limit is dropped depends on where the
+  // socket's reads split it; one three times over always is.)
+  const raw = connect(listenPath(stateDir))
+  let rawIn = ''
+  raw.setEncoding('utf8')
+  raw.on('data', (d) => { rawIn += d })
+  await new Promise((r) => raw.on('connect', r))
+  raw.write(encode({ type: 'hello', version: 1 }))
+  await until(() => rawIn.includes('"ready"'))
+  raw.write(encode({ type: 'message', text: 'x'.repeat(3 * MAX_FRAME_BYTES) }))
+  check('too large: the gateway drops a frame over its limit (why the terminal must not send one)', await until(() => rawIn.includes(`exceeds ${MAX_FRAME_BYTES} bytes`)) && received.length === 0, rawIn.slice(-200))
+  raw.destroy()
+
+  const term = fakeTerminal(80, 24)
+  let connection = null
+  const notices = []
+  const app = new App({
+    io: term.io, env: { COLORTERM: 'truecolor' }, platform: 'darwin', copy: () => 'pbcopy', onExit: () => {},
+    backend: {
+      // As tui/main.ts does: a frame too large is refused with its own notice, the rest as not connected.
+      send(text) {
+        const frame = { type: 'message', text }
+        const sent = connection.send(frame)
+        if (!sent) notices.push(typeof tooLarge === 'function' ? tooLarge(frame) ?? 'not connected' : 'not connected')
+        return sent
+      },
+      cancel: () => {}, action: () => {},
+    },
+  })
+  connection = new Connection({ socketPath: listenPath(stateDir), onFrame: (f) => bind(app, f), onState: () => {} })
+  app.start()
+  connection.start()
+  await until(() => app.status.connected)
+  const big = 'é'.repeat(1_500_000)   // 3 MB as UTF-8
+  app.editor.set(big)
+  term.type('\r')
+  await sleep(300)
+  check('too large: a message over the gateway\'s frame limit is not sent', received.length === 0 && connection.connected, `${received.length} received`)
+  check('too large: it stays in the box', app.editor.text === big, String(app.editor.text.length))
+  check('too large: and the notice says why, not "not connected"', /1 MB/.test(notices.at(-1) ?? '') && /not sent/.test(notices.at(-1) ?? ''), JSON.stringify(notices))
+  // At the limit itself, by the bytes of the frame as it is written (UTF-8, with its newline), not by characters.
+  const frameOf = (n) => ({ type: 'message', text: 'é'.repeat(n) })
+  const under = Math.floor((MAX_FRAME_BYTES - encode(frameOf(0)).length) / 2)
+  check('too large: refused by the encoded bytes, from just over the limit', typeof tooLarge === 'function' && tooLarge(frameOf(under + 1)) !== null && tooLarge(frameOf(under)) === null
+    && Buffer.byteLength(encode(frameOf(under + 1))) > MAX_FRAME_BYTES && Buffer.byteLength(encode(frameOf(under))) <= MAX_FRAME_BYTES)
+  // Control: one under the limit goes.
+  app.editor.set('é'.repeat(400_000))
+  term.type('\r')
+  check('too large: one under the limit is sent and arrives whole', await until(() => received.length === 1) && received[0].text.length === 400_000 && app.editor.text === '', `${received.length} received`)
+  connection.close()
+  app.stop(0)
+  await local.close()
+  rmSync(stateDir, { recursive: true, force: true })
+}
+{
+  // A gateway that takes the connection and never says ready: the hello times out, as a failed connect.
+  const dir = mkdtempSync(join(tmpdir(), 'deepbot-mute-'))
+  const path = join(dir, 'mute.sock')
+  let accepted = 0
+  const held = []
+  const mute = createServer((s) => { accepted++; held.push(s) })
+  await new Promise((r) => mute.listen(path, () => r(null)))
+  const clock = fakeClock()
+  const states = []
+  const conn = new Connection({ socketPath: path, onFrame: () => {}, onState: (s, d) => states.push([s, d]), now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer })
+  conn.start()
+  await until(() => accepted === 1)
+  await sleep(50)
+  clock.advance(15_000)
+  check('hello: a gateway that never answers is a failed connect, said so', await until(() => states.some(([s, d]) => s === 'disconnected' && /did not answer/.test(d ?? ''))), JSON.stringify(states))
+  clock.advance(1000)
+  check('hello: and it is tried again, still saying why the last try failed', await until(() => accepted === 2) && states.some(([s, d]) => s === 'connecting' && /did not answer/.test(d ?? '')), `${accepted} accepted, ${JSON.stringify(states)}`)
+  conn.close()
+  for (const s of held) s.destroy()
+  await new Promise((r) => mute.close(r))
+  rmSync(dir, { recursive: true, force: true })
+
+  // The wait before the next try counts down in seconds.
+  const c2 = fakeClock()
+  const details = []
+  const none = new Connection({ socketPath: () => null, onFrame: () => {}, onState: (s, d) => { if (s === 'disconnected') details.push(d) }, now: c2.now, setTimer: c2.setTimer, clearTimer: c2.clearTimer })
+  none.start()
+  c2.advance(250 + 500 + 1000 + 2000)   // the first four waits
+  const from = details.length
+  c2.advance(5000)
+  const fifth = details.slice(from - 1, from + 4)
+  check('reconnect: the wait is a countdown in seconds, updated each second', JSON.stringify(fifth) === JSON.stringify(['5s', '4s', '3s', '2s', '1s'].map((s) => `reconnecting in ${s}…`)) && details[0] === 'reconnecting in 1s…', JSON.stringify(details))
+  none.close()
 }
 
 rmSync(DSH_HOME, { recursive: true, force: true })
