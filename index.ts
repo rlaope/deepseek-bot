@@ -404,6 +404,29 @@ function reactionIn(text: string): { emoji: string; rest: string } | null {
   const bare = (e: string) => e.replace(/[\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '')
   return { emoji: REACTIONS.find((e) => bare(e) === bare(token[1])) ?? token[1], rest: cut === -1 ? '' : answer.slice(cut + 1).trim() }
 }
+/**
+ * What a turn's completed answer is, read once from what the model wrote, before anything is said with it. In order:
+ * - `quiet`: "[quiet]" alone (`canMute`: not in the terminal), or after a reaction line — quiet wins, and the reaction
+ *   is dropped: the salute is the mark on that message, and "[quiet]" says nothing else.
+ * - `react`: a reaction this platform can put (one of `reactions`), with nothing else to say: nothing after it, or, in
+ *   a turn it was not named in (`quietTurn`), only its silence answer.
+ * - `silent`: a turn it was not named in that says nothing: no text, its silence answer, or only an emoji it cannot
+ *   put, which would be a bare emoji in a thread nobody named it in.
+ * - `text`: anything else, posted as `text`, with `reaction` put beside it. An emoji it cannot put is never swapped
+ *   for another: the text after it is the answer, or, with none, the emoji itself.
+ * `named` is the emoji the model named, when it named one, for the log.
+ */
+export function classifyAnswer(raw: string, { quietTurn, reactions, canMute = true }: { quietTurn: boolean; reactions: readonly string[] | null; canMute?: boolean }): { kind: 'quiet' | 'react' | 'silent' | 'text'; text: string; reaction: string | null; named?: string } {
+  const token = reactionIn(raw)
+  const named = token === null ? {} : { named: token.emoji }
+  const rest = token === null ? raw : token.rest
+  if (canMute && isQuietAnswer(rest)) return { kind: 'quiet', text: '', reaction: null, ...named }
+  const reaction = token !== null && reactions !== null && reactions.includes(token.emoji) ? token.emoji : null
+  const nothing = rest.trim() === '' || (quietTurn && saysNothing(rest.trim()))
+  if (nothing && reaction !== null) return { kind: 'react', text: '', reaction, ...named }
+  if (nothing && quietTurn) return { kind: 'silent', text: '', reaction: null, ...named }
+  return { kind: 'text', text: rest === '' && token !== null ? token.emoji : rest, reaction, ...named }
+}
 /** A whole message, in any language, that tells it to stay out of the conversation until it is named again. */
 const QUIET_WORDS = defaultWords('quiet')
 /** The approval buttons' own words, in every language: the only ones a requester's answer without a mention may be. */
@@ -3614,6 +3637,8 @@ export function apply(ctx, config) {
       let ticking: { stop: () => void; ran: () => number } = { stop: () => {}, ran: () => 0 }
       // The model's reaction to put on the message (`[react:👍]`), when its answer had one this platform can put.
       let reaction: string | null = null
+      // What its completed answer is (classifyAnswer); null for a turn that did not complete.
+      let answer: ReturnType<typeof classifyAnswer> | null = null
       // How long the turn ran, waits for an approval left out: what a typical turn is learned from.
       let ran = 0
       // How it ended, on the person's message: none for one that did not mention it.
@@ -3623,6 +3648,17 @@ export function apply(ctx, config) {
         unmarkInflight(key, ts)
       }
       if (ticket.withdrawn) { stopWorking(); log(`withdrawn before it started in ${key}`); settleInflight(key); return }
+      // Muted while it waited (the turn ahead answered "[quiet]"): what the gate at intake would have refused does not
+      // run. A message only the mode gave it ends as a quiet word's withdrawal ends it; one that did not mention it has
+      // no mark to end.
+      if ((quiet || message.byMode === true) && state.muted?.[key] !== undefined) {
+        stopWorking()
+        leaveWaiting(key, ticket)
+        if (!quiet) { markOf(replyTarget, ts, { kind: 'stopped' }); unmarkInflight(key, ts) }
+        log(`muted while it waited in ${key}: not run`)
+        settleInflight(key)
+        return
+      }
       // A later message waits behind it: one that did not mention it gives way, and comes to that turn as history
       // (the thread's pointer stops before it). A burst of chatter is one turn, not one each.
       // Not one with files: they would not be fetched for the later turn.
@@ -3685,18 +3721,19 @@ export function apply(ctx, config) {
             return historyText
           }
           r = await withTimeout(runTurn(prompt, existing, { channel, threadTs, user: message.user, ...(quiet ? { quiet: true } : {}) }, historyText, attachmentText, key, attachmentImages, onGone), backstopMs)
-          // The model's reaction comes off its answer before anything is said with it. One this platform cannot put is
-          // never swapped for another: its text is the answer, or, with none, the emoji itself.
-          const token = r.reason?.kind === 'completed' && typeof r.text === 'string' ? reactionIn(r.text) : null
-          if (token !== null) {
+          // What the answer is, read once before anything is said with it (classifyAnswer has the order); the
+          // model's reaction comes off it.
+          if (r.reason?.kind === 'completed' && typeof r.text === 'string') {
             const part = via(replyTarget)
-            reaction = typeof part.react === 'function' && Array.isArray(part.reactions) && part.reactions.includes(token.emoji) ? token.emoji : null
-            if (reaction === null) log(`reaction ${token.emoji}: not one it can put here — said as text`)
-            r = { ...r, text: token.rest !== '' || reaction !== null ? token.rest : token.emoji }
+            answer = classifyAnswer(r.text, { quietTurn: quiet, reactions: typeof part.react === 'function' && Array.isArray(part.reactions) ? part.reactions : null, canMute: channel !== LOCAL_CHANNEL })
+            reaction = answer.reaction
+            if (answer.named !== undefined && reaction === null) log(`reaction ${answer.named}: ${answer.kind === 'quiet' ? 'dropped — the answer is [quiet]' : answer.kind === 'silent' ? 'not one it can put here, and a turn it was not named in says nothing' : 'not one it can put here — said as text'}`)
+            r = { ...r, text: answer.text }
           }
           // Said with the answer, so it reads before it and keeps the platform's working status (a message of its own
-          // ended Slack's). A quiet turn says nothing: it may answer nothing at all.
-          if (r.sessionLost === true && !quiet && typeof r.text === 'string' && r.text !== '') r = { ...r, text: `${say.sessionLost}\n\n${r.text}` }
+          // ended Slack's). Only with text: a reaction alone says it on its own, below; muting and silence say nothing.
+          // A quiet turn says nothing: it may answer nothing at all.
+          if (r.sessionLost === true && !quiet && answer?.kind === 'text' && r.text !== '') r = { ...r, text: `${say.sessionLost}\n\n${r.text}` }
           // Advance the thread pointer only after the turn succeeded, so a failed
           // turn does not swallow messages it never delivered.
           if (historyLastTs !== null && r.reason?.kind === 'completed') {
@@ -3724,20 +3761,17 @@ export function apply(ctx, config) {
           if (placeholderTs !== null) await takeDown(replyTarget, placeholderTs)
         }
         const ok = r.reason?.kind === 'completed'
-        // A message that did not mention it gets an answer or nothing: not "[no reply]", and not a failure, a timeout
-        // or an empty answer, in a thread where nobody asked it. A stop said to it with a mention is reported.
-        const answers = ok && r.text !== '' && r.text !== undefined && !(quiet && saysNothing(r.text.trim()))
         // Asked to stay out, the model answers "[quiet]" alone: nothing is posted, the conversation is muted, and the
         // message that asked gets the salute — a message that did not mention it too, as its only mark.
-        if (ok && channel !== LOCAL_CHANNEL && typeof r.text === 'string' && isQuietAnswer(r.text)) {
+        if (answer?.kind === 'quiet') {
           state.muted = { ...(state.muted ?? {}), [key]: Date.now() }
           saveStateNow()
-          log(`quiet: the model asked to stay out of ${key} — muted`)
+          log(`quiet: the model asked to stay out of ${key} — muted${r.sessionLost === true ? '; its session was lost, not said' : ''}`)
           // What was streamed of it comes down; so does a working message.
           await withdrawAnswer()
           markOf(replyTarget, ts, { kind: 'quiet' })
           unmarkInflight(key, ts)
-        } else if (ok && reaction !== null && r.text === '') {
+        } else if (answer?.kind === 'react' && reaction !== null) {
           // A reaction alone is the answer: nothing is posted, and what was streamed of it and a working message come
           // down. A turn that did not mention it may answer so too, as a person would to a message they saw.
           await withdrawAnswer()
@@ -3748,7 +3782,12 @@ export function apply(ctx, config) {
           log(`answered channel=${channel} with the reaction ${reaction} ${Date.now() - started}ms`)
           if (!quiet) typical.record(ran)
           ended('done')
-        } else if (quiet && !answers && !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user')) {
+          // What text would have carried is said on its own, where it was named: the lost session, then a stopped job.
+          if (!quiet && r.sessionLost === true) await transport.post(replyTarget, say.sessionLost).catch((e) => log(`session lost notice failed: ${String((e as Error)?.message ?? e)}`))
+          if (!quiet && r.jobsStopped !== undefined) await transport.post(replyTarget, r.jobsStopped).catch((e) => log(`background job notice failed: ${String((e as Error)?.message ?? e)}`))
+        } else if (quiet && (ok ? answer?.kind !== 'text' : !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user'))) {
+          // A message that did not mention it gets an answer or nothing: not "[no reply]", and not a failure, a timeout
+          // or an empty answer, in a thread where nobody asked it. A stop said to it with a mention is reported.
           log(`kept quiet channel=${channel} ${ok ? 'no reply' : String(r.reason?.kind ?? 'unknown')} ${Date.now() - started}ms`)
           if (placeholderTs !== null) await takeDown(replyTarget, placeholderTs)
         } else if (ok && r.text) {
@@ -3772,6 +3811,8 @@ export function apply(ctx, config) {
           ended(r.reason.cause === 'user' ? 'stopped' : 'failed')
           const why = r.reason.cause === 'timed out' ? say.timedOut : say.stopped
           log(`turn cancelled cause=${String(r.reason.cause ?? '-')}${r.reported === true ? ' (already reported)' : ''}`)
+          // A quiet word says nothing: what was streamed of the answer comes down now, not when the stream goes idle.
+          if (r.silent === true && !quiet && streamsTo(replyTarget)) via(replyTarget).stream(replyTarget, { kind: 'reset' })
           // The terminal marks a turn the person stopped itself ("⎿ Interrupted"); any other end it is told.
           const marked = replyTarget.channel === LOCAL_CHANNEL && r.reason.cause === 'user'
           if (r.reported !== true && !marked) await replyInPlaceOf(replyTarget, why, placeholderTs)

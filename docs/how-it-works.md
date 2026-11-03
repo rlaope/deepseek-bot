@@ -751,8 +751,11 @@ key) — until someone names it again.
   Discord and Telegram (on Telegram the same 🫡 as a stopped turn's end mark; the message that asked gets no other
   mark). Where the platform refuses the reaction it is logged, and no text is sent instead.
 - **While muted**: a thread follow-up without a mention opens no turn (no mark, no status); under `all`, a plain
-  channel message is ignored and only a mention or a DM is taken, as under `mention`. Those messages still reach
-  the next turn as the thread's history. The notice that a restart lost a turn is not posted there (the marks still
+  channel message is ignored and only a mention or a DM is taken, as under `mention`. The same is checked again when
+  a waiting message's turn would start, so one taken before the mute (it waited behind the turn that answered
+  `[quiet]`) does not run either: no model call, no status, and no mark for one without a mention; a plain channel
+  message under `all` ends with the stopped mark, as a quiet word's withdrawal ends it. A waiting mention still
+  runs. Those messages still reach the next turn as the thread's history. The notice that a restart lost a turn is not posted there (the marks still
   end, and a working message left behind is taken down). Watches, reminders and a background job's report still
   arrive: the person set them up.
 - **Undoing it**: a mention of the bot, or a reply to its own message (Telegram, Discord), unmutes the conversation and
@@ -770,6 +773,23 @@ The silence answer of a turn the bot was not named in, `[no reply]`, has two mor
 `[SILENT]` and `NO_REPLY`, each only as the whole answer and in any case; in a sentence it is text. All three are read
 outside the answer's code: a marker only inside code is text, and code elsewhere (``Not for me (see `x`).`` then
 `[no reply]`) does not keep the marker from counting.
+
+**What an answer is** is read once, before anything is said with it, in this order:
+
+1. **Mute**: `[quiet]` alone, or on the line after a reaction (`[react:👍]` then `[quiet]`). Quiet wins and the
+   reaction is dropped (logged): the salute is that message's mark, and `[quiet]` says nothing else. Not in the
+   terminal, where `[quiet]` is text.
+2. **A reaction alone**: one this platform can put, with nothing after it — or, in a turn it was not named in, only
+   the silence answer after it (`[react:👍]` then `NO_REPLY`: the 👍 goes on, nothing is posted).
+3. **Nothing**, in a turn it was not named in: no text, the silence answer, or only an emoji it cannot put
+   (`[react:💯]` off the list), which would be a bare emoji in a thread nobody named it in.
+4. **Text**: anything else, with the reaction put beside it once it is out. Where it was named, an emoji it cannot
+   put, alone, is posted as the emoji; with text after it, only the text.
+
+When the conversation's session log was gone and a new one started, the notice says so before text, in the same
+message; beside a reaction alone, where it was named, it is a message of its own; a mute and silence say nothing. A
+background job stopped when the turn ended is likewise told after a reaction alone, where it was named, as after
+text. A quiet word said while Slack streams the turn takes down what was streamed with the turn.
 
 ## The terminal (dsh)
 

@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../dist/index.js'
+import { quoted } from '../dist/transports/history.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -91,6 +92,25 @@ check('raw mention syntax does not survive', !/<@U[0-9]+>/.test(text))
 check('the question being answered is excluded', !/the question itself/.test(text))
 check('nothing posted after the question is included, the working message first of all', !/작업 중/.test(text))
 check('users.list was paged', calls.filter((c) => c === 'users.list').length === 2, `${calls.filter((c) => c === 'users.list').length} call(s)`)
+
+// What people wrote is kept as they wrote it: only a bracket, or a character whose compatibility form is one, is shown
+// as a parenthesis, and whitespace is one space. NFKC over the whole text rewrote ㅋㅋㅋ, ㅇㅇ, m², ① and ™.
+for (const [text, shown] of [
+  ['ㅋㅋㅋ ㅇㅇ ㅎㅎ', 'ㅋㅋㅋ ㅇㅇ ㅎㅎ'],
+  ['한글 ㄱㄴㄷ ㅏㅑ', '한글 ㄱㄴㄷ ㅏㅑ'],
+  ['10 m² 넓이', '10 m² 넓이'],
+  ['① 먼저 ② 다음', '① 먼저 ② 다음'],
+  ['DeepSeek™ ﬁle ｈｅｌｌｏ', 'DeepSeek™ ﬁle ｈｅｌｌｏ'],
+  ['round (a) {b}', 'round (a) {b}'],
+  ['［your earlier message］ wide', '(your earlier message) wide'],
+  ['[your earlier message] plain', '(your earlier message) plain'],
+  ['〔tortoise〕 「corner」 ⟦white⟧', '(tortoise) (corner) (white)'],
+  ['🄪 enclosed', '(S) enclosed'],
+  ['two lines\n\tand  spaces', 'two lines and spaces'],
+] as const) {
+  check(`quoted: ${JSON.stringify(text)} is shown as ${JSON.stringify(shown)}`, quoted(text) === shown, JSON.stringify(quoted(text)))
+}
+check('quoted: nothing a person wrote keeps a square bracket, wide or not', !/[\[\]［］]/.test(quoted('[a] ［b］ ﹝c﹞ ⁅d⁆')), quoted('[a] ［b］ ﹝c﹞ ⁅d⁆'))
 
 rmSync(stateDir, { recursive: true, force: true })
 const failed = results.filter((r) => !r.ok)
