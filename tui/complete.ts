@@ -28,7 +28,8 @@ export function complete(text: string, cursor: number, commands: readonly Comman
   if (command !== null && cursor === chars.length) {
     const items = commands.filter((c) => c.name.startsWith(command[1])).map((c) => ({
       label: `/${c.name}`,
-      insert: `/${c.name}${c.args ? ' ' : ''}`,
+      // A space for an argument it takes, needed or not: tab leaves the cursor where it goes.
+      insert: `/${c.name}${c.args || c.usage !== undefined ? ' ' : ''}`,
       hint: [c.usage, c.hint].filter(Boolean).join(' '),
       run: !c.args,
     }))

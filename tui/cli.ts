@@ -167,8 +167,8 @@ export function parseCommand(text: string): { name: CommandName; args: string } 
   return { name: m[1] as CommandName, args: (m[2] ?? '').trim() }
 }
 
-/** Which commands take an argument. */
-const TAKES_ARGS: Record<CommandName, boolean> = { new: false, sessions: false, resume: true, tenant: true, interview: true, usage: false, clear: false, help: false, quit: false, exit: false, model: true }
+/** Which commands need an argument. /tenant and /model take one they can do without: chosen from the list, they run. */
+const TAKES_ARGS: Record<CommandName, boolean> = { new: false, sessions: false, resume: true, tenant: false, interview: true, usage: false, clear: false, help: false, quit: false, exit: false, model: false }
 
 /** What each command takes and does: the source of /help and of the completion list. */
 export function commandInfo(): Array<CommandInfo & { name: CommandName }> {

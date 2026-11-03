@@ -7,7 +7,9 @@
 const en = {
   connecting: 'connecting…',
   disconnected: (detail: string | undefined) => `disconnected · ${detail ?? 'reconnecting'}`,
-  reconnectingIn: (ms: number) => `reconnecting in ${ms}ms`,
+  reconnectingIn: (seconds: number) => `reconnecting in ${seconds}s…`,
+  noAnswer: (seconds: number) => `the gateway did not answer in ${seconds}s`,
+  tooLarge: (mb: string, limit: string) => `not sent: the message is ${mb} MB, over the ${limit} MB the gateway reads in one frame`,
   refused: (message: string) => `refused: ${message}`,
   unreadable: (error: string) => `unreadable frame from the gateway: ${error}`,
   noGatewayNamed: (name: string, found: string[]) => `no running gateway is named '${name}' (found: ${found.join(', ') || 'none'})`,
@@ -139,6 +141,7 @@ const en = {
   moreAbove: (n: number) => `↑ ${n} more`,
   moreBelow: (n: number) => `↓ ${n} more`,
   pasteChip: (n: number, lines: number) => `[paste #${n} +${lines} lines]`,
+  pasteChipChars: (n: number, chars: string) => `[paste #${n} ${chars} chars]`,
   nothingTakenBack: 'already started: nothing to take back',
   queued: 'queued',
   queuedCount: (n: number) => `${n} queued`,

@@ -14,8 +14,9 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { constants } from 'node:os'
 import { App } from './app.js'
-import { Connection, discover, lookup } from './client.js'
+import { Connection, discover, lookup, tooLarge } from './client.js'
 import { bind, commandInfo, createCommands, harnessCli, parseArgs, resumeHint, route, usage, type Commands } from './cli.js'
+import type { ClientFrame } from './protocol.js'
 import { t } from './strings.js'
 import { fileFinder, gitBranch } from './files.js'
 import { appendHistory, historyFile, loadHistory } from './history.js'
@@ -76,23 +77,26 @@ function main(): void {
     remember: (text) => appendHistory(history, text),
     stepEffort: () => commands?.stepEffort(),
     branchOf: gitBranch,
+    // ctrl+z: stopped as a shell stops a job, and drawn again when it continues. No job control on Windows.
+    suspend: process.platform === 'win32' ? undefined : (resumed) => { process.once('SIGCONT', resumed); process.kill(process.pid, 'SIGTSTP') },
     io: processIO(process.stdin, process.stdout),
     env: process.env,
     platform: process.platform,
     backend: {
       send(text, id) {
-        const sent = connection?.send({ type: 'message', text, ...(id !== undefined ? { id } : {}) }) === true
-        if (!sent) app.notice(t().notSent, 'error')
+        const frame: ClientFrame = { type: 'message', text, ...(id !== undefined ? { id } : {}) }
+        const sent = connection?.send(frame) === true
+        if (!sent) app.notice(tooLarge(frame) ?? t().notSent, 'error')
         return sent
       },
       cancel() { connection?.send({ type: 'cancel' }) },
       withdraw(ids) { return connection?.send({ type: 'withdraw', ids }) === true },
       action(id) { if (!connection?.send({ type: 'action', id })) app.notice(t().notSent, 'error') },
       view(kind, id, owner) { connection?.send({ type: 'view', kind, ...(id !== undefined ? { id } : {}), ...(owner !== undefined ? { owner } : {}) }) },
-      agentSend(id, text) { if (!connection?.send({ type: 'agent.send', id, text })) app.notice(t().notSent, 'error') },
+      agentSend(id, text) { const frame: ClientFrame = { type: 'agent.send', id, text }; if (!connection?.send(frame)) app.notice(tooLarge(frame) ?? t().notSent, 'error') },
       agentInterrupt(id) { connection?.send({ type: 'agent.interrupt', id }) },
       jobKill(id, owner) { connection?.send({ type: 'job.kill', id, owner }) },
-      answer(id, answers) { if (!connection?.send({ type: 'answer', id, answers })) app.notice(t().answerNotSent, 'error') },
+      answer(id, answers) { const frame: ClientFrame = { type: 'answer', id, answers }; if (!connection?.send(frame)) app.notice(tooLarge(frame) ?? t().answerNotSent, 'error') },
     },
     onExit(code) {
       connection?.close()
@@ -108,7 +112,7 @@ function main(): void {
     onFrame: (frame) => bind(app, frame, commands ?? undefined),
     onRollback: (message) => commands?.rolledBack(message),
     onState: (state, detail) => {
-      if (state === 'connecting') app.setStatus({ connected: false, link: t().connecting })
+      if (state === 'connecting') app.setStatus({ connected: false, link: detail === undefined ? t().connecting : `${t().connecting} · ${detail}` })
       else if (state === 'disconnected') app.setStatus({ connected: false, link: t().disconnected(detail) })
     },
   })

@@ -850,8 +850,11 @@ terminal on it is told which, before those messages' typing stops: each puts its
 including one it already showed as started (sent while idle, or whose turn's start it had read) that was
 still waiting for a slot. The empty box says what it is for (`Message deepseek-bot · / commands ·
 @ files`); past its six rows it counts the ones it cannot show in its border (`↑ 2 more`, `↓ 1 more`), as
-pi does. A paste of more than ten lines (CR or LF) is a chip, `[paste #1 +40 lines]`, until it is sent as
-the text it stands for; the cursor goes over a chip whole, and backspace, delete and ctrl+w take it whole.
+pi does. A paste of more than ten lines (CR or LF) is a chip, `[paste #1 +40 lines]`, and so is one of more
+than 1,000 characters (`[paste #2 150,000 chars]`), until it is sent as the text it stands for; one final
+newline of a paste is dropped. The cursor goes over a chip whole, and backspace, delete and ctrl+w take it
+whole; alt+b and alt+f, alt+←→ and ctrl+←→ move by word, a chip one word. A message whose frame would be over
+the gateway's 1 MB limit is refused with a notice and stays in the box.
 The hint line under the input box is `? for shortcuts`; `?` on an empty box shows the keys below in its
 place, in as many columns as fit. An approval shows the request's first
 line and its options numbered: `↑↓`, a digit or a click and `↵` answer it, `esc` answers no (with text
