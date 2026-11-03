@@ -9,12 +9,24 @@ the caveat about version numbers is at the bottom.
 
 - **An answer could ping a whole channel.** Slack's text was sent with `&`, `<` and `>` as the model wrote them, so
   `<!channel>`, `<!here>`, `<!everyone>`, `<!subteam^…>` or `<@U…>` in an answer notified everyone it named; on
-  Discord no send said which mentions to parse, so `@everyone`, `@here` and a role mention did the same. Slack's text
-  is escaped now (in code too, where Slack shows `&lt;` as `<`), keeping the links the conversion makes and a Slack
-  link the model pastes whole (the thread's own link is handed to it so) with its label escaped; nothing the bot
-  sends mentions anyone on purpose, so user mentions are escaped too. Every Discord send and edit carries
-  `allowed_mentions: { parse: [] }`; no reply reference is sent, so there is no replied user to name. Telegram has no
-  mention of a whole chat, and its HTML was already escaped. Checked in the Slack and Discord suites, red before.
+  Discord no send said which mentions to parse, so `@everyone`, `@here` and a role mention did the same; and a watch's
+  alert carried its name (the agent writes it) and its output raw, where a ``` line also closed the alert's fence.
+  Covered now:
+  - Slack answers, their edits and approval requests: `&`, `<` and `>` are escaped (in code too, where Slack shows
+    `&lt;` as `<`), keeping the links the conversion makes and a Slack link the model pastes (the thread's own link
+    is handed to it so), each with its label escaped. Nothing the bot sends mentions anyone on purpose, so user
+    mentions are escaped too.
+  - Slack's streamed preview (`markdown_text`): a zero-width space follows every `<`, so no mention syntax is left in
+    it, one split across frames included. It reads the same; the preview is taken away when the answer is posted.
+  - Discord: every send and edit carries `allowed_mentions: { parse: [] }`; no reply reference is sent, so there is no
+    replied user to name. Uploads carry no text.
+  - Watch alerts: the name and the output are escaped, and no two backticks are left side by side in the output.
+    The watch runner is a deployed copy: a deployment has it only after `watch/install-watch.sh` is run again.
+  - Telegram has no mention of a whole chat, and its HTML was already escaped.
+
+  Checked in the Slack, Discord and watch suites, each red before, against fakes only. Not seen live: that Slack shows
+  the escapes as the characters in code and link labels and reads `&gt; ` at a line's start as a quote, whether
+  Slack resolves mentions in `markdown_text` at all, and Discord's handling of `allowed_mentions` on an edit.
 
 - **A command read `~/.npmrc`, and its npm token went to the model.** The sandbox refused `~/.ssh`, the cloud
   CLIs' and gh's tokens, netrc and git's credentials, but not the package registries' and other tools' token files.
@@ -202,8 +214,11 @@ the caveat about version numbers is at the bottom.
 
 - **Slack rewrote code.** Inside a code block or inline code, a `# comment` line came out bold, a `- ` line as
   a bullet, and `**`, Markdown links and the rest were converted like text. Code is set aside before the rules now and
-  sent as written. Also `*italic*` came out as Slack's bold and `~~strike~~` was left as it was: they are `_italic_`
-  and `~strike~` now, and `**bold**` is still `*bold*`. Checked in the Slack suite, red before.
+  sent as written; a fence ends at a run of its own mark and length, so one showing a shorter fence holds it, and a
+  `~~~` fence, which Slack does not show as code, is sent as a backtick one. Also `*italic*` came out as Slack's bold
+  and `~~strike~~` was left as it was: they are `_italic_` and `~strike~` now, and `**bold**` is still `*bold*`; a
+  star beside bold's pair (`*args, **kwargs`) opens no italics. A Markdown link whose URL holds a `|` is left as
+  text, since Slack would show what follows the pipe as its label. Checked in the Slack suite, red before.
 - **`dsh gateway` alone, its `--help` and a mistyped command printed the harness's stack trace.** Only `gateway`
   followed by one of its commands was taken from the harness CLI, which booted a profile named gateway that does not
   exist: `Error: dsh: profile "gateway" does not exist` and a Node stack, exit 1. Where the harness has no such profile
