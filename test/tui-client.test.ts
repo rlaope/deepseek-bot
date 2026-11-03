@@ -550,6 +550,42 @@ for (const platform of ['win32', 'darwin']) {
   await new Promise((r) => mute.close(r))
   rmSync(dir, { recursive: true, force: true })
 
+  // A hello sent again after a refused switch has its own timeout.
+  const dir2 = mkdtempSync(join(tmpdir(), 'deepbot-refuse-'))
+  const path2 = join(dir2, 'refuse.sock')
+  let lines = 0
+  const held2 = []
+  const refuser = createServer((s) => {
+    held2.push(s)
+    s.setEncoding('utf8')
+    // The first hello (the switch) is refused; the one sent again is never answered.
+    s.on('data', () => { if (++lines === 1) s.write(encode({ type: 'error', code: 'bad-frame', message: 'no', hello: true })) })
+  })
+  await new Promise((r) => refuser.listen(path2, () => r(null)))
+  const c3 = fakeClock()
+  const states3 = []
+  const switched = new Connection({ socketPath: path2, onFrame: () => {}, onState: (s, d) => states3.push([s, d]), onRollback: () => {}, now: c3.now, setTimer: c3.setTimer, clearTimer: c3.clearTimer })
+  switched.switchTo('conv-x')
+  switched.start()
+  await until(() => lines >= 2)
+  await sleep(50)
+  c3.advance(15_000)
+  check('hello: one sent again after a refused switch times out too', lines >= 2 && await until(() => states3.some(([s, d]) => s === 'disconnected' && /did not answer/.test(d ?? ''))), JSON.stringify(states3))
+  switched.close()
+  for (const s of held2) s.destroy()
+  await new Promise((r) => refuser.close(() => r(null)))
+  rmSync(dir2, { recursive: true, force: true })
+
+  // Closed while it counts down (from the state it reports): the count stops.
+  const c4 = fakeClock()
+  const states4 = []
+  let closing = null
+  // Closed when the fourth wait (2 s, two counts) begins.
+  closing = new Connection({ socketPath: () => null, onFrame: () => {}, onState: (s, d) => { states4.push(d ?? s); if (states4.filter((x) => x.startsWith('reconnecting')).length === 4) closing.close() }, now: c4.now, setTimer: c4.setTimer, clearTimer: c4.clearTimer })
+  closing.start()
+  c4.advance(10_000)
+  check('reconnect: closed during the countdown, it says nothing more', states4.at(-1) === 'reconnecting in 2s…' && states4.filter((x) => x.startsWith('reconnecting')).length === 4, JSON.stringify(states4))
+
   // The wait before the next try counts down in seconds.
   const c2 = fakeClock()
   const details = []

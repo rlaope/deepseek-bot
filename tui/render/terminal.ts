@@ -22,8 +22,10 @@ export const RESTORE = '\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1
  */
 export const ESCAPE_MS = 100
 
-/** The rest of a key's sequence, without its ESC: CSI (an SGR mouse report too) or SS3. */
-const SEQUENCE_REST = /^(\[<?[\d;]*[A-Za-z~^$@]|O[A-DHF])/
+/** One sequence the parser reads as a key or a click, after its ESC: CSI with a final it maps, an SGR mouse report, SS3. */
+const KEY_BODY = String.raw`(?:\[[\d;]*[ABCDHFZ~^$@u]|\[<\d+;\d+;\d+[Mm]|O[ABCDHF])`
+/** Text that is nothing but such sequences, each with its ESC. */
+const ONLY_KEYS = new RegExp(String.raw`^\x1b${KEY_BODY}(?:\x1b${KEY_BODY})*$`)
 
 export interface TerminalIO {
   write(data: string): void
@@ -54,8 +56,11 @@ export class Terminal {
   private prev: Screen | null = null
   private active = false
   private escTimer: unknown = null
-  /** Until when the rest of a sequence is still taken as one, after the wait took its ESC as Esc. */
-  private lateUntil = -Infinity
+  /**
+   * After the wait took an ESC as Esc: what followed it (the start of a sequence, or nothing), and until when what
+   * comes next can still complete a sequence with it.
+   */
+  private late: { rest: string; until: number } | null = null
   private frameTimer: unknown = null
   private lastFrame = -Infinity
   private unsubscribe: Array<() => void> = []
@@ -131,19 +136,46 @@ export class Terminal {
 
   private input(chunk: string): void {
     if (this.escTimer !== null) { this.o.clearTimer(this.escTimer); this.escTimer = null }
-    // Later still than the wait: its Esc has gone, but the rest of the sequence right behind it is that key, not
-    // "[A" typed into the box.
-    if (this.o.now() < this.lateUntil && SEQUENCE_REST.test(chunk)) chunk = `\x1b${chunk}`
-    this.lateUntil = -Infinity
-    for (const event of this.parser.feed(chunk)) this.o.onEvent(event)
-    if (this.parser.pending) {
-      this.escTimer = this.o.setTimer(() => {
-        this.escTimer = null
-        const lone = this.parser.lone
-        for (const event of this.parser.flush()) this.o.onEvent(event)
-        if (lone) this.lateUntil = this.o.now() + this.o.escapeMs
-      }, this.o.escapeMs)
+    const late = this.late
+    this.late = null
+    if (late !== null) {
+      // Later still than the wait: its Esc has gone, but the rest of a sequence right behind it is that key, not
+      // "[A" typed into the box. Only whole sequences the parser knows: "[link](x)" is text.
+      const whole = `\x1b${late.rest}${chunk}`
+      chunk = this.o.now() < late.until && ONLY_KEYS.test(whole) ? whole : late.rest + chunk
     }
+    this.feed(chunk)
+  }
+
+  private feed(chunk: string): void {
+    for (const event of this.parser.feed(chunk)) this.o.onEvent(event)
+    this.arm()
+  }
+
+  /** While a lone ESC or a partial sequence waits, the timer that says it is complete as it stands. */
+  private arm(): void {
+    if (!this.parser.pending) return
+    this.escTimer = this.o.setTimer(() => {
+      this.escTimer = null
+      const held = this.parser.escapeHeld()
+      if (held === null) {
+        for (const event of this.parser.flush()) this.o.onEvent(event)
+        // Two Escs: the second waits in its turn.
+        this.arm()
+        return
+      }
+      this.o.onEvent(held.event)
+      this.late = { rest: held.rest, until: this.o.now() + this.o.escapeMs }
+      // What followed the ESC, when nothing completes it in time, was typed.
+      if (held.rest !== '') {
+        this.escTimer = this.o.setTimer(() => {
+          this.escTimer = null
+          const typed = this.late
+          this.late = null
+          if (typed !== null) this.feed(typed.rest)
+        }, this.o.escapeMs)
+      }
+    }, this.o.escapeMs)
   }
 }
 

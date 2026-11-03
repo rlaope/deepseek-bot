@@ -2626,6 +2626,39 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('refused: a subagent message not sent stays in the box', t.app.view.kind === 'agent' && toAgent.length === 1 && t.app.editor.text === '더 짧게 해줘', JSON.stringify({ view: t.app.view.kind, n: toAgent.length, text: t.app.editor.text }))
 }
 
+{
+  // (j) Review of 80. Two Escs close together stop the turn and type nothing; no control character is typed.
+  const t = setup()
+  t.app.turnStarted(); t.clock.advance(20)
+  t.key('\x1b'); t.clock.advance(60); t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10); t.clock.advance(ESCAPE_MS + 10)
+  const sentBefore = t.sent.length
+  check('escape: two Escs 60 ms apart stop the turn and leave the box empty', t.cancels >= 1 && t.app.editor.text === '', `${t.cancels} cancels, ${JSON.stringify(t.app.editor.text)}`)
+  t.key('\r'); t.clock.advance(20)
+  check('escape: and Enter after them sends nothing', t.sent.length === sentBefore, JSON.stringify(t.sent.slice(sentBefore)))
+  t.key('\x1b[155u'); t.key('\x1b[27;3u'); t.clock.advance(20)
+  check('typed: a control character (C1, as CSI u gives it) is not put in the box', t.app.editor.text === '', JSON.stringify(t.app.editor.text))
+  // Text that starts with "[" right after an Esc is text: only a whole sequence the parser knows is a key.
+  const l = setup()
+  l.key('\x1b'); l.clock.advance(ESCAPE_MS + 10); l.clock.advance(40); l.key('[link](x)'); l.clock.advance(20)
+  check('escape: "[link](x)" 50 ms after an Esc is typed as written', l.app.editor.text === '[link](x)', JSON.stringify(l.app.editor.text))
+  // An unfinished sequence the wait cut: what follows in time still completes it.
+  const u = setup()
+  u.key('ab'); u.key('\x1b['); u.clock.advance(ESCAPE_MS + 1); u.key('D'); u.clock.advance(20)
+  check('escape: "ESC [" then "D" just after the wait is ← , nothing typed', u.app.editor.text === 'ab' && u.app.editor.cursor === 1, `${JSON.stringify(u.app.editor.text)} at ${u.app.editor.cursor}`)
+  u.key('\x1b['); u.clock.advance(3 * ESCAPE_MS)
+  check('escape: and with nothing after it, the "[" is typed', u.app.editor.text === 'a[b', JSON.stringify(u.app.editor.text))
+}
+{
+  // (k) A combining mark typed right after a chip is its own, not the chip's: the chip stays whole.
+  const t = setup()
+  t.key(`\x1b[200~${Array.from({ length: 12 }, (_, i) => `m${i}`).join('\n')}\x1b[201~`); t.clock.advance(20)
+  const chip = t.app.editor.text
+  t.key('\u0301'); t.key('\x7f')
+  check('chip: a mark typed after it, then backspace: the mark goes, the chip stays whole', t.app.editor.text === chip, JSON.stringify(t.app.editor.text))
+  t.key('\x7f')
+  check('chip: and the next backspace takes the chip whole', t.app.editor.text === '', JSON.stringify(t.app.editor.text))
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

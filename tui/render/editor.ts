@@ -52,8 +52,9 @@ export class Editor {
     // ZWJ family, a flag, a skin tone, e and a combining accent) as one key per code point, and each must join the
     // one before it. A boundary depends on what precedes it, so nothing before these changes; after them, only a
     // run of flags with a lone indicator typed into it would pair up otherwise.
-    const start = Math.max(0, this.pos - 1)
-    const end = Math.min(this.chars.length, this.pos + 1)
+    // Not across a chip's edge: a mark typed after one is its own, and the chip stays the text it is.
+    const start = this.pos === 0 || this.atomWhere((_, atomEnd) => atomEnd === this.pos) !== null ? this.pos : this.pos - 1
+    const end = this.pos === this.chars.length || this.atomWhere((atomStart) => atomStart === this.pos) !== null ? this.pos : this.pos + 1
     const before = this.chars.slice(start, this.pos).join('')
     const add = graphemes(before + added + this.chars.slice(this.pos, end).join(''))
     // The cursor goes after the character that holds the last thing typed.
