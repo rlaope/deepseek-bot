@@ -25,6 +25,10 @@ export class QuestionFlow {
   typing = false
   private picked = new Set<number>()
   readonly answers: QuestionAnswer[] = []
+  /** The box's text each answer of the person's own words was typed as (chips in it), by answer. */
+  private raws: Array<string | undefined> = []
+  /** Answers after a reopened one, put back once it is answered again. */
+  private kept: { answers: QuestionAnswer[]; raws: Array<string | undefined> } | null = null
 
   constructor(id: string, items: QuestionItem[]) {
     this.id = id
@@ -84,17 +88,35 @@ export class QuestionFlow {
     return 'answered'
   }
 
-  /** The person's own words for the current question. */
-  submitCustom(text: string): void {
+  /** The person's own words for the current question; `raw`, the box's text they were typed as. */
+  submitCustom(text: string, raw?: string): void {
     const q = this.current
     if (q === undefined) return
     const selected = q.multiSelect ? [...this.picked].sort((a, b) => a - b).map((i) => q.options[i].label) : []
-    this.record({ id: q.id, selected, ...(text.trim() !== '' ? { custom: text.trim() } : {}) })
+    this.record({ id: q.id, selected, ...(text.trim() !== '' ? { custom: text.trim() } : {}) }, raw)
   }
 
-  /** Take back the last answer (its batch was refused): that question is the current one again. */
-  undo(): void {
-    if (this.answers.pop() !== undefined) this.index--
+  /**
+   * The batch was refused for its size: the question answered with the longest words of the person's own (or the
+   * last) is the current one again, its picks as they were; the answers after it are kept, and put back when it is
+   * answered again. Returns the box's text it was answered with, or its words.
+   */
+  reopen(): string | undefined {
+    let at = this.answers.length - 1
+    let longest = -1
+    this.answers.forEach((a, i) => { if ((a.custom?.length ?? -1) > longest) { longest = a.custom!.length; at = i } })
+    const answer = this.answers[at]
+    if (answer === undefined) return undefined
+    const raw = this.raws[at] ?? answer.custom
+    this.kept = { answers: this.answers.slice(at + 1), raws: this.raws.slice(at + 1) }
+    this.answers.splice(at)
+    this.raws.splice(at)
+    this.index = at
+    const q = this.current!
+    this.picked = new Set(answer.selected.map((label) => q.options.findIndex((o) => o.label === label)).filter((i) => i >= 0))
+    this.typing = false
+    this.cursor = this.approveIndex()
+    return raw
   }
 
   /** Esc: leave this question unanswered. */
@@ -110,9 +132,16 @@ export class QuestionFlow {
     return parts.length === 0 ? t().skipped : parts.join(', ')
   }
 
-  private record(answer: QuestionAnswer): void {
+  private record(answer: QuestionAnswer, raw?: string): void {
     this.answers.push(answer)
+    this.raws.push(raw)
     this.index++
+    if (this.kept !== null) {
+      this.answers.push(...this.kept.answers)
+      this.raws.push(...this.kept.raws)
+      this.index += this.kept.answers.length
+      this.kept = null
+    }
     this.picked = new Set()
     this.typing = false
     this.cursor = this.approveIndex()

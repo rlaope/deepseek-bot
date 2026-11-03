@@ -113,10 +113,10 @@ export interface AppOptions {
   /** The git branch of a directory, for the footer; null when it is not a repository's work tree. */
   branchOf?: (dir: string) => string | null
   /**
-   * ctrl+z, with the terminal already given back: stop the process, and call `resumed` when it continues.
-   * Absent where there is no job control (Windows); ctrl+z then does nothing.
+   * ctrl+z, with the terminal already given back: stop the process, and call `resumed` when it continues; false
+   * when it was not stopped. Absent where there is no job control (Windows); ctrl+z then does nothing.
    */
-  suspend?: (resumed: () => void) => void
+  suspend?: (resumed: () => void) => boolean
 }
 
 const EDITOR_MAX_ROWS = 6
@@ -708,22 +708,20 @@ export class App {
   }
 
   /**
-   * After each answer: record it, and send the batch when the last one is in. Refused (false: too large to send),
-   * the last question is open again with `raw`, the box's text it was answered with, back in the box.
+   * After each answer: send the batch when the last one is in, and show what was answered once it has gone.
+   * Refused (false: too large to send), the question with the longest words of the person's own is open again,
+   * those words back in the box to shorten (QuestionFlow.reopen).
    */
-  private answered(raw?: string): void {
+  private answered(): void {
     const q = this.question
     if (q === null) return
-    const item = q.items[q.answers.length - 1]
-    const answer = q.answers[q.answers.length - 1]
-    if (item !== undefined && answer !== undefined) this.notice(`? ${item.question} → ${q.describe(answer)}`, 'info')
     if (q.done) {
       this.question = null
       if (this.o.backend.answer?.(q.id, q.answers) === false) {
-        q.undo()
+        const raw = q.reopen()
         this.question = q
-        if (raw !== undefined) { q.typing = true; this.editor.set(raw) }
-      }
+        if (raw !== undefined) { q.typing = true; q.cursor = q.rows().length - 1; this.editor.set(raw) }
+      } else q.answers.forEach((answer, i) => { if (q.items[i] !== undefined) this.notice(`? ${q.items[i].question} → ${q.describe(answer)}`, 'info') })
       this.refreshCompletion()
     }
     this.terminal.requestRender(true)
@@ -1127,7 +1125,7 @@ export class App {
     if (q.typing) {
       // A backslash before Enter is a new line here too.
       if (key.name === 'enter' && !key.alt && !key.shift && this.editor.before === '\\') { this.editor.backspace(); this.editor.insert('\n'); this.terminal.requestRender(true); return true }
-      if (key.name === 'enter' && !key.alt && !key.shift) { const raw = this.sentFromBox(); q.submitCustom(this.unchipped(raw)); this.answered(raw); return true }
+      if (key.name === 'enter' && !key.alt && !key.shift) { const raw = this.sentFromBox(); q.submitCustom(this.unchipped(raw), raw); this.answered(); return true }
       if (key.name === 'escape') { q.typing = false; this.terminal.requestRender(true); return true }
       return false
     }
@@ -1282,10 +1280,12 @@ export class App {
     const suspend = this.o.suspend
     if (suspend === undefined) return
     this.terminal.restore()
-    suspend(() => {
+    const resumed = () => {
       this.terminal.invalidate()
       this.terminal.start()
-    })
+    }
+    // Not stopped (dsh leads its own session: its process group is orphaned, and the stop is discarded): back at once.
+    if (suspend(resumed) === false) { resumed(); this.notice(t().cannotSuspend, 'warn') }
   }
 
   private ctrlC(): void {

@@ -244,8 +244,9 @@ the caveat about version numbers is at the bottom.
   - A message over the gateway's frame limit (`MAX_FRAME_BYTES`, 1 MB: three pastes at the cap can pass it) was sent; the
     gateway's reader dropped it, and the box was already empty. It is now refused before sending, by the bytes of the
     frame as written, with a notice that says so (not "not connected"), and stays in the box. So does a message
-    to a subagent; an answer to a question is refused the same way, the question open again with its words in the
-    box.
+    to a subagent; an answer batch is refused the same way, open again at the question answered with the longest
+    words of the person's own, those words in the box, its picks and the later answers kept; what was answered is
+    shown once the batch has gone.
   - A lone ESC waited 30 ms for the rest of a sequence, so an arrow split over a slow link stopped the turn and typed
     `[A`. It waits 100 ms (`ESCAPE_MS`, vim's ttimeoutlen in its defaults). Within another 100 ms after an ESC (or
     the start of a sequence, `ESC [`) taken as Esc, what completes a sequence the parser knows is that key; anything
@@ -262,7 +263,9 @@ the caveat about version numbers is at the bottom.
   - Words: alt+b and alt+f, alt+← and alt+→ (rxvt's `ESC ESC [ D` too, which typed an ESC and `[D`), ctrl+← and
     ctrl+→ move by word (alt+b and alt+f typed letters, ctrl+← moved one character); a chip is one word.
   - ctrl+z gives the terminal back and stops `dsh`'s process group as a shell stops a job (so `pnpm exec` or `npx`
-    around it stops too); `fg` draws it again whole (not on Windows, which has no job control).
+    around it stops too); `fg` draws it again whole (not on Windows, which has no job control). Where dsh leads its
+    own session (`tmux new-window dsh`, `ssh -t host dsh`) the stop is discarded; dsh then stays as it was and says
+    it can't suspend there.
   - Enter on `/model` or `/tenant` in the completion list only put the command in, as if its argument were needed;
     both run without one, so Enter runs them. Tab still leaves a space for the argument.
 

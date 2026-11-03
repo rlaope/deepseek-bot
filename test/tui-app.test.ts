@@ -338,11 +338,13 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
   check('question: the panel shows the question, its options and "type your own…"', /\? question \(1\/2\)/.test(asked) && asked.includes('배포 대상 환경은?') && /❯ staging/.test(asked) && asked.includes('production — 실서비스') && asked.includes('type your own…'))
   check('question: the input box gives way to the options', !asked.includes('│ ›'), asked.split('\n').slice(-4).join(' | '))
   t.key('\x1b[B'); t.key('\r')
-  check('question: ↓ Enter answers the first and moves to the second', /\(2\/2\)/.test(t.term.screen.text()) && t.term.screen.text().includes('? 배포 대상 환경은? → production'))
+  check('question: ↓ Enter answers the first and moves to the second', /\(2\/2\)/.test(t.term.screen.text()))
   t.key(' '); t.key('\x1b[B'); t.key('\x1b[B'); t.key(' ')
   check('question: Space ticks options of a multi-select question', /\[x\] unit/.test(t.term.screen.text()) && /\[x\] lint/.test(t.term.screen.text()))
   t.key('\r')
   check('question: the batch goes back once the last one is answered', JSON.stringify(t.answers[0]) === JSON.stringify({ id: 'q-1', answers: [{ id: 'env', selected: ['production'] }, { id: 'checks', selected: ['unit', 'lint'] }] }) && t.app.question === null)
+  // Shown as answered once the batch has gone (a batch refused for its size is answered again).
+  check('question: and each answer is in the transcript then', t.term.screen.text().includes('? 배포 대상 환경은? → production') && t.term.screen.text().includes('? 어떤 검사를 돌릴까? → unit, lint'))
   check('question: nothing typed was sent as a message meanwhile', t.sent.length === 0)
 
   t.app.ask('q-2', [{ id: 'name', question: '이름을 뭐라고 할까?', options: [{ label: 'deepbot' }], multiSelect: false }])
@@ -2657,6 +2659,41 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('chip: a mark typed after it, then backspace: the mark goes, the chip stays whole', t.app.editor.text === chip, JSON.stringify(t.app.editor.text))
   t.key('\x7f')
   check('chip: and the next backspace takes the chip whole', t.app.editor.text === '', JSON.stringify(t.app.editor.text))
+}
+
+{
+  // (l) ctrl+z where the stop does not happen (dsh leads its own session: an orphaned process group): back at once.
+  const t = setup({ extra: { suspend: () => false } })
+  t.key('draft'); t.clock.advance(20)
+  t.key('\x1a'); t.clock.advance(20)
+  check('suspend: a stop that does not happen leaves dsh fullscreen, the draft kept, and says why', t.term.raw === true && t.term.screen.state.altScreen && t.app.editor.text === 'draft' && /can't suspend here/.test(t.term.screen.text()), t.term.screen.text().split('\n').filter((l) => l.trim() !== '').slice(-6).join(' | '))
+  t.key('!')
+  check('suspend: and the keys still come in', t.app.editor.text === 'draft!', JSON.stringify(t.app.editor.text))
+}
+{
+  // (m) A batch refused for its size reopens at the longest answer of the person's own, picks kept, the later
+  // answers kept; nothing is shown as answered until the batch is sent.
+  const answered = []
+  let ok = false
+  const backend = { send: () => true, cancel: () => {}, action: () => {}, view: () => {}, answer: (id, answers) => { answered.push(JSON.parse(JSON.stringify(answers))); return ok } }
+  const t = setup({ cols: 100, rows: 40, extra: { backend } })
+  t.app.ask('q-batch', [
+    { id: 'env', question: 'which env?', options: [{ label: 'staging' }, { label: 'prod' }], multiSelect: false },
+    { id: 'checks', question: 'which checks?', options: [{ label: 'unit' }, { label: 'lint' }], multiSelect: true },
+    { id: 'name', question: 'what name?', options: [{ label: 'deepbot' }], multiSelect: false },
+  ]); t.clock.advance(20)
+  t.key('\r')                                   // env: staging
+  t.key(' '); t.key('very long words'); t.key('\r')   // checks: unit, and words of its own
+  t.key('short'); t.key('\r'); t.clock.advance(20)    // name: words of its own
+  const q = t.app.question
+  check('refused batch: reopened at the longest answer of its own, its words in the box', answered.length === 1 && q !== null && q.index === 1 && q.typing === true && t.app.editor.text === 'very long words', JSON.stringify({ n: answered.length, index: q?.index, text: t.app.editor.text }))
+  check('refused batch: nothing shown as answered yet', !t.term.screen.text().includes('? which env?') && !t.term.screen.text().includes('? what name?'), t.term.screen.text().split('\n').filter((l) => l.includes('? ')).join(' | '))
+  ok = true
+  t.key('\x15'); t.key('ok'); t.key('\r'); t.clock.advance(20)
+  check('refused batch: shortened, sent with the picks kept and the later answer kept', answered.length === 2 && t.app.question === null
+    && JSON.stringify(answered[1]) === JSON.stringify([{ id: 'env', selected: ['staging'] }, { id: 'checks', selected: ['unit'], custom: 'ok' }, { id: 'name', selected: [], custom: 'short' }]), JSON.stringify(answered.at(-1)))
+  const shown = t.term.screen.text()
+  check('refused batch: once sent, each answer shown once', shown.split('? which env? → staging').length === 2 && shown.split('? which checks? → unit, "ok"').length === 2 && shown.split('? what name? → "short"').length === 2, shown.split('\n').filter((l) => l.includes('? ')).join(' | '))
 }
 
 const failed = results.filter((r) => !r.ok)
