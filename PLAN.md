@@ -30,7 +30,7 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again; one part cutter (`parts.ts`) for every platform, cutting at a paragraph, line or word and never inside a character, a Slack link, an escape or a code fence's line, a code block closed and reopened across parts |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again; one part cutter (`parts.ts`) for every platform, cutting at a paragraph, line or word and never inside a character, a Slack link, an escape or a code fence's line, a code block closed and reopened across parts; history is what came after the pointer and before the message answered, never the bot's own, and the pointer passes that message |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
@@ -130,6 +130,13 @@ Decided against:
   be a knob that does nothing.
 
 ## Unverified
+
+- History deltas (the bot's own messages left out, nothing newer than the message answered, the pointer past it),
+  checked against fake APIs only (`test/slack.test.ts` delta and waiting, `test/discord.test.ts` 16-17,
+  `test/telegram.test.ts` 21). Not seen live: that Discord's `before` gives the newest page under an id and `after`
+  the page right after one (the fake models it so; Discord's reference says only that the three are exclusive), and
+  that the bot's own Slack messages carry its user id in `conversations.replies` (they carry `bot_id` too). What the bot
+  posts outside a turn, a watch's alert on Slack, is left out of history as well, so a later turn is not shown it.
 
 - Muting a conversation (quiet words, `[quiet]`), checked against the fake transport and mocked platform APIs only:
   not seen that Slack takes `saluting_face` and Discord and Telegram 🫡 on a live message, nor that a real model
