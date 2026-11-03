@@ -15,7 +15,7 @@ import { messages } from '../dist/messages.js'
 import { Picker } from '../dist/tui/picker.js'
 import { Transcript } from '../dist/tui/render/transcript.js'
 import { stringWidth } from '../dist/tui/render/width.js'
-import { RESTORE } from '../dist/tui/render/terminal.js'
+import { ESCAPE_MS, RESTORE } from '../dist/tui/render/terminal.js'
 import { fakeClock, fakeTerminal } from './tui-fakes.ts'
 import { commandInfo, COMMANDS, help } from '../dist/tui/cli.js'
 import { appendHistory, loadHistory, HISTORY_KEEP } from '../dist/tui/history.js'
@@ -212,7 +212,7 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
   const selected = t.term.screen.grid.filter(inverted).length
   check('drag: the selection is drawn inverted', selected > 10, `${selected} cells`)
   t.key('\x1b')
-  t.clock.advance(40)
+  t.clock.advance(ESCAPE_MS + 10)
   check('escape: clears the selection without cancelling anything', t.cancels === 0 && t.term.screen.grid.filter(inverted).length === 0)
   t.key(SGR(0, 5, 3)); t.key(SGR(0, 5, 3, true))
   check('click without a drag copies nothing', t.copied.length === 1)
@@ -240,7 +240,7 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
 {
   const t = setup()
   t.app.turnStarted()
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('escape: cancels a running turn', t.cancels === 1)
   t.key('지울 내용')
   t.key('\x03')
@@ -294,7 +294,7 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
   check('agent view: Enter sends to that child, not to the conversation', JSON.stringify(t.views.at(-1)) === JSON.stringify(['send', 'child-1', '더 짧게 해줘']) && t.sent.length === 0)
   t.key('\x18')
   check('agent view: ctrl+x interrupts that child', JSON.stringify(t.views.at(-1)) === JSON.stringify(['interrupt', 'child-1']))
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('agent view: esc returns to the conversation and tells the gateway', t.app.view.kind === 'main' && JSON.stringify(t.views.at(-1)) === JSON.stringify(['view', 'main']) && !t.term.screen.text().includes('요약 중간 결과'))
 
   const jobRow = t.term.screen.find('bash-1')
@@ -308,7 +308,7 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
   check('job view: output accumulates, and the end is said', out.includes('PASS a') && out.includes('PASS c') && out.includes('ended · completed'))
   t.key('\x18')
   check('job view: ctrl+x stops the job with its owner', JSON.stringify(t.views.at(-1)) === JSON.stringify(['kill', 'bash-1', 'root-s']))
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
 
   t.app.setPanel(['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, label: `idle ${id}`, mode: 'one-shot', status: 'idle', since: null, settledMs: 0, tokens: 0 })), [])
   t.clock.advance(20)
@@ -369,7 +369,7 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
   t.app.unpost('ts-q')
 
   t.app.ask('q-3', [{ id: 'skip-me', question: '건너뛸 질문', options: [{ label: 'a' }], multiSelect: false }])
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('question: esc skips it, and the turn is not cancelled', JSON.stringify(t.answers[3]) === JSON.stringify({ id: 'q-3', answers: [{ id: 'skip-me', selected: [] }] }) && t.cancels === 0)
 
   t.app.ask('q-4', [{ id: 'click', question: '클릭으로 고르기', options: [{ label: '첫째' }, { label: '둘째' }], multiSelect: false }])
@@ -449,8 +449,8 @@ const inverted = (cell) => cell.style === '\x1b[0;7m' || cell.style.endsWith('\x
 {
   const t = setup()
   let threw = null
-  try { t.key('\x1b[200~' + '가'.repeat(250_000) + '\x1b[201~') } catch (e) { threw = e }
-  check('paste: a quarter-million characters does not crash, and is cut to the cap', threw === null && [...t.app.editor.text].length === 200_000, String(threw ?? [...t.app.editor.text].length))
+  try { t.key('\x1b[200~' + '가'.repeat(250_000) + '\x1b[201~'); t.key('\r') } catch (e) { threw = e }
+  check('paste: a quarter-million characters does not crash, and is cut to the cap', threw === null && [...(t.sent.at(-1) ?? '')].length === 200_000, String(threw ?? [...(t.sent.at(-1) ?? '')].length))
 }
 
 // 9. Small terminals: nothing breaks, the input still works.
@@ -497,7 +497,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('complete: enter on a command that takes an argument only puts it in', t.app.editor.text === '/interview ' && intercepted.length === 1)
   t.app.editor.set('')
   t.key('/')
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('complete: esc closes the list, and the text stays', !t.term.screen.text().includes('/sessions') && t.app.editor.text === '/')
   t.key('s')
   check('complete: typing again opens it again', t.term.screen.text().includes('/sessions'))
@@ -526,7 +526,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('search: ctrl+r shows the newest entry', t.app.editor.text === 'third deploy' && /history search/.test(t.term.screen.text()))
   t.key('build')
   check('search: typing narrows it', t.app.editor.text === 'second build')
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('search: esc gives back what was being typed', t.app.editor.text === 'draft' && !/history search/.test(t.term.screen.text()))
   t.key('\x12')
   t.key('deploy')
@@ -840,7 +840,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   // Stopping the turn withdraws what waited at the gateway: it comes back to the input.
   t.app.turnStarted()
   t.key('fourth\r')
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('waiting: esc stops the turn and gives what waited back to the input', t.cancels === 1 && t.app.editor.text === 'fourth' && !t.term.screen.text().includes('queued'), `cancels ${t.cancels}, editor ${JSON.stringify(t.app.editor.text)}`)
   t.app.turnEnded()
 }
@@ -931,7 +931,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   open()
   t.key('4'); t.clock.advance(20)
   check('picker: a digit moves to that row', /❯ 4\. back to the configured model/.test(t.term.screen.text()) && !/effort ◂/.test(t.term.screen.text()))
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('picker: esc closes it, picking nothing', picked.length === 1 && t.term.screen.find('og/m1') === null)
   open()
   const second = t.term.screen.find('2. og/m2')
@@ -943,12 +943,12 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('mouse: the wheel over the picker moves the highlight, not the transcript', /❯ 2\. og\/m2/.test(t.term.screen.text()))
   t.key('h'); t.clock.advance(20)
   check('picker: typing filters it, the input box staying empty', t.app.editor.text === '' && t.app.picker !== null && t.term.screen.find('og/m1') === null && t.term.screen.find('og/m3') !== null, JSON.stringify(t.app.editor.text))
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   open()
   t.app.ask('q-70', [{ id: 'which', question: 'Which one?', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false }])
   t.clock.advance(20)
   check('picker: a question from the turn takes its place', t.term.screen.find('og/m1') === null && t.term.screen.text().includes('Which one?'))
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('picker: and it does not come back once the question is done', t.app.question === null && t.app.picker === null && t.term.screen.find('og/m1') === null)
 
   t.key('hello world'); t.clock.advance(20)
@@ -1073,7 +1073,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('picker: with text in the box, ← moves the cursor in the text, not the effort', t.app.editor.text === 'aXb' && /effort ◂ low ▸/.test(t.term.screen.text()), JSON.stringify(t.app.editor.text))
   t.key('\x1b[B'); t.clock.advance(20)
   check('picker: and ↓ is not the picker\'s', /❯ 1\. og\/m1/.test(t.term.screen.text()))
-  t.key('\x1b'); t.clock.advance(40)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('picker: esc still closes it, and leaves the text', t.app.picker === null && t.app.editor.text === 'aXb' && picked.length === 0)
 }
 
@@ -1207,19 +1207,19 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const between = t.term.screen.text().split('\n')
   check('exchanges: no rule between one and the next (only the divider, from the edge)', !between.some((l) => /^ {2}─{10,}/.test(l)), between.filter((l) => l.includes('────')).join(' | '))
   t.app.delta('길게 쓰는 중')
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('stop: a stopped turn says Interrupted, in red', /⎿ {2}Interrupted/.test(t.term.screen.text()), t.term.screen.text().split('\n').filter((l) => l.includes('Interrupted')).join(' | '))
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('stop: once, however many times esc is pressed', t.term.screen.text().split('Interrupted').length - 1 === 1)
   t.app.turnEnded()
   // A message sent behind a stopped turn starts its own turn when that one ends: stopped in turn, it is marked too.
   const marks = () => t.term.screen.text().split('Interrupted').length - 1
   t.app.turnStarted()
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   t.key('second\r'); t.clock.advance(20)
   t.app.turnStarted()
   t.app.turnEnded()
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('stop: a turn that started behind a stopped one is marked when stopped too', marks() === 3, String(marks()))
   t.app.turnEnded()
   // A stop that withdraws a waiting message: the waiting one's end comes first, and the stopped turn is still the
@@ -1227,9 +1227,9 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.app.turnStarted()
   t.key('queued\r'); t.clock.advance(20)
   t.app.turnStarted()
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   t.app.turnEnded()
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('stop: a waiting message withdrawn first does not let the stopped turn be marked twice', marks() === 4, String(marks()))
   t.app.turnEnded()
   // A stop typed as a word marks the turn too.
@@ -1287,7 +1287,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.app.offer('ts-a', [{ id: 'approval:allow:k2', label: 'Allow', style: 'primary' }, { id: 'approval:deny:k2', label: 'Deny', style: 'danger' }])
   t.clock.advance(20)
   check('approval: the hint line says the keys', /↑↓ .*1–2 .*↵ .*esc deny/.test(t.term.screen.row(29)), t.term.screen.row(29))
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('approval: esc answers no, and the turn goes on', t.actions.at(-1) === 'approval:deny:k2' && t.cancels === 0 && t.app.choice === null, JSON.stringify({ actions: t.actions, cancels: t.cancels }))
   t.app.offer('ts-a', [{ id: 'approval:allow:k3', label: 'Allow' }, { id: 'approval:deny:k3', label: 'Deny' }])
   t.key('\x1b[B'); t.key('\r')
@@ -1305,7 +1305,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.key('?'); t.clock.advance(20)
   const panel = t.term.screen.text()
   check('shortcuts: ? on an empty box shows them, in the box\'s place', panel.includes('Shortcuts') && panel.includes('shift+tab effort') && panel.includes('ctrl+t expand/fold thinking') && !panel.includes('│ ›') && t.app.editor.text === '', panel.split('\n').slice(-8).join(' | '))
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('shortcuts: esc closes them', !t.term.screen.text().includes('Shortcuts') && t.term.screen.text().includes('│ ›'))
   t.key('?'); t.key('a'); t.clock.advance(20)
   check('shortcuts: typing closes them and types', t.app.editor.text === 'a' && !t.term.screen.text().includes('Shortcuts'), JSON.stringify(t.app.editor.text))
@@ -1341,19 +1341,19 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.key('2'); t.clock.advance(20)
   // A digit with no row of its own is typed into the picker's filter: the picker's, never the approval's.
   check('approval: a digit with no row in a picker over it is the picker\'s, not an answer', t.actions.length === 0 && t.app.choice !== null && t.app.picker !== null && t.app.picker.query === '2', JSON.stringify({ actions: t.actions, query: t.app.picker?.query }))
-  t.key('\x1b'); t.app.editor.set(''); t.clock.advance(60)
+  t.key('\x1b'); t.app.editor.set(''); t.clock.advance(ESCAPE_MS + 10)
 
   // A selection: esc clears it, as it does anywhere, and the approval waits.
   const at = t.term.screen.find('rm -rf build')
   t.key(SGR(0, at.col, at.row)); t.key(SGR(32, at.col + 6, at.row)); t.key(SGR(0, at.col + 6, at.row, true))
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('approval: esc with text selected clears the selection, and answers nothing', t.actions.length === 0 && t.app.choice !== null && t.cancels === 0 && t.term.screen.grid.filter(inverted).length === 0, JSON.stringify({ actions: t.actions, cancels: t.cancels }))
   // Each half of what makes an option "no": its style, or its id.
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('approval: esc answers no', t.actions.at(-1) === 'approval:deny:b1', JSON.stringify(t.actions))
-  t.app.offer('ts-b', [{ id: 'approval:allow:b2', label: 'Allow' }, { id: 'approval:refuse:b2', label: 'Refuse', style: 'danger' }]); t.key('\x1b'); t.clock.advance(60)
+  t.app.offer('ts-b', [{ id: 'approval:allow:b2', label: 'Allow' }, { id: 'approval:refuse:b2', label: 'Refuse', style: 'danger' }]); t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('approval: "no" by its danger style alone', t.actions.at(-1) === 'approval:refuse:b2', JSON.stringify(t.actions.at(-1)))
-  t.app.offer('ts-b', [{ id: 'approval:allow:b3', label: 'Allow' }, { id: 'approval:deny:b3', label: 'Deny' }]); t.key('\x1b'); t.clock.advance(60)
+  t.app.offer('ts-b', [{ id: 'approval:allow:b3', label: 'Allow' }, { id: 'approval:deny:b3', label: 'Deny' }]); t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('approval: "no" by its id alone', t.actions.at(-1) === 'approval:deny:b3', JSON.stringify(t.actions.at(-1)))
   // A choice with no "no": the hint does not promise one, and esc is the turn's stop, as the status line says.
   t.app.offer('ts-b', [{ id: 'pick:a', label: 'A' }, { id: 'pick:b', label: 'B' }]); t.clock.advance(20)
@@ -1411,7 +1411,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   // one is: a turn queued after the stop has its own time.
   t.app.turnStarted(); t.app.turnStarted()
   t.clock.advance(4000)
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   t.app.turnEnded()
   t.clock.advance(1000)
   const stopped = t.term.screen.text().split('\n').find((l) => l.includes('✻')) ?? '(none)'
@@ -1426,7 +1426,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   // The link drops between a stop and the withdrawn turn's end: the gateway's count on reconnect is the truth,
   // and a turn queued after it starts with its own time.
   t.app.turnStarted(); t.app.turnStarted()
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   t.app.setBusy(1)
   t.app.turnStarted()
   t.clock.advance(6000)
@@ -1439,13 +1439,13 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.key('\t'); t.clock.advance(20)
   const panelled = t.term.screen.text().split('\n').find((l) => l.includes('✻')) ?? '(none)'
   check('working: with the panel focused, no "esc to interrupt"', t.app.focus === 'panel' && !panelled.includes('esc to interrupt'), `${t.app.focus} ${panelled}`)
-  t.key('\x1b'); t.clock.advance(60); t.app.setPanel([], [])
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10); t.app.setPanel([], [])
   // Text selected: esc clears it first, so the line does not offer a stop either.
   const word = t.term.screen.find('I need permission')
   t.key(SGR(0, word.col, word.row)); t.key(SGR(32, word.col + 6, word.row)); t.key(SGR(0, word.col + 6, word.row, true)); t.clock.advance(20)
   const selecting = t.term.screen.text().split('\n').find((l) => l.includes('✻')) ?? '(none)'
   check('working: with text selected, no "esc to interrupt"', !selecting.includes('esc to interrupt'), selecting)
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   t.app.turnEnded(); t.clock.advance(20)
   // A first line that is the warning sign alone: the title is the next line with words.
   t.app.message('ts-d', '⚠️\nI need permission: ls', null, false)
@@ -1690,7 +1690,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.app.editor.set('')
   t.key('a\\'); t.key('\r'); t.clock.advance(20)
   check('input: a backslash before Enter is a new line in an answer too', t.app.editor.text === 'a\n' && t.app.question !== null && !t.answers.some((a) => a.id === 'q-up'), JSON.stringify(t.app.editor.text))
-  t.key('\x1b'); t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   t.app.editor.set(''); t.app.turnEnded(); t.app.turnEnded(); t.clock.advance(20)
 }
 
@@ -1731,7 +1731,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('chip: a sent one brought back with ↑ is sent as its text again', t.sent.at(-1) === `x${twelve}` && t.sent.at(-2) === `x${twelve}`, JSON.stringify(t.sent.slice(-2).map((m) => m.slice(0, 14))))
   t.key('\x12'); t.key('zzz'); t.clock.advance(20)
   check('placeholder: not inside a history search', !t.term.screen.text().includes('Message deepseek-bot'))
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   const narrow = setup({ cols: 12, rows: 20 })
   for (let i = 1; i <= 8; i++) { narrow.key(`l${i}`); if (i < 8) narrow.key('\x1b\r') }
   narrow.clock.advance(20)
@@ -1775,7 +1775,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   t.app.ask('q-hold', [{ id: 'q', question: 'which?', options: [{ label: 'a' }], multiSelect: false }]); t.clock.advance(20)
   t.app.withdrawn([idD]); t.clock.advance(20)
   const during = t.app.editor.text
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   check('queue: taken back while a question has the box, it waits for the box', during === '' && t.app.question === null && t.app.editor.text === 'D-msg' && !t.answers.some((a) => JSON.stringify(a).includes('D-msg')), JSON.stringify({ during, after: t.app.editor.text }))
   t.app.turnEnded(); t.app.turnEnded(); t.clock.advance(20)
   t.app.editor.set('')
@@ -1997,7 +1997,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('picker: → with nothing matching steps no hidden row\'s effort', picked.length === 1 && picked[0][1] === null, JSON.stringify(picked))
   open(); p.key('a'); p.key('👍🏽'); p.key('\x7f'); p.clock.advance(20)
   check('picker: backspace takes the whole character typed', p.app.picker?.query === 'a', JSON.stringify(p.app.picker?.query))
-  p.key('\x1b'); p.clock.advance(60)
+  p.key('\x1b'); p.clock.advance(ESCAPE_MS + 10)
   const tiny = setup({ cols: 60, rows: 5 })
   tiny.app.openPicker({ title: 'Model', rows, onPick: () => {} }); tiny.key('z'); tiny.key('z'); tiny.clock.advance(20)
   check('picker: on a short screen a filter with no match still says so', tiny.term.screen.text().includes('no match'), tiny.term.screen.text().split('\n').join(' | '))
@@ -2067,7 +2067,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const inView = t.app.view.kind === 'agent'
   t.key('\x0f'); t.clock.advance(20)
   t.app.notice('arrived while away'); t.app.notice('and another'); t.clock.advance(20)
-  t.key('\x1b'); t.clock.advance(60)
+  t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
   // The control: the same without ctrl+o says so too.
   const c = setup({ cols: 80, rows: 30 })
   c.key('first\r'); c.app.final(Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n\n')); c.clock.advance(20)
@@ -2076,7 +2076,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('fold: (control) lines that arrive while scrolled up are new', /↓ \d+ new/.test(c.term.screen.text()))
   // What comes back to the box comes after what is typed there.
   const d = setup({ cols: 80, rows: 30 })
-  d.app.turnStarted(); d.key('waiting one\r'); d.app.turnStarted(); d.key('a draft'); d.key('\x1b'); d.clock.advance(60)
+  d.app.turnStarted(); d.key('waiting one\r'); d.app.turnStarted(); d.key('a draft'); d.key('\x1b'); d.clock.advance(ESCAPE_MS + 10)
   check('stop: what waited comes back after what is typed in the box', d.app.editor.text === 'a draft\nwaiting one', JSON.stringify(d.app.editor.text))
   check('fold: lines that arrive after a ctrl+o elsewhere are still new', inView && t.app.view.kind === 'main' && /↓ \d+ new/.test(t.term.screen.text()), t.term.screen.text().split('\n').find((l) => / new /.test(l)) ?? `${inView} ${t.app.view.kind}`)
   // And lines that arrived before it, while the conversation was not drawn, stay new too.
@@ -2087,7 +2087,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   e.key('\t'); e.key('\x1b[B'); e.key('\r'); e.clock.advance(20)
   e.app.notice('arrived before the fold'); e.app.notice('and another'); e.clock.advance(20)
   e.key('\x0f'); e.clock.advance(20)
-  e.key('\x1b'); e.clock.advance(60)
+  e.key('\x1b'); e.clock.advance(ESCAPE_MS + 10)
   check('fold: lines that arrived before a ctrl+o elsewhere are still new', e.app.view.kind === 'main' && /↓ \d+ new/.test(e.term.screen.text()), e.term.screen.text().split('\n').find((l) => / new /.test(l)) ?? e.app.view.kind)
 }
 
@@ -2108,7 +2108,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const a = setup({ cols: 80, rows: 30 })
   a.app.turnStarted(); a.key('a-wait\r'); a.app.turnStarted(); a.clock.advance(20)
   const idA = a.sentIds.at(-1)
-  a.key('\x1b'); a.clock.advance(60)
+  a.key('\x1b'); a.clock.advance(ESCAPE_MS + 10)
   a.app.withdrawn([idA], [], true); a.clock.advance(20)
   const once = a.app.editor.text
   a.app.turnEnded()                 // the withdrawn message's end
@@ -2122,7 +2122,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   // A stop whose answer never came (an older gateway, a dropped link): another terminal's stop later is handled
   // as any stop's answer.
   const c = setup({ cols: 80, rows: 30 })
-  c.app.turnStarted(); c.key('\x1b'); c.clock.advance(60); c.app.turnEnded(); c.clock.advance(20)
+  c.app.turnStarted(); c.key('\x1b'); c.clock.advance(ESCAPE_MS + 10); c.app.turnEnded(); c.clock.advance(20)
   c.app.editor.set('')
   c.app.turnStarted(); c.key('c-msg\r'); c.app.turnStarted(); c.clock.advance(20)
   c.app.withdrawn([c.sentIds.at(-1)], [], true); c.clock.advance(20)
@@ -2137,7 +2137,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const idSecond = d.sentIds.at(-1)
   d.app.turnEnded(); d.clock.advance(20)
   const shownStarted = /^› second/m.test(d.term.screen.text())
-  d.key('\x1b'); d.clock.advance(60)
+  d.key('\x1b'); d.clock.advance(ESCAPE_MS + 10)
   d.app.withdrawn([idSecond], [], true); d.app.turnEnded(); d.clock.advance(20)
   check('stop here: its own message shown as started but still waiting comes back, mark and all', shownStarted && d.app.editor.text === 'second' && !/^› second/m.test(d.term.screen.text()) && !d.term.screen.text().includes('Interrupted'), `${shownStarted} ${JSON.stringify(d.app.editor.text)} ${d.term.screen.text().includes('Interrupted')}`)
   // (b) A message whose typing-on was read after esc counted: its end is not a turn's, and esc again marks nothing twice.
@@ -2145,10 +2145,10 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   e.app.turnStarted(); e.clock.advance(4000)
   e.key('late\r'); e.clock.advance(20)
   const idLate = e.sentIds.at(-1)
-  e.key('\x1b'); e.clock.advance(60)
+  e.key('\x1b'); e.clock.advance(ESCAPE_MS + 10)
   e.app.turnStarted()               // its typing-on, sent before the stop reached the gateway
   e.app.withdrawn([idLate], [], true); e.app.turnEnded(); e.clock.advance(1000)
-  e.key('\x1b'); e.clock.advance(60)
+  e.key('\x1b'); e.clock.advance(ESCAPE_MS + 10)
   const eLine = e.term.screen.text().split('\n').find((l) => l.includes('✻')) ?? '(none)'
   check('stop here: a message whose typing began after esc counted is still the stop\'s, not a turn', /\(5s/.test(eLine) && e.term.screen.text().split('Interrupted').length - 1 === 1, `${eLine} marks=${e.term.screen.text().split('Interrupted').length - 1}`)
   e.app.turnEnded()
@@ -2156,7 +2156,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const f = setup({ cols: 80, rows: 30 })
   f.app.turnStarted(); f.key('q-msg\r'); f.app.turnStarted(); f.clock.advance(20)
   const idQ = f.sentIds.at(-1)
-  f.key('\x1b[A'); f.key('\x1b'); f.clock.advance(60)
+  f.key('\x1b[A'); f.key('\x1b'); f.clock.advance(ESCAPE_MS + 10)
   f.app.withdrawn([idQ], [idQ]); f.app.turnEnded()        // the ↑'s answer, and that message's end
   f.clock.advance(20)
   const toastAfterUp = f.term.screen.text().includes('already started')
@@ -2192,26 +2192,26 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   i.key('from a\r'); i.app.turnStarted(); i.clock.advance(20)
   const idFromA = i.sentIds.at(-1)
   i.app.turnEnded(); i.clock.advance(20)                       // T0 ends: this terminal shows 'from a' as next
-  i.key('\x1b'); i.clock.advance(60)
+  i.key('\x1b'); i.clock.advance(ESCAPE_MS + 10)
   i.app.withdrawn([idFromA], [], true); i.app.turnEnded(); i.clock.advance(20)
   check('stop here: a running turn was stopped too, so its mark stays; its own waiting message comes back', marks(i) === 1 && i.app.editor.text === 'from a', `marks=${marks(i)} ${JSON.stringify(i.app.editor.text)}`)
   i.app.turnEnded()
   // N5. This terminal stops a message it sent while idle that still waits: nothing ran, so no mark.
   const j = setup({ cols: 80, rows: 30 })
   j.key('idle one\r'); j.app.turnStarted(); j.clock.advance(20)
-  j.key('\x1b'); j.clock.advance(60)
+  j.key('\x1b'); j.clock.advance(ESCAPE_MS + 10)
   j.app.withdrawn([j.sentIds.at(-1)], [], true); j.app.turnEnded(); j.clock.advance(20)
   check('stop here: its own message sent while idle that still waited comes back, with no mark', marks(j) === 0 && j.app.editor.text === 'idle one', `marks=${marks(j)} ${JSON.stringify(j.app.editor.text)}`)
   // R1. A stopped turn's mark, then (nothing running) a message sent while idle withdrawn by another terminal's stop:
   // that turn's mark is not the earlier one.
   const k = setup({ cols: 80, rows: 30 })
-  k.app.turnStarted(); k.key('\x1b'); k.clock.advance(60); k.app.withdrawn([], [], true); k.app.turnEnded(); k.clock.advance(20)
+  k.app.turnStarted(); k.key('\x1b'); k.clock.advance(ESCAPE_MS + 10); k.app.withdrawn([], [], true); k.app.turnEnded(); k.clock.advance(20)
   k.key('later\r'); k.app.turnStarted(); k.clock.advance(20)
   k.app.withdrawn([k.sentIds.at(-1)], [], true); k.app.turnEnded(); k.clock.advance(20)
   check('stop elsewhere: an earlier stopped turn\'s mark stays when a later message is taken back', marks(k) === 1 && k.app.editor.text === 'later', `marks=${marks(k)} ${JSON.stringify(k.app.editor.text)}`)
   // R2. The same where the later turn started behind another (its start read at a turn's end, not from idle).
   const m = setup({ cols: 80, rows: 30 })
-  m.app.turnStarted(); m.key('\x1b'); m.clock.advance(60); m.app.withdrawn([], [], true)
+  m.app.turnStarted(); m.key('\x1b'); m.clock.advance(ESCAPE_MS + 10); m.app.withdrawn([], [], true)
   m.app.turnStarted()                                          // another terminal's message, after the stop
   m.app.turnEnded(); m.clock.advance(20)                       // the stopped turn ends; that one runs
   m.key('mine\r'); m.app.turnStarted(); m.clock.advance(20)   // queued behind it
@@ -2229,14 +2229,14 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   const n3 = setup({ cols: 80, rows: 30 })
   n3.app.turnStarted(); n3.key('race2\r'); n3.clock.advance(20)
   n3.app.turnEnded(); n3.app.turnStarted(); n3.clock.advance(20)
-  n3.key('\x1b'); n3.clock.advance(60)
+  n3.key('\x1b'); n3.clock.advance(ESCAPE_MS + 10)
   n3.app.withdrawn([n3.sentIds.at(-1)], [], true); n3.app.turnEnded(); n3.clock.advance(20)
   check('stop here: a message moved in when nothing ran, stopped while it waited: back, and no mark', marks(n3) === 0 && n3.app.editor.text === 'race2', `marks=${marks(n3)} ${JSON.stringify(n3.app.editor.text)}`)
   // N5. A word answered at once, sent while idle right after a message, is not the turn's message.
   const n5 = setup({ cols: 80, rows: 30 })
   n5.app.setAnsweredAtOnce([], ['usage'])
   n5.key('first\r'); const idFirst = n5.sentIds.at(-1); n5.key('usage\r'); n5.app.turnStarted(); n5.clock.advance(20)
-  n5.key('\x1b'); n5.clock.advance(60)
+  n5.key('\x1b'); n5.clock.advance(ESCAPE_MS + 10)
   n5.app.withdrawn([idFirst], [], true); n5.app.turnEnded(); n5.clock.advance(20)
   check('stop here: a word answered at once does not take the turn\'s place; nothing ran, no mark', marks(n5) === 0 && n5.app.editor.text === 'first', `marks=${marks(n5)} ${JSON.stringify(n5.app.editor.text)}`)
 }
@@ -2254,13 +2254,13 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('/clear: the approval keeps its title, the request\'s first line', /⚠ I need permission: rm x/.test(title), title)
   a.key('1'); a.clock.advance(20)
   const answered = a.actions.at(-1)
-  a.key('\x1b'); a.clock.advance(60)
+  a.key('\x1b'); a.clock.advance(ESCAPE_MS + 10)
   check('/clear: an approval stays and its keys answer it; esc still stops the turn', answered === 'approval:allow:a' && a.app.editor.text === '' && a.cancels === 1, JSON.stringify({ answered, text: a.app.editor.text, cancels: a.cancels }))
   // (b) A message waiting: esc after /clear brings it back.
   const b = setup({ cols: 80, rows: 30 })
   b.app.turnStarted(); b.key('m2\r'); b.app.turnStarted(); b.clock.advance(20)
   b.app.clear(true); b.clock.advance(20)
-  b.key('\x1b'); b.clock.advance(60)
+  b.key('\x1b'); b.clock.advance(ESCAPE_MS + 10)
   check('/clear: what waits is still there; a stop after it brings it back', b.cancels === 1 && b.app.editor.text === 'm2', JSON.stringify({ cancels: b.cancels, text: b.app.editor.text }))
   // (c) An ↑ in flight: its answer after /clear still brings the message back.
   const c = setup({ cols: 80, rows: 30 })
@@ -2278,7 +2278,7 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   // (e) A stop of the running turn after /clear marks it.
   const e = setup({ cols: 80, rows: 30 })
   e.app.turnStarted(); e.app.clear(true); e.clock.advance(20)
-  e.key('\x1b'); e.clock.advance(60)
+  e.key('\x1b'); e.clock.advance(ESCAPE_MS + 10)
   e.app.withdrawn([], [], true); e.clock.advance(20)
   check('/clear: a stop after it marks the turn Interrupted', marks(e) === 1 && e.cancels === 1, `marks=${marks(e)} cancels=${e.cancels}`)
   // The running tool and a deep interview's strip stay with the turn.
@@ -2321,9 +2321,9 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('box drag: the text in the box is untouched', a.app.editor.text === 'hello world 안녕')
   // With a turn running, so that esc has something to stop: the first takes the selection away, the second stops.
   a.app.turnStarted(); a.clock.advance(20)
-  a.key('\x1b'); a.clock.advance(40)
+  a.key('\x1b'); a.clock.advance(ESCAPE_MS + 10)
   const firstEsc = a.cancels
-  a.key('\x1b'); a.clock.advance(40)
+  a.key('\x1b'); a.clock.advance(ESCAPE_MS + 10)
   check('box drag: esc takes the selection away first; the next esc stops the turn', firstEsc === 0 && a.cancels === 1 && invertedCount(a) === 0, `cancels ${firstEsc} then ${a.cancels}`)
   a.app.turnEnded(); a.clock.advance(20)
   a.key(SGR(0, w.col, w.row)); a.key(SGR(0, w.col, w.row, true)); a.clock.advance(20)
@@ -2402,9 +2402,9 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   g.app.offer('ts-g', [{ id: 'approval:allow:g', label: 'Allow', style: 'primary' }, { id: 'approval:deny:g', label: 'Deny', style: 'danger' }]); g.clock.advance(20)
   const hint = findLast(g, 'esc')
   g.key(SGR(0, hint.col, hint.row)); g.key(SGR(32, hint.col + 3, hint.row)); g.key(SGR(0, hint.col + 3, hint.row, true)); g.clock.advance(20)
-  g.key('\x1b'); g.clock.advance(40)
+  g.key('\x1b'); g.clock.advance(ESCAPE_MS + 10)
   const first = g.actions.length
-  g.key('\x1b'); g.clock.advance(40)
+  g.key('\x1b'); g.clock.advance(ESCAPE_MS + 10)
   check('selection: with a choice open, esc first takes the selection away, then answers no', g.copied.at(-1) === 'esc' && first === 0 && g.actions.at(-1) === 'approval:deny:g', JSON.stringify({ copied: g.copied, first, actions: g.actions }))
   // (h) A resize moves what is under a screen selection: it goes.
   const h = setup()
@@ -2470,6 +2470,136 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   tc.app.editor.set('changed text')
   tc.key(SGR(0, hello.col + 5, hello.row, true))
   check('box selection: a drag ended after the text changed, before any frame, copies nothing', tc.copied.length === 0, JSON.stringify(tc.copied))
+}
+
+// 80. Input: a character typed a code point at a time is one character; a split arrow is an arrow; a paste is cut
+// on a character, loses one final newline, and is a chip when long on one line; words by alt and ctrl; ctrl+z
+// suspends; Enter on a command whose argument is optional runs it.
+{
+  // (a) A ZWJ family typed as separate keys, as a terminal sends it when the code points land in separate reads.
+  const t = setup()
+  for (const k of ['a', 'b', '👨', '‍', '👩', '‍', '👧']) t.key(k)
+  t.clock.advance(20)
+  const family = t.app.editor.layout(60).cursor
+  check('typed: a ZWJ family typed a code point at a time is one character, the cursor after it', t.app.editor.text === 'ab👨‍👩‍👧' && t.app.editor.cursor === 3 && family.x === 4, `${t.app.editor.cursor} at ${family.x}`)
+  t.key('\x1b[D'); t.key('x')
+  check('typed: ← steps over the whole family', t.app.editor.text === 'abx👨‍👩‍👧', JSON.stringify(t.app.editor.text))
+  t.key('\x1b[C'); t.key('\x7f')
+  check('typed: one backspace removes the whole family', t.app.editor.text === 'abx', JSON.stringify(t.app.editor.text))
+  // The same family in one read: the parser's keys are one per code point there too.
+  t.key('👨‍👩‍👧'); t.key('\x7f')
+  check('typed: the family in one read is one character as well', t.app.editor.text === 'abx', JSON.stringify(t.app.editor.text))
+  const one = (keys, name) => {
+    const u = setup()
+    for (const k of keys) u.key(k)
+    const ok = u.app.editor.text === keys.join('') && u.app.editor.cursor === 1
+    u.key('\x7f')
+    check(`typed: ${name} typed a code point at a time is one character, one backspace`, ok && u.app.editor.text === '', `${JSON.stringify(u.app.editor.text)} cursor ${u.app.editor.cursor}`)
+  }
+  one(['🇰', '🇷'], 'a flag')
+  one(['👍', '🏽'], 'a skin tone')
+  one(['❤', '️'], 'a heart with VS16')
+  one(['1', '️', '⃣'], 'a keycap')
+  one(['e', '́'], 'e and a combining acute')
+  // Control: two flags typed a code point at a time pair up as two, not as one run of four.
+  const f = setup()
+  for (const k of ['🇰', '🇷', '🇯', '🇵']) f.key(k)
+  check('typed: two flags typed a code point at a time are two characters', f.app.editor.cursor === 2, String(f.app.editor.cursor))
+}
+{
+  // (b) A split arrow: the rest of its sequence arrives after the lone ESC's old 30 ms wait. It is an arrow, not
+  // an Esc that stops the turn and "[D" typed.
+  const t = setup()
+  t.key('ab'); t.app.turnStarted(); t.clock.advance(20)
+  t.key('\x1b'); t.clock.advance(60); t.key('[D'); t.clock.advance(20)
+  check('escape: an arrow split 60 ms apart is the arrow: no stop, nothing typed', t.cancels === 0 && t.app.editor.text === 'ab' && t.app.editor.cursor === 1, `${t.cancels} cancels, ${JSON.stringify(t.app.editor.text)} at ${t.app.editor.cursor}`)
+  // A lone Esc is still Esc, after the wait.
+  t.key('\x1b'); t.clock.advance(150)
+  check('escape: a lone Esc still stops the turn after the wait', t.cancels === 1, String(t.cancels))
+  // Later than the wait: the Esc has gone, but the rest of a sequence right behind it is that key, never typed.
+  t.app.turnStarted(); t.clock.advance(20)
+  t.key('\x1b'); t.clock.advance(110); t.key('[C'); t.clock.advance(20)
+  check('escape: a sequence\'s rest right after the wait is its key, not typed text', t.app.editor.text === 'ab' && t.app.editor.cursor === 2, `${JSON.stringify(t.app.editor.text)} at ${t.app.editor.cursor}`)
+  // Control: "[C" typed well after an Esc is text.
+  t.key('\x1b'); t.clock.advance(150); t.clock.advance(500); t.key('[C')
+  check('escape: "[C" typed well after an Esc is text', t.app.editor.text === 'ab[C', JSON.stringify(t.app.editor.text))
+}
+{
+  // (c) The paste cap cuts between characters: never inside a surrogate pair or a skin-toned emoji.
+  const t = setup()
+  t.key('\x1b[200~' + 'a' + '👍🏽'.repeat(60_000) + '\x1b[201~'); t.key('\r'); t.clock.advance(20)
+  const sent = t.sent.at(-1) ?? ''
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(sent)
+  check('paste: the cap cuts on a character, not inside one', sent.length <= 200_000 && sent.length > 199_990 && !lone && sent.endsWith('👍🏽'), `${sent.length} units, ends ${JSON.stringify(sent.slice(-3))}`)
+  // (d) One final newline of a paste is the end of its last line, not another line in the box.
+  const n = setup()
+  n.key('\x1b[200~one\ntwo\n\x1b[201~'); n.clock.advance(20)
+  check('paste: one final newline is dropped from the box', n.app.editor.text === 'one\ntwo', JSON.stringify(n.app.editor.text))
+  n.key('\r'); n.clock.advance(20)
+  check('paste: and from what is sent', n.sent.at(-1) === 'one\ntwo', JSON.stringify(n.sent.at(-1)))
+  n.key('\x1b[200~kept\n\n\x1b[201~'); n.clock.advance(20)
+  check('paste: only one: a blank line before it stays', n.app.editor.text === 'kept\n', JSON.stringify(n.app.editor.text))
+  // (e) A long paste on one line is a chip, as a paste of many lines is.
+  const s = setup()
+  s.key('\x1b[200~' + 'x'.repeat(150_000) + '\x1b[201~'); s.clock.advance(20)
+  check('paste: 150,000 characters on one line are a chip', s.app.editor.text === '[paste #1 150,000 chars]', JSON.stringify(s.app.editor.text.slice(0, 40)))
+  s.key('\r'); s.clock.advance(20)
+  check('paste: sent, the chip is the text it stands for', s.sent.at(-1) === 'x'.repeat(150_000), String(s.sent.at(-1)?.length))
+  s.key('\x1b[200~' + 'y'.repeat(1000) + '\x1b[201~'); s.clock.advance(20)
+  check('paste: a thousand characters are the text itself', s.app.editor.text === 'y'.repeat(1000), String(s.app.editor.text.length))
+}
+{
+  // (f) Words: alt+b / alt+f, alt+← / alt+→ and ctrl+← / ctrl+→ move by word; alt+backspace and ctrl+w delete one.
+  const t = setup()
+  t.key('one two three')
+  const at = []
+  for (const k of ['\x1bb', '\x1b[1;5D', '\x1b[1;3D', '\x1bf', '\x1b[1;5C', '\x1b[1;3C']) { t.key(k); at.push(t.app.editor.cursor) }
+  check('words: alt+b, ctrl+←, alt+← back a word each; alt+f, ctrl+→, alt+→ forward', t.app.editor.text === 'one two three' && at.join() === '8,4,0,3,7,13', `${JSON.stringify(t.app.editor.text)} ${at.join()}`)
+  // rxvt's alt+arrows: ESC before the arrow's own sequence.
+  t.key('\x1b\x1b[D'); const rxvtLeft = t.app.editor.cursor
+  t.key('\x1b\x1bOC')
+  check('words: ESC before an arrow\'s sequence (rxvt) is alt and the arrow, nothing typed', t.app.editor.text === 'one two three' && rxvtLeft === 8 && t.app.editor.cursor === 13, `${JSON.stringify(t.app.editor.text)} ${rxvtLeft} ${t.app.editor.cursor}`)
+  t.key('\x1b\x7f')
+  check('words: alt+backspace deletes the word before the cursor', t.app.editor.text === 'one two ', JSON.stringify(t.app.editor.text))
+  t.key('\x17')
+  check('words: ctrl+w too', t.app.editor.text === 'one ', JSON.stringify(t.app.editor.text))
+  // A chip is one word: over it whole.
+  t.app.editor.set('')
+  t.key('a '); t.key(`\x1b[200~${Array.from({ length: 12 }, (_, i) => `l${i}`).join('\n')}\x1b[201~`); t.key(' b')
+  const end = t.app.editor.cursor
+  t.key('\x1bb'); const afterB = t.app.editor.cursor
+  t.key('\x1bb'); const beforeChip = t.app.editor.cursor
+  t.key('\x1bf')
+  check('words: a chip is stepped over whole', afterB === end - 1 && beforeChip === 2 && t.app.editor.cursor === end - 2, `${afterB} ${beforeChip} ${t.app.editor.cursor} of ${end}`)
+}
+{
+  // (g) ctrl+z gives the terminal back and stops; on continuing, the screen is drawn again whole.
+  let resume = null
+  const t = setup({ extra: { suspend: (resumed) => { resume = resumed } } })
+  t.key('draft'); t.clock.advance(20)
+  t.key('\x1a')
+  check('suspend: ctrl+z puts the terminal back before stopping', resume !== null && t.term.raw === false && t.term.out.at(-1)?.includes(RESTORE) === true && !t.term.screen.state.altScreen)
+  const before = t.term.out.length
+  resume?.()
+  check('suspend: on continuing, fullscreen again and the whole screen drawn, the draft kept', t.term.raw === true && t.term.screen.state.altScreen && t.term.out.slice(before).join('').includes('\x1b[2J') && t.term.screen.text().includes('draft') && t.app.editor.text === 'draft')
+  t.key('!')
+  check('suspend: and the keys come in again', t.app.editor.text === 'draft!', JSON.stringify(t.app.editor.text))
+  // Where there is no job control (no suspend given), ctrl+z does nothing.
+  const w = setup()
+  w.key('x'); w.key('\x1a')
+  check('suspend: without job control ctrl+z does nothing', w.term.raw === true && w.app.editor.text === 'x')
+}
+{
+  // (h) Enter on a command in the list runs it when its argument is optional; a required one is put in to be finished.
+  const intercepted = []
+  const t = setup({ extra: { commands: commandInfo(), intercept: (text) => { intercepted.push(text); return true } } })
+  t.key('/mod'); t.key('\r')
+  t.key('/ten'); t.key('\r')
+  check('complete: enter on /model and /tenant runs them', JSON.stringify(intercepted) === '["/model","/tenant"]', JSON.stringify(intercepted))
+  t.key('/res'); t.key('\r')
+  check('complete: enter on /resume, which needs its argument, puts it in to be finished', t.app.editor.text === '/resume ' && intercepted.length === 2, JSON.stringify(t.app.editor.text))
+  t.app.editor.set(''); t.key('/mod'); t.key('\t')
+  check('complete: tab on /model puts it in with a space for its argument', t.app.editor.text === '/model ', JSON.stringify(t.app.editor.text))
 }
 
 const failed = results.filter((r) => !r.ok)

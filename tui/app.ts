@@ -111,6 +111,11 @@ export interface AppOptions {
   stepEffort?: () => void
   /** The git branch of a directory, for the footer; null when it is not a repository's work tree. */
   branchOf?: (dir: string) => string | null
+  /**
+   * ctrl+z, with the terminal already given back: stop the process, and call `resumed` when it continues.
+   * Absent where there is no job control (Windows); ctrl+z then does nothing.
+   */
+  suspend?: (resumed: () => void) => void
 }
 
 const EDITOR_MAX_ROWS = 6
@@ -118,9 +123,15 @@ const EDITOR_MAX_ROWS = 6
 const PLAIN_BOTTOM_ROWS = 6
 /** A paste of more lines than this is a chip in the box until it is sent. */
 const PASTE_CHIP_LINES = 10
+/**
+ * So is one of more characters than this, on however few lines: a thousand fill more than twelve rows of an
+ * 80-column box, past the ten lines above and the six rows the box shows, and one long line was a box of thousands.
+ */
+const PASTE_CHIP_CHARS = 1000
 const TOAST_MS = 1500
 /** A paste larger than this is cut: the core keeps a few thousand characters of a message anyway. */
 const MAX_PASTE_CHARS = 200_000
+const characters = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 const PANEL_MAX_ROWS = 6
 const COMPLETION_MAX_ROWS = 6
 const PICKER_MAX_ROWS = 8
@@ -872,9 +883,12 @@ export class App {
     }
     if (event.type === 'paste') {
       this.clearSelection()
-      // A terminal may send a pasted line break as CR: one kind of break, before anything is counted or kept.
       const cut = event.text.length > MAX_PASTE_CHARS
-      const text = (cut ? event.text.slice(0, MAX_PASTE_CHARS) : event.text).replace(/\r\n?/g, '\n')
+      // Cut where a character ends: never between a surrogate pair's halves, nor inside an emoji's code points.
+      const kept = cut ? event.text.slice(0, characters.segment(event.text).containing(MAX_PASTE_CHARS)!.index) : event.text
+      // A terminal may send a pasted line break as CR: one kind of break, before anything is counted or kept.
+      // A final newline ends the last line: it is not another line in the box, nor in what is sent.
+      const text = kept.replace(/\r\n?/g, '\n').replace(/\n$/, '')
       if (cut) this.showToast(t().pasteCut(MAX_PASTE_CHARS.toLocaleString('en-US')))
       // Over a list with nothing typed, a paste is typed into its filter, as keys are.
       if (this.picker !== null && this.question === null && this.editor.text === '') { this.picker.type(text.replace(/\s+/g, ' ')); this.terminal.requestRender(true); return }
@@ -883,10 +897,10 @@ export class App {
       // Pasted into an open question, as typed into it: the person's own words.
       if (this.question !== null && !this.question.typing) { this.question.cursor = this.question.rows().length - 1; this.question.typing = true }
       // A long paste is a chip in the box, as pi shows it, and the text again when it is sent.
-      // A final newline ends the last line; it is not another.
-      const lines = text.replace(/\n$/, '').split('\n').length
-      if (lines > PASTE_CHIP_LINES) {
-        const chip = t().pasteChip(++this.pasteCount, lines)
+      const lines = text.split('\n').length
+      const chars = text.length > PASTE_CHIP_CHARS ? graphemes(text).length : 0
+      if (lines > PASTE_CHIP_LINES || chars > PASTE_CHIP_CHARS) {
+        const chip = lines > PASTE_CHIP_LINES ? t().pasteChip(++this.pasteCount, lines) : t().pasteChipChars(++this.pasteCount, chars.toLocaleString('en-US'))
         this.pastes.set(chip, text)
         this.editor.insert(chip)
       } else this.editor.insert(text)
@@ -938,6 +952,7 @@ export class App {
         case 'u': this.editor.killLine(); break
         case 'k': this.editor.killToEnd(); break
         case 'w': this.editor.killWord(); break
+        case 'z': this.suspend(); return
         case 'l': this.terminal.invalidate(); break
         case 'j': this.editor.insert('\n'); break
         case 'o': this.transcript.refold(this.o.io.columns(), () => { this.detail.expanded = !this.detail.expanded; this.foldGeneration++ }); break
@@ -977,8 +992,9 @@ export class App {
         break
       case 'backspace': if (key.alt || key.ctrl) this.editor.killWord(); else this.editor.backspace(); break
       case 'delete': this.editor.del(); break
-      case 'left': this.editor.left(); break
-      case 'right': this.editor.right(); break
+      // With alt or ctrl, a word: alt+← and alt+→ as macOS goes, ctrl+← and ctrl+→ as Linux and Windows do.
+      case 'left': if (key.alt || key.ctrl) this.editor.wordLeft(); else this.editor.left(); break
+      case 'right': if (key.alt || key.ctrl) this.editor.wordRight(); else this.editor.right(); break
       // With ctrl, the transcript's top and bottom (the bottom follows again); without, the text's.
       case 'home': if (key.ctrl) this.pane.toTop(); else this.editor.home(); break
       case 'end': if (key.ctrl) this.pane.toBottom(); else this.editor.end(); break
@@ -1001,7 +1017,12 @@ export class App {
         if (key.shift) { this.o.stepEffort?.(); break }
         if (this.rows().length > 0) this.focus = 'panel'
         break
-      case 'char': this.editor.insert(key.ch ?? ''); break
+      // alt+b and alt+f, readline's word keys (what macOS's Terminal sends for option+← and option+→).
+      case 'char':
+        if (key.alt && key.ch === 'b') this.editor.wordLeft()
+        else if (key.alt && key.ch === 'f') this.editor.wordRight()
+        else this.editor.insert(key.ch ?? '')
+        break
       default: return
     }
     this.refreshCompletion()
@@ -1245,6 +1266,17 @@ export class App {
     if (option === undefined) return
     this.choice = null
     this.o.backend.action(option.id)
+  }
+
+  /** ctrl+z: the terminal given back and the process stopped; when it continues, fullscreen again, drawn whole. */
+  private suspend(): void {
+    const suspend = this.o.suspend
+    if (suspend === undefined) return
+    this.terminal.restore()
+    suspend(() => {
+      this.terminal.invalidate()
+      this.terminal.start()
+    })
   }
 
   private ctrlC(): void {

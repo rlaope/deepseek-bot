@@ -131,6 +131,11 @@ export class InputParser {
     return this.buffer.length > 0 && this.pasting === null
   }
 
+  /** Whether what waits is an ESC alone, which `flush()` makes the escape key. */
+  get lone(): boolean {
+    return this.buffer === '\x1b' && this.pasting === null
+  }
+
   private one(events: InputEvent[]): number {
     const b = this.buffer
     const c = b[0]
@@ -188,6 +193,17 @@ export class InputParser {
         if (background !== null) events.push({ type: 'background', background })
         return end + (end === bel ? 1 : 2)
       }
+    }
+    // ESC before a key's own sequence, as rxvt sends alt+arrows (ESC ESC [ D): that key, with alt.
+    if (b[1] === '\x1b' && (b[2] === '[' || b[2] === 'O')) {
+      const inner: InputEvent[] = []
+      this.buffer = b.slice(1)
+      const n = this.one(inner)
+      this.buffer = b
+      if (n === 0) return 0
+      for (const e of inner) if (e.type === 'key' || e.type === 'mouse') e.alt = true
+      events.push(...inner)
+      return 1 + n
     }
     if (b[1] === 'O') {
       if (b.length < 3) return 0

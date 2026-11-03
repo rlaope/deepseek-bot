@@ -46,10 +46,22 @@ export class Editor {
 
   insert(text: string): void {
     this.outOfAtom()
-    const add = graphemes(text.replace(/\r\n?/g, '\n'))
+    const added = text.replace(/\r\n?/g, '\n')
+    if (added === '') return
+    // Segmented with the character on either side: a terminal sends a character made of several code points (a
+    // ZWJ family, a flag, a skin tone, e and a combining accent) as one key per code point, and each must join the
+    // one before it. A boundary depends on what precedes it, so nothing before these changes; after them, only a
+    // run of flags with a lone indicator typed into it would pair up otherwise.
+    const start = Math.max(0, this.pos - 1)
+    const end = Math.min(this.chars.length, this.pos + 1)
+    const before = this.chars.slice(start, this.pos).join('')
+    const add = graphemes(before + added + this.chars.slice(this.pos, end).join(''))
+    // The cursor goes after the character that holds the last thing typed.
+    let length = 0, after = 0
+    while (after < add.length && length < before.length + added.length) length += add[after++].length
     // Not splice(...add): spreading a large paste into a call overflows the stack.
-    this.chars = this.chars.slice(0, this.pos).concat(add, this.chars.slice(this.pos))
-    this.pos += add.length
+    this.chars = this.chars.slice(0, start).concat(add, this.chars.slice(end))
+    this.pos = start + after
     this.browsing = -1
   }
 
@@ -103,6 +115,24 @@ export class Editor {
   right(): void {
     const atom = this.atomWhere((start, end) => start <= this.pos && this.pos < end)
     this.pos = atom !== null ? atom.end : Math.min(this.chars.length, this.pos + 1)
+  }
+
+  /** Back to the start of a word (alt+b, alt+←, ctrl+←): words as ctrl+w takes them, a chip one of them. */
+  wordLeft(): void {
+    while (this.pos > 0 && /\s/.test(this.chars[this.pos - 1])) this.pos--
+    const atom = this.atomWhere((_, end) => end === this.pos)
+    if (atom !== null) { this.pos = atom.start; return }
+    while (this.pos > 0 && !/\s/.test(this.chars[this.pos - 1])) this.pos--
+    this.outOfAtom(true)
+  }
+
+  /** On to the end of a word (alt+f, alt+→, ctrl+→). */
+  wordRight(): void {
+    while (this.pos < this.chars.length && /\s/.test(this.chars[this.pos])) this.pos++
+    const atom = this.atomWhere((start) => start === this.pos)
+    if (atom !== null) { this.pos = atom.end; return }
+    while (this.pos < this.chars.length && !/\s/.test(this.chars[this.pos])) this.pos++
+    this.outOfAtom()
   }
 
   /** The first atom in the text, by grapheme positions, whose span passes `test`. */
