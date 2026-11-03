@@ -724,6 +724,31 @@ function message(overrides = {}) {
   rmSync(home, { recursive: true, force: true })
 }
 
+// 18. The bot's own messages: left out with a pointer (the session has them, as its answers), given to a new session
+// (no pointer), which has none, marked as its own: a channel whose last word is the bot's alert. And a full page says
+// that older messages are not shown, and a cut for length drops the oldest and keeps the pointer at the question.
+{
+  const store = [
+    { id: '3000', channel_id: 'C8', content: 'WATCH-ALERT disk usage changed 91%', author: { id: '9', username: 'testbot', bot: true } },
+    { id: '3001', channel_id: 'C8', content: 'PEOPLE-ONE was it the logs?', author: { id: '6', username: 'bob' } },
+  ]
+  const many = Array.from({ length: 150 }, (_, i) => ({ id: String(4001 + i), channel_id: 'C9', content: `line ${4001 + i} ${'x'.repeat(40)}`, author: { id: '5', username: 'alice' } }))
+  const api = fakeDiscord({ store: [...store, ...many] })
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')))
+  await t.identity()
+  const fresh = await t.fetchHistory({ channel: 'C8', threadTs: null }, { currentTs: '3002', sinceTs: null, limit: 20, maxChars: 4000 })
+  check('own: a new session is given the bot\'s own message, as its own', /you \(earlier\): WATCH-ALERT/.test(fresh.text) && /Lines from "you \(earlier\)" are your own earlier messages/.test(fresh.text) && /bob: PEOPLE-ONE/.test(fresh.text), JSON.stringify(fresh.text))
+  const delta = await t.fetchHistory({ channel: 'C8', threadTs: null }, { currentTs: '3002', sinceTs: '2999', limit: 20, maxChars: 4000 })
+  check('own: with a pointer it is left out, and nothing says it is there', !/WATCH-ALERT|you \(earlier\)/.test(delta.text) && /bob: PEOPLE-ONE/.test(delta.text), JSON.stringify(delta.text))
+  const full = await t.fetchHistory({ channel: 'C9', threadTs: null }, { currentTs: '4151', sinceTs: '4000', limit: 20, maxChars: 100000 })
+  check('gap: a full page says older messages are not shown', /\]\n\(earlier messages not shown\)\nalice: line 4131/.test(full.text), JSON.stringify(full.text.slice(0, 120)))
+  const whole = await t.fetchHistory({ channel: 'C9', threadTs: null }, { currentTs: '4151', sinceTs: '4140', limit: 20, maxChars: 100000 })
+  check('gap: (control) one that is not full says nothing of the kind', !/not shown/.test(whole.text) && /line 4141/.test(whole.text), JSON.stringify(whole.text.slice(0, 120)))
+  const cut = await t.fetchHistory({ channel: 'C9', threadTs: null }, { currentTs: '4151', sinceTs: '4140', limit: 20, maxChars: 200 })
+  const shown = [...cut.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
+  check('cut: what is left out for length is the oldest, said so, and the pointer passes the question', shown.length > 0 && shown.length < 10 && shown.at(-1) === 4150 && /\(earlier messages not shown\)/.test(cut.text) && cut.lastTs === '4151', `${JSON.stringify(shown)} ${cut.lastTs}`)
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)
