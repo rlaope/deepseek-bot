@@ -1490,7 +1490,15 @@ export function apply(ctx, config) {
     if (placeholderTs === null || typeof part.remove !== 'function') {
       return (await transport.post(target, text, { replace: placeholderTs, ...marked })) !== null
     }
-    const sent = await transport.post(target, text, marked)
+    let sent: unknown
+    try {
+      sent = await transport.post(target, text, marked)
+    } catch (e) {
+      // A part after the first may be out already, so the caller's report goes as a new message, and the working
+      // message is removed here: left, it said "작업 중" for good once the turn was over.
+      await part.remove(target, placeholderTs).catch(() => false)
+      throw e
+    }
     // A reply that did not go out must not take the working message with it: edit instead.
     if (sent === null) return (await transport.post(target, text, { replace: placeholderTs, ...marked })) !== null
     // The answer is out by now, so a throw here must not reach the caller's "Execution failed".
