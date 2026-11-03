@@ -23,7 +23,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, basename, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apply, credentialFiles } from '../dist/index.js'
+import { apply, classifyAnswer, credentialFiles } from '../dist/index.js'
 import { recallIndexPath } from '../dist/recallContext.js'
 import { createFakeTransport, type FakeTransportOptions } from './fake-transport.ts'
 import { createDiscordTransport } from '../dist/transports/discord.js'
@@ -45,8 +45,9 @@ interface BootOptions {
   home?: string | null
   /** `job`: the agent's first turn starts a background job with that label, still running when the turn ends. `woken`:
    * what the agent answers when the job's notice wakes it, a turn of `wakeMs`. `turnMs`: each turn takes that long
-   * after its message, and a cancel meanwhile ends it cancelled. `wokenJob`: the woken turn starts another job. */
-  answer?: { text?: string; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number; turnMs?: number; wokenJob?: string } | null
+   * after its message, and a cancel meanwhile ends it cancelled. `wokenJob`: the woken turn starts another job.
+   * `text` as a list: the n-th turn answers its n-th entry, the last one after that. */
+  answer?: { text?: string | string[]; files?: Record<string, string>; stampedMsEarlier?: number; failFirst?: boolean; delayMs?: number; job?: string; woken?: string; wakeMs?: number; turnMs?: number; wokenJob?: string } | null
   /** The harness's model-call service (`llm`), when a test gives one: its `stream`. */
   llm?: { stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | null
   /** Sessions whose log is gone: resuming one fails as the harness fails it. */
@@ -108,6 +109,8 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
           let busy: Promise<void> | null = null
           let cancelled: unknown = null
           let jobbed = false
+          // The answer of the turn just handed its message (followups holds it by then).
+          const textNow = () => Array.isArray(answer?.text) ? (answer.text[Math.min(followups.length, answer.text.length) - 1] ?? '') : (answer?.text ?? '')
           const self = {
               session: { header: { id: options?.sessionId ?? 's1' }, get seq() { return events.length }, eventAt: (i) => events[i] },
               get status() { return woken === null && busy === null ? 'idle' : 'running' },
@@ -135,7 +138,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
                     busy = null
                     events.push({ type: 'turn/start' })
                     if (cancelled !== null) { events.push({ type: 'turn/end', data: { reason: { kind: 'cancelled' } } }); return }
-                    events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer?.text ?? '' }] } } }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+                    events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: textNow() }] } } }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
                   })
                   return
                 }
@@ -150,7 +153,7 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
                   }
                 }
                 events.push({ type: 'turn/start' })
-                events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: answer?.text ?? '' }] } } })
+                events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: textNow() }] } } })
                 events.push({ type: 'turn/end', data: { reason: { kind: 'completed' } } })
               },
               // failFirst: the first turn dies after its prompt was sent — the second wait throws.
@@ -259,7 +262,9 @@ function boot({ state = {}, config = {}, agent = 'throw', home = null, answer = 
   /** Fire an approval request the way the harness would, and get the outcome back. */
   const askApproval = (sessionId = 'slack-abc', reason = 'escalate sandbox to danger-full-access') =>
     listeners['approval/request'][0]({ agent: { session: { header: { id: sessionId } } }, reason })
-  return { transport, logs, stateDir, read, askApproval, gate, created, permissionSets, attached, followups, followedBy, resumed, disposed, jobRows, settleJob, requestListeners, hooks, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  /** An event the harness sends its listeners (agent/assistant-stream, for one). */
+  const emit = (name: string, payload: unknown) => { for (const handler of listeners[name] ?? []) handler(payload) }
+  return { transport, logs, stateDir, read, askApproval, gate, emit, created, permissionSets, attached, followups, followedBy, resumed, disposed, jobRows, settleJob, requestListeners, hooks, unload: () => { for (const c of cleanups.splice(0)) c() }, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
 /** The text of a user message the core handed to the agent. */
 const textOf = (message) => (message?.content ?? []).map((block) => block?.text ?? '').join('')
@@ -761,6 +766,148 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   const m = await reacting('[quiet]')
   check('react: control — "[quiet]" still mutes, no reaction', put(m).length === 0 && m.read().muted?.['C_ALLOWED:t1'] !== undefined, JSON.stringify(put(m)))
   m.done()
+}
+
+// 3e2. What an answer is, read once: "[quiet]" (with or without a reaction line before it) mutes; a reaction alone
+// is put; a turn it was not named in that says nothing, or names only an emoji it cannot put, says nothing; anything
+// else is text. A lost session's notice goes before text, alone beside a reaction where it was named, and nowhere else.
+{
+  const ALL = ['👍', '👎', '✅', '❌', '👀', '🙏', '🔥', '🎉', '😂', '❤️', '🤔', '🫡']
+  const key = 'C_ALLOWED:t1'
+  const NOTICE = '이 대화의 이전 기록을 찾을 수 없어서 새로 시작했어. 앞에서 한 얘기가 필요하면 다시 알려줘.'
+  // The reading itself, as a table: [answer, named, kind, text, reaction].
+  const table: Array<[string, boolean, string, string, string | null]> = [
+    ['[quiet]', true, 'quiet', '', null],
+    ['[quiet]', false, 'quiet', '', null],
+    ['[react:👍]\n[quiet]', true, 'quiet', '', null],
+    ['[react:👍]\n[quiet]', false, 'quiet', '', null],
+    ['[react:👍]\nNO_REPLY', false, 'react', '', '👍'],
+    ['[react:👍]\n[no reply]', false, 'react', '', '👍'],
+    ['[react:👍]\nNO_REPLY', true, 'text', 'NO_REPLY', '👍'],
+    ['[react:💯]', false, 'silent', '', null],
+    ['[react:💯]\nNO_REPLY', false, 'silent', '', null],
+    ['[react:💯]', true, 'text', '💯', null],
+    ['[react:👍]', true, 'react', '', '👍'],
+    ['[react:👍]', false, 'react', '', '👍'],
+    ['[no reply]', false, 'silent', '', null],
+    ['', false, 'silent', '', null],
+    ['[no reply]', true, 'text', '[no reply]', null],
+    ['[react:👍]\n봤어', true, 'text', '봤어', '👍'],
+    ['[react:💯]\n봤어', false, 'text', '봤어', null],
+    ['[quiet] ok', true, 'text', '[quiet] ok', null],
+  ]
+  for (const [text, named, kind, shown, reaction] of table) {
+    const got = classifyAnswer(text, { quietTurn: !named, reactions: ALL })
+    check(`classifyAnswer: ${JSON.stringify(text)} ${named ? 'named' : 'not named'} is ${kind}${shown !== '' ? ` ${JSON.stringify(shown)}` : ''}${reaction !== null ? ` with ${reaction}` : ''}`,
+      got.kind === kind && got.text === shown && got.reaction === reaction, JSON.stringify(got))
+  }
+  // Where it cannot mute (the terminal), "[quiet]" is text; where it has no reactions, a reaction is its emoji.
+  check('classifyAnswer: "[quiet]" where it cannot mute is text', JSON.stringify(classifyAnswer('[quiet]', { quietTurn: false, reactions: null, canMute: false })) === JSON.stringify({ kind: 'text', text: '[quiet]', reaction: null }), JSON.stringify(classifyAnswer('[quiet]', { quietTurn: false, reactions: null, canMute: false })))
+  check('classifyAnswer: "[react:👍]" with no reactions here is the emoji', JSON.stringify(classifyAnswer('[react:👍]', { quietTurn: false, reactions: null })) === JSON.stringify({ kind: 'text', text: '👍', reaction: null, named: '👍' }), JSON.stringify(classifyAnswer('[react:👍]', { quietTurn: false, reactions: null })))
+  const answering = async (text: string, addressed: boolean, lost: boolean) => {
+    const t = boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-answer-')), gone: lost ? ['slack-gone'] : [], config: { replyMode: 'thread', fake: { marks: true, typing: true, remove: true, reactions: ALL } }, state: { sessions: { [key]: lost ? 'slack-gone' : 's1' }, touched: { [key]: Date.now() - 3600_000 } }, answer: { text } })
+    await sleep(80)
+    t.transport.deliver(t.transport.message({ ts: '3100.1', text: addressed ? '이거 봐줘' : '봇 덕분에 해결됐다', addressed }))
+    await sleep(400)
+    return t
+  }
+  // [answer, named, muted, reactions put, what is posted (lost session), what is posted (session kept)]
+  const rows: Array<[string, boolean, boolean, string[], string[], string[]]> = [
+    ['[quiet]', true, true, [], [], []],
+    ['[quiet]', false, true, [], [], []],
+    // Quiet wins over a reaction line before it: the salute is the mark, and "[quiet]" says nothing else.
+    ['[react:👍]\n[quiet]', true, true, [], [], []],
+    ['[react:👍]\nNO_REPLY', false, false, ['👍'], [], []],
+    // An emoji off the list, alone, in a thread nobody named it in: nothing, not a bare emoji.
+    ['[react:💯]', false, false, [], [], []],
+    ['[react:👍]', true, false, ['👍'], [NOTICE], []],
+    ['[react:👍]', false, false, ['👍'], [], []],
+    // Controls: text, and an emoji off the list where it was named, are posted as before.
+    ['봤어, 고칠게', true, false, [], [`${NOTICE}\n\n봤어, 고칠게`], ['봤어, 고칠게']],
+    ['[react:💯]', true, false, [], [`${NOTICE}\n\n💯`], ['💯']],
+    ['[react:👍]\n봤어', true, false, ['👍'], [`${NOTICE}\n\n봤어`], ['봤어']],
+  ]
+  for (const [text, addressed, muted, reacted, lostSaid, keptSaid] of rows) {
+    for (const lost of [false, true]) {
+      const t = await answering(text, addressed, lost)
+      const said = t.transport.posted.map((p) => p.text)
+      const put = t.transport.reacted.map((r) => r.emoji)
+      const expected = lost ? lostSaid : keptSaid
+      const name = `answer: ${JSON.stringify(text)} ${addressed ? 'named' : 'not named'}${lost ? ', session lost' : ''}`
+      check(`${name} → ${muted ? 'muted, ' : ''}${reacted.length > 0 ? `${reacted.join('')} put, ` : ''}${expected.length === 0 ? 'nothing posted' : `posts ${JSON.stringify(expected)}`}`,
+        (t.read().muted?.[key] !== undefined) === muted && JSON.stringify(put) === JSON.stringify(reacted) && JSON.stringify(said) === JSON.stringify(expected),
+        `${JSON.stringify(t.read().muted)} ${JSON.stringify(put)} ${JSON.stringify(said)}`)
+      t.done()
+    }
+  }
+}
+
+// 3e3. A mute set while messages wait: one that did not mention it, or one only the mode gives it, is checked again
+// when its turn would start, and does not run — no model call, no mark, no status.
+{
+  const key = 'C_ALLOWED:t1'
+  const queued = (texts: string[], config: Record<string, unknown> = {}) => boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-mutequeue-')), config: { replyMode: 'thread', progressAfterMs: 60_000, ...config, fake: { marks: true, typing: true, remove: true } }, state: { sessions: { [key]: 's1' }, touched: { [key]: Date.now() - 3600_000 } }, answer: { text: texts, turnMs: 250 } })
+  const kindsOf = (t: ReturnType<typeof boot>, ts: string) => t.transport.marks.filter((m) => m.ts === ts).map((m) => m.state.kind)
+  // A, named, asks it to stay out; B, not named, is accepted while A's turn runs; A answers "[quiet]".
+  const a = queued(['[quiet]', '나도 웃겨'])
+  await sleep(80)
+  a.transport.deliver(a.transport.message({ ts: '3200.1', text: '넌 빠져 있어' }))
+  await sleep(60)
+  a.transport.deliver(a.transport.message({ addressed: false, ts: '3200.2', text: 'ㅋㅋ 그래' }))
+  await sleep(900)
+  check('mute at start: a message without a mention that waited behind the "[quiet]" answer does not run',
+    a.read().muted?.[key] !== undefined && a.followups.length === 1 && a.transport.posted.length === 0 && kindsOf(a, '3200.2').length === 0,
+    `${JSON.stringify(a.read().muted)} ${a.followups.length} turn(s) ${JSON.stringify(a.transport.posted.map((p) => p.text))} ${JSON.stringify(kindsOf(a, '3200.2'))}`)
+  check('mute at start: and the in-flight record is cleared', a.read().inflight?.[key] === undefined, JSON.stringify(a.read().inflight))
+  a.done()
+  // Control: not muted, the same message runs after A's turn, and answers.
+  const c = queued(['알겠어', '나도 웃겨'])
+  await sleep(80)
+  c.transport.deliver(c.transport.message({ ts: '3200.1', text: '넌 빠져 있어' }))
+  await sleep(60)
+  c.transport.deliver(c.transport.message({ addressed: false, ts: '3200.2', text: 'ㅋㅋ 그래' }))
+  await sleep(900)
+  check('mute at start: (control) unmuted, the waiting message runs and answers', c.followups.length === 2 && c.transport.posted.some((p) => p.text === '나도 웃겨'), `${c.followups.length} turn(s) ${JSON.stringify(c.transport.posted.map((p) => p.text))}`)
+  c.done()
+  // replyMode 'all': a plain channel message the mode gives it, waiting, ends stopped, as a quiet word's withdrawal ends it.
+  const m = queued(['[quiet]', '점심은 김밥'], { replyMode: 'all' })
+  await sleep(80)
+  m.transport.deliver(m.transport.message({ ts: '3201.1', text: '넌 빠져 있어' }))
+  await sleep(60)
+  m.transport.deliver(m.transport.message({ ts: '3201.2', text: '점심 뭐 먹지', byMode: true }))
+  await sleep(900)
+  check('mute at start: under replyMode all, a message the mode gave it does not run once muted, its mark ends stopped, its status ends',
+    m.read().muted?.[key] !== undefined && m.followups.length === 1 && m.transport.posted.length === 0 && kindsOf(m, '3201.2').at(-1) === 'stopped' && m.transport.typing.every((entry) => entry.stopped),
+    `${m.followups.length} turn(s) ${JSON.stringify(m.transport.posted.map((p) => p.text))} ${JSON.stringify(kindsOf(m, '3201.2'))} ${JSON.stringify(m.transport.typing.map((entry) => entry.stopped))}`)
+  m.done()
+  // A mention that waited is named: it runs, as before.
+  const n = queued(['[quiet]', '응, 볼게'])
+  await sleep(80)
+  n.transport.deliver(n.transport.message({ ts: '3202.1', text: '넌 빠져 있어' }))
+  await sleep(60)
+  n.transport.deliver(n.transport.message({ ts: '3202.2', text: '이건 봐줘' }))
+  await sleep(900)
+  check('mute at start: (control) a waiting message that named it still runs', n.followups.length === 2 && n.transport.posted.some((p) => p.text === '응, 볼게'), `${n.followups.length} turn(s) ${JSON.stringify(n.transport.posted.map((p) => p.text))}`)
+  n.done()
+}
+
+// 3e4. A quiet word while Slack streams the running turn: what was streamed comes down with the turn, not at the
+// stream's idle end.
+{
+  const streaming = () => boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-quietstream-')), config: { fake: { marks: true, typing: true, remove: true, stream: true } }, state: { sessions: { 'C_ALLOWED:t1': 's1' } }, answer: { text: '긴 답의 끝', turnMs: 400 } })
+  const s = streaming()
+  await sleep(80)
+  s.transport.deliver(s.transport.message({ ts: '3300.1', text: '길게 설명해줘' }))
+  await sleep(120)
+  s.emit('agent/assistant-stream', { agent: { id: 's1' }, frame: { type: 'chunk', chunk: { type: 'text-delta', text: '긴 답의 처음' } } })
+  await sleep(20)
+  s.transport.deliver(s.transport.message({ ts: '3300.2', text: '조용히 해' }))
+  await sleep(700)
+  const kinds = s.transport.frames.map((f) => f.frame.kind)
+  check('quiet word mid-stream: (the turn streamed)', kinds[0] === 'text', JSON.stringify(kinds))
+  check('quiet word mid-stream: what was streamed is reset, nothing posted', kinds.at(-1) === 'reset' && s.transport.posted.length === 0 && s.read().muted?.['C_ALLOWED:t1'] !== undefined,
+    `${JSON.stringify(kinds)} ${JSON.stringify(s.transport.posted.map((p) => p.text))}`)
+  s.done()
 }
 
 // 3f. The marks setting: progress (the default), simple or off. Anything else is refused at start.
@@ -3078,6 +3225,17 @@ for (const remove of [false, true]) {
   check('jobs: past maxKeptAgents, the agent is disposed and the conversation told after its answer', c.disposed.length === 1 && c.disposed[0] === second && inT2.length === 2 && inT2[0].includes('끝나면 알려줄게') && /너무 많/.test(inT2[1]),
     JSON.stringify({ disposed: c.disposed, second, inT2 }))
   check('jobs: and the one within it stays kept', !c.disposed.includes(c.read().sessions[key]), JSON.stringify(c.disposed))
+  // Past the cap with an answer that is a reaction alone: the reaction is put, and the conversation is still told.
+  const cr = kept({ maxKeptAgents: 1, fake: { typing: true, reactions: ['👍'] } }, { text: '[react:👍]' })
+  await sleep(60)
+  cr.transport.deliver(cr.transport.message(at('t1', '1.1')))
+  await sleep(300)
+  cr.transport.deliver(cr.transport.message(at('t2', '2.1')))
+  await sleep(300)
+  const crT2 = cr.transport.posted.filter((p) => p.target.threadTs === 't2').map((p) => p.text)
+  check('jobs: past maxKeptAgents, a reaction-only answer is put and the conversation told', cr.transport.reacted.some((r) => r.ts === '2.1' && r.emoji === '👍') && crT2.length === 1 && /너무 많/.test(crT2[0]),
+    JSON.stringify({ reacted: cr.transport.reacted, crT2 }))
+  cr.done()
 
   // The identity says a background command outlives the answer only where it does.
   const identity = async (b: ReturnType<typeof boot>) => {

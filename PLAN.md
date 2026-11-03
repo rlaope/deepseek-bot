@@ -119,6 +119,15 @@ is built before the thing it stands on. The detailed history of each milestone i
     message goes (the turn is out of the running turns then);
   - a continuable subagent can be messaged only while its parent's turn runs; whether a kept parent changes
     that is not checked.
+- **Muting, what is still left** (found in the integration review of the answer markers, not fixed):
+  - The quiet word itself ("조용히 해", or "넌 빠져 있어" that the model answered `[quiet]`) is in the thread, so the
+    next turn's history replays it, and the model may read it as asked again and mute once more.
+  - Under `replyMode: all`, each top-level message starts its own thread: a mute said there covers only that
+    message's thread, and the next top-level message is heard.
+  - A mention that waited behind the turn that answered `[quiet]` runs (it named the bot), but does not unmute: the
+    unmute is checked only when a message arrives, and it arrived before the mute.
+  - The model's reaction and the marks compare emoji differently: `reactionIn` ignores VS16 and skin tones,
+    `transports/marks.ts` only VS16.
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim
   through its first messenger, so `dsh gateway setup` keeps one at a time. Serving two needs each
   conversation routed to the platform it came from, including the messages the bot sends first
@@ -149,8 +158,11 @@ Decided against:
 - The `marks` setting and the model's reactions, checked against the fake transport and mocked platform APIs only:
   not seen that Slack takes `+1`, `-1`, `heart`, `thinking_face` and the rest, that Discord takes ❤️ with its VS16
   and Telegram ❤ without, nor that a real model answers `[react:👍]` alone when a reaction says enough (no scenario).
-  While Slack streams a turn, a reaction-only answer shows `[react:👍]` as text until the stream is reset. A turn
-  whose session was lost and that answers with a reaction alone does not say the session was lost.
+  While Slack streams a turn, a reaction-only answer shows `[react:👍]` as text until the stream is reset. What an
+  answer is (`classifyAnswer`: mute, a reaction alone, nothing, text, with a lost session's notice and a stopped job's
+  beside a reaction alone), the mute checked again when a waiting turn starts, and a quiet word resetting Slack's
+  stream are checked against the fake transport only: not seen that Slack takes the preview down on that reset
+  mid-turn, nor that a real model writes `[react:👍]` before `[quiet]` or `NO_REPLY`.
 
 - History deltas (the bot's own messages left out with a pointer and given, as its own, to a new session; nothing
   newer than the message answered; the pointer past it; a gap past one page and a cut for length dropping the oldest,

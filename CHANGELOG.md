@@ -235,6 +235,30 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **An answer's markers were read one rewrite at a time, and a lost session or a mute broke them.** The reaction came
+  off the answer, then the lost-session notice went before whatever was left, and only then was it matched. So after a
+  session's log was gone, `[quiet]` was posted as "<notice>\n\n[quiet]" and nothing was muted; a reaction alone
+  dropped the notice; in a thread nobody named it in, `[react:👍]` then `NO_REPLY` put no 👍, and `[react:💯]` (an
+  emoji off the list) posted a bare 💯. The answer is now read once (`classifyAnswer`), in one order: `[quiet]`, alone
+  or after a reaction line (quiet wins, the reaction dropped and logged); a reaction alone; nothing, in a turn it was
+  not named in (its silence answer, or an emoji it cannot put); text. The notice goes only before text, and beside a
+  reaction alone as a message of its own where it was named; a stopped background job's notice is now told after a
+  reaction alone too. Precedence in `docs/how-it-works.md`.
+- **A message that waited behind a `[quiet]` answer still ran.** The mute was checked only when a message arrived:
+  under `replyMode: thread`, a message without a mention taken while the turn that answered `[quiet]` ran then had its
+  own turn in the muted thread, and could post. A turn for a message without a mention, or one only the mode gives it,
+  now checks the mute when it would start, and does not run (no model call, no status; the latter's mark ends
+  stopped). Checking at the start rather than withdrawing waiting messages in the `[quiet]` branch covers a mute however
+  it was set, with one rule.
+- **A quiet word left a streamed answer up.** Said while Slack streamed the running turn, it stopped the turn and took
+  down the working message, but the streamed preview stayed until the stream went idle. It is reset with the turn.
+- **A history rewrote what people wrote.** To show their brackets as parentheses, the whole text went through NFKC,
+  which also changed ㅋㅋㅋ and ㅇㅇ into other jamo, m² into m2, ① into 1 and ™ into TM. Now a character is changed
+  only when it, or its NFKC form, holds an opening or closing bracket other than round and curly (a wide ［ is still
+  `(`); everything else is kept as written. No line of a person's can begin with the marker, as before.
+
+  Each checked against the fake transport only (`test/core.test.ts` 3e2, 3e3, 3e4 and jobs, `test/history.test.ts`),
+  red before.
 - **A turn was handed what it had already been given, and what was not yet its own.** The history pointer stopped at
   the newest line before the message being answered, and the bot's own messages were not left out, so in a Slack
   thread (and a Discord channel) each turn was given the previous question and the bot's own answer again, quoted as

@@ -46,13 +46,18 @@ export function deltaLines(entries: ReadonlyArray<{ line: string; own: boolean }
  * What a person wrote, a name or words, as a history shows it: one line, its square brackets as parentheses. A name
  * was the label before, and a person named after the bot's label was read as the bot; matching names by text left
  * lookalike letters through. With no bracket in anything a person wrote, no line of theirs can be or begin with a
- * marker, whatever letters it is spelt in. Wide and other bracket forms are folded first (NFKC, then any opening or
- * closing punctuation but round and curly brackets); whitespace, line separators included, is one space.
+ * marker, whatever letters it is spelt in. Every other character is kept as written (NFKC over the whole text turned
+ * ㅋ into another jamo, m² into m2, ① into 1). A character is changed only when it, or its compatibility form (NFKC),
+ * holds an opening or closing bracket other than round and curly: that bracket is shown as a parenthesis, so a wide
+ * ［ is (, and 🄪 (〔S〕) is (S). Whitespace, line separators included, is one space.
  */
 export function quoted(text: string): string {
-  return String(text ?? '').normalize('NFKC')
-    .replace(/[\p{Ps}]/gu, (c) => (c === '(' || c === '{' ? c : '('))
-    .replace(/[\p{Pe}]/gu, (c) => (c === ')' || c === '}' ? c : ')'))
+  return String(text ?? '')
+    .replace(/[^\0-\x7f]|[[\]]/gu, (c) => {
+      const form = /[\p{Ps}\p{Pe}]/u.test(c) ? c : c.normalize('NFKC')
+      const shown = form.replace(/[\p{Ps}]/gu, (b) => (b === '(' || b === '{' ? b : '(')).replace(/[\p{Pe}]/gu, (b) => (b === ')' || b === '}' ? b : ')'))
+      return shown === form ? c : shown
+    })
     .replace(/\s+/g, ' ').trim()
 }
 
