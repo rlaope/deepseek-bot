@@ -243,7 +243,9 @@ the caveat about version numbers is at the bottom.
     now segmented with the character on either side, so it joins the one before it.
   - A message over the gateway's frame limit (`MAX_FRAME_BYTES`, 1 MB: three pastes at the cap can pass it) was sent; the
     gateway's reader dropped it, and the box was already empty. It is now refused before sending, by the bytes of the
-    frame as written, with a notice that says so (not "not connected"), and stays in the box.
+    frame as written, with a notice that says so (not "not connected"), and stays in the box. So does a message
+    to a subagent; an answer to a question is refused the same way, the question open again with its words in the
+    box.
   - A lone ESC waited 30 ms for the rest of a sequence, so an arrow split over a slow link stopped the turn and typed
     `[A`. It waits 100 ms (`ESCAPE_MS`, vim's ttimeoutlen in its defaults), and the rest of a sequence arriving within
     another 100 ms after an ESC taken as Esc is that key, not typed text.

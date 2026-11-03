@@ -179,7 +179,8 @@ Decided against:
   real local transport, a silent socket and, in tmux, a fake gateway. Not seen in Terminal.app, iTerm2, kitty or
   Windows Terminal: which code points each sends in separate reads, which sequences their alt+arrows and option keys
   send, and how a resumed job repaints in each. A lone indicator typed into a run of flags pairs up only with its
-  neighbours (the rest of the run is not segmented again).
+  neighbours (the rest of the run is not segmented again). An answer batch refused for its size reopens only its
+  last question; a long answer to an earlier one in the batch is kept, but cannot be shortened there.
 
 - The `marks` setting and the model's reactions, checked against the fake transport and mocked platform APIs only:
   not seen that Slack takes `+1`, `-1`, `heart`, `thinking_face` and the rest, that Discord takes ❤️ with its VS16

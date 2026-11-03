@@ -44,11 +44,12 @@ export interface Backend {
   action(id: string): void
   /** Look at a subagent or a job (or back at the conversation); the gateway keeps it fresh. */
   view?(kind: 'main' | 'agent' | 'job', id?: string, owner?: string): void
-  agentSend?(id: string, text: string): void
+  /** A message to a subagent; false when it was not sent, and it stays in the box. */
+  agentSend?(id: string, text: string): boolean | void
   agentInterrupt?(id: string): void
   jobKill?(id: string, owner: string): void
   /** The person's answers to a turn's questions, or null when they dismissed them. */
-  answer?(id: string, answers: QuestionAnswer[] | null): void
+  answer?(id: string, answers: QuestionAnswer[] | null): boolean | void
 }
 
 export type View =
@@ -706,8 +707,11 @@ export class App {
     p.pick()
   }
 
-  /** After each answer: record it, and send the batch when the last one is in. */
-  private answered(): void {
+  /**
+   * After each answer: record it, and send the batch when the last one is in. Refused (false: too large to send),
+   * the last question is open again with `raw`, the box's text it was answered with, back in the box.
+   */
+  private answered(raw?: string): void {
     const q = this.question
     if (q === null) return
     const item = q.items[q.answers.length - 1]
@@ -715,7 +719,11 @@ export class App {
     if (item !== undefined && answer !== undefined) this.notice(`? ${item.question} → ${q.describe(answer)}`, 'info')
     if (q.done) {
       this.question = null
-      this.o.backend.answer?.(q.id, q.answers)
+      if (this.o.backend.answer?.(q.id, q.answers) === false) {
+        q.undo()
+        this.question = q
+        if (raw !== undefined) { q.typing = true; this.editor.set(raw) }
+      }
       this.refreshCompletion()
     }
     this.terminal.requestRender(true)
@@ -1118,7 +1126,7 @@ export class App {
     if (q.typing) {
       // A backslash before Enter is a new line here too.
       if (key.name === 'enter' && !key.alt && !key.shift && this.editor.before === '\\') { this.editor.backspace(); this.editor.insert('\n'); this.terminal.requestRender(true); return true }
-      if (key.name === 'enter' && !key.alt && !key.shift) { q.submitCustom(this.unchipped(this.sentFromBox())); this.answered(); return true }
+      if (key.name === 'enter' && !key.alt && !key.shift) { const raw = this.sentFromBox(); q.submitCustom(this.unchipped(raw)); this.answered(raw); return true }
       if (key.name === 'escape') { q.typing = false; this.terminal.requestRender(true); return true }
       return false
     }
@@ -1217,8 +1225,8 @@ export class App {
     if (this.o.intercept?.(text.trim()) === true) { this.o.remember?.(text); return }
     if (this.view.kind === 'agent') {
       if (this.view.mode !== 'continuable') { this.showToast(t().oneShot); return }
+      if (this.o.backend.agentSend?.(this.view.id, text) === false) { this.editor.set(raw); return }
       this.o.remember?.(text)
-      this.o.backend.agentSend?.(this.view.id, text)
       this.showToast(t().sentTo(this.view.label))
       return
     }
