@@ -247,8 +247,8 @@ export interface Transport {
   /**
    * Messages newer than `sinceTs` and older than `currentTs`, so the adapter can send a delta instead of the
    * whole thread every turn. The bot's own are left out when there is a pointer (the session holds them, as its
-   * answers) and given, marked as its own, when there is none (a new session has none of them). Cut for length from
-   * the oldest, with a line saying earlier messages are not shown. Returns the pointer for the next turn:
+   * answers) and given, marked as its own, when there is none (a new session has none of them; Telegram: none, its ring
+   * holds only what people sent). Cut for length from the oldest, with a line saying earlier messages are not shown. Returns the pointer for the next turn:
    * `currentTs`, which the turn itself delivers.
    */
   fetchHistory(target: Target, options: { currentTs: string; sinceTs: string | null; limit: number; maxChars: number }): Promise<{ text: string; lastTs: string | null }>

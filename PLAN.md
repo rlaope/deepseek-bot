@@ -209,7 +209,7 @@ Decided against:
   against fake APIs only (`test/core.test.ts` 31d, through the real transports, and their own suites). Not seen live:
   that the new message notifies, that Discord lets the bot delete its own message in every channel kind without
   Manage Messages, and Telegram's refusal of a message over 48 hours old. A refused delete leaves the working message
-  as it was, as on Slack. A message DELETE goes through no rate-limit handling, as Discord's sends and edits do not.
+  as it was, as on Slack.
 
 - A read outside the workspace answered with a real button: live, only the refusal path ran (a scenario has no
   platform). Keychain items through securityd: reachable by commands, not closed (refusing the keychain service

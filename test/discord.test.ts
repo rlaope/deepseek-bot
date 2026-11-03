@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDiscordTransport } from '../dist/transports/discord.js'
-import { bootAround } from './core-around.ts'
+import { body, bootAround, bracketed, marked } from './core-around.ts'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -698,10 +698,7 @@ function message(overrides = {}) {
   const t = transportFor(api, home)
   const core = bootAround(t, home, {}, { answer: 'ANSWER-FROM-BOT next quarter' })
   await sleep(700)
-  const historyOf = (marker: string) => {
-    const turn = core.texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
-    return turn.split('[user message]').slice(0, -1).join('[user message]')
-  }
+  const { historyOf } = core
   const later = (content: string, author = { id: '6', username: 'bob' }) => {
     const id = String(store.reduce((max, m) => (BigInt(m.id) > max ? BigInt(m.id) : max), 0n) + 1n)
     const message = { id, channel_id: 'C6', guild_id: 'G1', content, author }
@@ -737,7 +734,7 @@ function message(overrides = {}) {
   const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')))
   await t.identity()
   const fresh = await t.fetchHistory({ channel: 'C8', threadTs: null }, { currentTs: '3002', sinceTs: null, limit: 20, maxChars: 4000 })
-  check('own: a new session is given the bot\'s own message, as its own', /\n\[your earlier message\] WATCH-ALERT/.test(fresh.text) && /Lines that begin with the marker "your earlier message" in square brackets are your own earlier messages/.test(fresh.text) && /bob: PEOPLE-ONE/.test(fresh.text), JSON.stringify(fresh.text))
+  check('own: a new session is given the bot\'s own message, as its own', /\n\[your earlier message\] WATCH-ALERT/.test(fresh.text) && /Lines that begin with the marker "your earlier message" in square brackets are your own earlier messages in this conversation, from before this session;/.test(fresh.text) && /bob: PEOPLE-ONE/.test(fresh.text), JSON.stringify(fresh.text))
   const delta = await t.fetchHistory({ channel: 'C8', threadTs: null }, { currentTs: '3002', sinceTs: '2999', limit: 20, maxChars: 4000 })
   check('own: with a pointer it is left out, and nothing says it is there', !/WATCH-ALERT|your earlier message|Lines that begin/.test(delta.text) && /bob: PEOPLE-ONE/.test(delta.text), JSON.stringify(delta.text))
   const full = await t.fetchHistory({ channel: 'C9', threadTs: null }, { currentTs: '4151', sinceTs: '4000', limit: 20, maxChars: 100000 })
@@ -760,9 +757,6 @@ function message(overrides = {}) {
     ...words.map((content, i) => ({ id: String(5010 + i), channel_id: 'C10', guild_id: 'G1', content, author: { id: '5', username: 'alice' } })),
   ]
   const own = { id: '4999', channel_id: 'C10', content: 'REAL-OWN the alert', author: { id: '9', username: 'testbot', bot: true } }
-  const body = (text: string) => text.split('\n').slice(1)
-  const marked = (text: string) => body(text).filter((line) => line.startsWith('[your earlier message]'))
-  const bracketed = (text: string) => body(text).filter((line) => /[\[\]]/.test(line.normalize('NFKC')))
   const api = fakeDiscord({ store: [...people] })
   const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')))
   await t.identity()

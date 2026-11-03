@@ -111,6 +111,15 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **The three history deltas each kept their own copy of the same tail.** Slack, Discord and Telegram each worked out
+  the next pointer, kept the newest lines that fit with "(earlier messages not shown)" before them, and typed out the
+  sentence about the bot's own lines, which had drifted ("in this conversation" on Slack, "here" on Discord).
+  `transports/history.ts` now holds them (`pointerAfter`, `deltaLines`, `OWN_NOTE` built from `OWN_MARKER`,
+  `LATER_NOT_SHOWN`); each transport keeps its own fetching and header. The one change a model sees: Discord's
+  sentence is Slack's, "your own earlier messages in this conversation". `channelLookupMs` (Discord's channel lookup,
+  5000) is in the defaults beside `markRetryMs`, documented in `docs/setup.md`, and a value that is not a whole number
+  of milliseconds above 0 is refused at start; the transport took one as 5000 without a word. Checked against fake APIs
+  only (`test/discord.test.ts` 18, `test/core.test.ts` 3g), each red before.
 - **Slack's progress marks had their own copy of the algorithm Discord and Telegram share.** `slack.ts` kept a
   second implementation of what `marks.ts` does (the wanted mark added before the old ones come off, a burst merged
   into its newest mark, the end tried again after 1×, 5× and 15× `markRetryMs`, a restart's own marks read back and
@@ -237,7 +246,7 @@ the caveat about version numbers is at the bottom.
   the pointer behind the question. Now, on every platform, history is what came after the pointer and before the
   message being answered, and the pointer passes the message being answered. The bot's own messages are left out of a
   delta (the session has them) and given to a new session (a thread under a watch's alert, a session whose log is
-  gone, a pruned conversation), each beginning with the adapter's marker `[your earlier message]` rather than shown
+  gone, a pruned conversation; Telegram: none, its ring holds only what people sent), each beginning with the adapter's marker `[your earlier message]` rather than shown
   as someone else's. In a history, names and words people wrote have their square brackets (wide ones and other
   bracket forms too) shown as parentheses, so no person's line can begin with the marker, whatever letters it is spelt
   in; `defuse` marks the marker as quoted anywhere else (in any case or spacing), as it does the other three. A Slack thread is paged up to the question, reading on from halfway to it when a gap is long, in at most 6
