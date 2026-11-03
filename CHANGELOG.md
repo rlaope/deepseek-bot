@@ -111,6 +111,13 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **The README was long and its demo a single question.** It is a page now: the tagline, a demo of a real `dsh`
+  session (`docs/dsh-demo.gif`: a tool call, a note saved and recalled after `/new`, a delete asked and denied), a
+  quick start with a block to paste into an agent, four short scenes with a still each (`docs/dsh-tools.png`,
+  `docs/dsh-recall.png`, `docs/dsh-approval.png`), what is verified, and links. The detail moved to the docs it
+  already repeated; the two facts only the README had went to `docs/setup.md` (one messenger beside the terminal)
+  and `docs/how-it-works.md` (`npm run persona`). The demo was recorded on the OpenGateway route, and says so.
+
 - **The three history deltas each kept their own copy of the same tail.** Slack, Discord and Telegram each worked out
   the next pointer, kept the newest lines that fit with "(earlier messages not shown)" before them, and typed out the
   sentence about the bot's own lines, which had drifted ("in this conversation" on Slack, "here" on Discord).

@@ -1187,6 +1187,9 @@ Two things worth knowing before editing them:
 - The persona files are read on every turn, so a rule added there takes effect immediately — but a
   *contradictory* rule does not win by being newer. It wins by being specific.
 
+`npm run persona` checks the persona files against their budgets, and flags duplicated facts, undated lines
+and secrets.
+
 ## What it is not
 
 - **Not a coding agent.** It edits files and runs commands; it is not competing with your editor.
