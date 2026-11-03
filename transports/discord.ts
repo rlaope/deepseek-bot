@@ -22,7 +22,7 @@ import { basename } from 'node:path'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 import { numberedParts } from './parts.js'
-import { reactionMarks, type MarkOutcome } from './marks.js'
+import { reactionMarks, REACTIONS, type MarkOutcome } from './marks.js'
 import type { ActionButton, ActionEvent, AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 
 interface DiscordHost {
@@ -245,6 +245,9 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     log,
     refusal: 'discord refused the token (HTTP 401)',
     retryMs: Number(cfg.markRetryMs) > 0 ? Number(cfg.markRetryMs) : 3000,
+    mode: cfg.marks,
+    // The model's reactions: Discord takes every Unicode emoji as it is.
+    reactions: Object.fromEntries(REACTIONS.map((e) => [e, e])),
   })
 
   async function identity() {
@@ -513,6 +516,8 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     startTyping,
     uploadFile,
     mark,
+    react: mark.react,
+    reactions: mark.reactions,
     remove,
     supportsButtons: true,
 

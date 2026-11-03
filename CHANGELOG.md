@@ -470,6 +470,23 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **How much the marks show is a setting, `marks`.** `progress` (the default) is what was there: 👀, a digit while it
+  runs (✍ on Telegram), then how it ended. `simple` leaves out the digit and the ✍; `off` puts no mark at all. The
+  salute for a quiet word shows under each, as it is the answer. Any other value is refused at start.
+- **The model may react instead of replying, or as well.** Told so in its standing block, with the emoji its platform
+  takes: an answer of exactly `[react:👍]` (backticks and a full stop let pass) puts 👍 on the person's message and
+  posts nothing; on its own first line before text, it reacts and posts the text. The list is 👍 👎 ✅ ❌ 👀 🙏 🔥 🎉 😂
+  ❤️ 🤔 🫡 (Slack by its names, `+1`, `heart`, …); Telegram's own list has no ✅, ❌ or 😂, and a token for one the
+  platform cannot put is posted as its text, or with none the emoji, never as another reaction. The marks never take
+  the model's reaction off, even a 👀 or a ✅; on Telegram, one reaction per message, it takes the place of 👌 and a
+  failure still replaces it. It is put under `marks: off` too, and on a turn for a thread message that did not
+  mention the bot. Anything else with `[react:` in it is text. Refused, it is logged, and nothing is posted instead.
+
+  Checked in the core, failures, Slack, Discord and Telegram suites against the fake transport and mocked APIs; the
+  core's checks were red before the change, the marks' ones shown red by removing their line. Not seen live: Slack's
+  `+1`, `heart` and the rest, Discord's ❤️ and Telegram's ❤ on a real message, and a real model answering
+  `[react:👍]` (no scenario).
+
 - **It can be told to stay out of a conversation.** Under `replyMode: thread` or `all` there was no way to make it
   stop joining a thread short of changing the mode for everyone. Now a quiet word said to it as a whole message
   (`be quiet`, `shut up`, `stay out`; `조용히 해`, `빠져`, `그만 끼어들어`; `安静`, `别说话`), or the model's whole answer

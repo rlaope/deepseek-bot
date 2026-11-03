@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { apply } from '../dist/index.js'
 import { createFakeTransport, type FakeTransportOptions } from './fake-transport.ts'
 import { createSlackTransport } from '../dist/transports/slack.js'
+import { createTelegramTransport } from '../dist/transports/telegram.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -585,6 +586,42 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   check('marks: and the one it withdrew before it ran, stopped too', JSON.stringify(kinds(b, '2000.3')) === '["seen","stopped"]', JSON.stringify(kinds(b, '2000.3')))
   check('marks: the stop request itself gets none, and nothing comes after an end', kinds(b, '2000.4').length === 0 && b.transport.lateMarks.length === 0, JSON.stringify({ stop: kinds(b, '2000.4'), late: b.transport.lateMarks }))
   b.done()
+}
+
+// The marks setting through a turn that takes time and times out, on a real transport (Telegram's, whose API is a
+// function here): progress shows eyes, the writing hand, then the sad face; simple, no hand; off, nothing at all.
+{
+  const onTelegram = (marks: string) => {
+    const sets: string[] = []
+    const fetchImpl = async (url, init: RequestInit = {}) => {
+      const method = String(url).split('/').pop()
+      const body = init.body ? JSON.parse(String(init.body)) : {}
+      if (method === 'setMessageReaction') sets.push(body.reaction?.[0]?.emoji)
+      const result = method === 'getMe' ? { id: 42, username: 'deepbot_test', is_bot: true } : method === 'sendMessage' ? { message_id: 600 + sets.length, chat: { id: 7 } } : true
+      return { ok: true, status: 200, json: async () => ({ ok: true, result }) }
+    }
+    let deliver: ((m: unknown) => void) | null = null
+    const t = boot({
+      agent: 'slow',
+      config: {
+        platform: 'telegram', marks, markEveryMs: 20, runTimeoutMs: 400,
+        transportFactory: (host) => {
+          const made = createTelegramTransport({ ...host, cfg: { ...host.cfg, telegramTokenRef: 'T' }, credential: async () => 'token', fetchImpl })
+          return Object.assign(made, { connect: async (handlers) => { await made.authenticate(); deliver = handlers.onMessage } })
+        },
+      },
+    })
+    const send = () => deliver?.({ eventId: `e-${Math.random()}`, target: { channel: 'C_ALLOWED', threadTs: null }, ts: '100', text: 'slow one', user: '5', addressed: true, files: [], raw: {} })
+    return { t, sets, send }
+  }
+  for (const [marks, expected] of [['progress', ['👀', '✍', '😢']], ['simple', ['👀', '😢']], ['off', []]] as const) {
+    const x = onTelegram(marks)
+    await sleep(80)
+    x.send()
+    await sleep(1000)
+    check(`marks ${marks}: a slow turn that times out shows ${expected.join(' → ') || 'nothing'}`, JSON.stringify(x.sets) === JSON.stringify(expected), JSON.stringify(x.sets))
+    x.t.done()
+  }
 }
 
 // Streaming: a turn's text goes to a platform that streams, but not a quiet one's (replyMode 'thread': it may say

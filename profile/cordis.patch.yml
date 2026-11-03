@@ -208,6 +208,8 @@
 #   through the gateway's proxy and nothing else; docs/setup.md, The agent's network.
 #   backgroundKeepMs, maxKeptAgents (not set here: 30 minutes, 4): how long a background job may outlive its
 #   turn before it is stopped, and how many agents are kept for one at once.
+#   marks (not set here: progress): the reactions on the person's message while a turn runs. simple shows only
+#   taken and how it ended, off none; a quiet word's salute and the model's own reaction show under each.
 - id: deepbot
   config:
     platform: slack

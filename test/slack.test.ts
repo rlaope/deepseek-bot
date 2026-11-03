@@ -777,10 +777,10 @@ function transportFor(api) {
     }) as typeof fetch
     return { calls, restore: () => { globalThis.fetch = realFetch } }
   }
-  const markedTransport = () => {
+  const markedTransport = (extra = {}) => {
     const logs = []
     const t = createSlackTransport({
-      cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, markRetryMs: 5 },
+      cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, markRetryMs: 5, ...extra },
       log: (...parts) => logs.push(parts.join(' ')), sessionCwd: async () => process.cwd(), credential: async () => 'xoxb-fake', onHealth: () => {},
     })
     t.logs = logs
@@ -925,6 +925,73 @@ function transportFor(api) {
   await new Promise((r) => setTimeout(r, 15))
   u.restore()
   check('marks: without a token nothing is asked, and it is said', reactions(u).length === 0 && tu.logs.includes('progress marks: slack transport is not authenticated'), `${JSON.stringify(reactions(u))} ${JSON.stringify(tu.logs)}`)
+  // The marks setting. simple: eyes, then the end, no digit; off: none, but the salute for a quiet word, which is an answer.
+  const slow = async (t, ts) => {
+    for (const state of [{ kind: 'seen' }, { kind: 'working', tenths: 3 }, { kind: 'working', tenths: 6 }, { kind: 'done' }] as const) { t.mark(at, ts, state); await new Promise((r) => setTimeout(r, 15)) }
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  const ms = scripted(() => ({ ok: true }))
+  const tms = markedTransport({ marks: 'simple' })
+  await tms.authenticate(); await tms.identity()
+  await slow(tms, '8.1')
+  ms.restore()
+  check('marks simple: eyes, then a check, no digit', JSON.stringify(reactions(ms)) === JSON.stringify(['add eyes', 'add white_check_mark', 'remove eyes']), JSON.stringify(reactions(ms)))
+  const mo = scripted(() => ({ ok: true }))
+  const tmo = markedTransport({ marks: 'off' })
+  await tmo.authenticate(); await tmo.identity()
+  await slow(tmo, '8.2')
+  const offBefore = reactions(mo).length
+  tmo.mark(at, '8.3', { kind: 'quiet' })
+  await new Promise((r) => setTimeout(r, 30))
+  mo.restore()
+  check('marks off: no mark through a whole turn', offBefore === 0, JSON.stringify(reactions(mo)))
+  check('marks off: a quiet word is still saluted', JSON.stringify(reactions(mo).filter((x) => x.startsWith('add'))) === '["add saluting_face"]', JSON.stringify(reactions(mo)))
+  const mp = scripted(() => ({ ok: true }))
+  const tmp = markedTransport({ marks: 'progress' })
+  await tmp.authenticate(); await tmp.identity()
+  await slow(tmp, '8.4')
+  mp.restore()
+  check('marks progress: control — eyes, three, six, a check', JSON.stringify(reactions(mp)) === JSON.stringify(['add eyes', 'add three', 'remove eyes', 'add six', 'remove three', 'add white_check_mark', 'remove six']), JSON.stringify(reactions(mp)))
+
+  // The model's reaction, by Slack's name. It is not a progress mark: the end's cleanup leaves it, even one that has a
+  // mark's name (eyes), and one that is the end's own (a check) is put once.
+  const rx = scripted(() => ({ ok: true }))
+  const trx = markedTransport()
+  await trx.authenticate(); await trx.identity()
+  check('react: Slack takes the whole list', JSON.stringify(trx.reactions) === JSON.stringify(['👍', '👎', '✅', '❌', '👀', '🙏', '🔥', '🎉', '😂', '❤️', '🤔', '🫡']), JSON.stringify(trx.reactions))
+  trx.mark(at, '8.5', { kind: 'seen' }); await new Promise((r) => setTimeout(r, 15))
+  trx.react(at, '8.5', '👍'); await new Promise((r) => setTimeout(r, 15))
+  trx.mark(at, '8.5', { kind: 'done' }); await new Promise((r) => setTimeout(r, 30))
+  trx.mark(at, '8.6', { kind: 'seen' }); await new Promise((r) => setTimeout(r, 15))
+  trx.react(at, '8.6', '👀'); await new Promise((r) => setTimeout(r, 15))
+  trx.mark(at, '8.6', { kind: 'working', tenths: 3 }); await new Promise((r) => setTimeout(r, 15))
+  trx.mark(at, '8.6', { kind: 'done' }); await new Promise((r) => setTimeout(r, 30))
+  trx.mark(at, '8.7', { kind: 'seen' }); await new Promise((r) => setTimeout(r, 15))
+  trx.react(at, '8.7', '✅'); await new Promise((r) => setTimeout(r, 15))
+  trx.mark(at, '8.7', { kind: 'done' }); await new Promise((r) => setTimeout(r, 30))
+  rx.restore()
+  const on = (ts) => reactions({ calls: rx.calls.filter((c) => c.body?.timestamp === ts) })
+  check('react: 👍 is +1, beside the check, and stays', JSON.stringify(on('8.5')) === JSON.stringify(['add eyes', 'add +1', 'add white_check_mark', 'remove eyes']), JSON.stringify(on('8.5')))
+  check('react: a model 👀 is not taken off with the progress eyes', JSON.stringify(on('8.6')) === JSON.stringify(['add eyes', 'add three', 'add white_check_mark', 'remove three']), JSON.stringify(on('8.6')))
+  check('react: a model ✅ is the check: put once, and stays', JSON.stringify(on('8.7')) === JSON.stringify(['add eyes', 'add white_check_mark', 'remove eyes']), JSON.stringify(on('8.7')))
+  check('react: nothing left held', trx.markedMessages === 0, String(trx.markedMessages))
+  // With marks off, a reaction is still put: it is the answer, not progress.
+  const ro = scripted(() => ({ ok: true }))
+  const tro = markedTransport({ marks: 'off' })
+  await tro.authenticate(); await tro.identity()
+  tro.mark(at, '8.8', { kind: 'seen' })
+  tro.react(at, '8.8', '🎉'); await new Promise((r) => setTimeout(r, 30))
+  tro.mark(at, '8.8', { kind: 'done' }); await new Promise((r) => setTimeout(r, 30))
+  ro.restore()
+  check('react: with marks off, the reaction alone is put', JSON.stringify(reactions(ro)) === '["add tada"]' && tro.markedMessages === 0, `${JSON.stringify(reactions(ro))} held ${tro.markedMessages}`)
+  // Refused (no reactions:write): said, and nothing else is asked or posted.
+  const rr = scripted((m) => m === 'reactions.add' ? { ok: false, error: 'missing_scope' } : { ok: true })
+  const trr = markedTransport({ marks: 'off' })
+  await trr.authenticate(); await trr.identity()
+  trr.react(at, '8.9', '👍'); await new Promise((r) => setTimeout(r, 30))
+  trr.react(at, '9.0', '👍'); await new Promise((r) => setTimeout(r, 30))
+  rr.restore()
+  check('react: refused, it is said, and not asked again', JSON.stringify(reactions(rr)) === '["add +1"]' && trr.logs.some((l) => /reactions:write/.test(l)) && trr.logs.some((l) => /reaction 👍 not put/.test(l)) && !rr.calls.some((c) => c.method.startsWith('chat.')), JSON.stringify([reactions(rr), trr.logs]))
 }
 
 // Streaming a turn's text into its thread, as Slack's chat.startStream / appendStream / stopStream have it. Learned

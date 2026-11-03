@@ -57,6 +57,7 @@ import { createDiscordTransport } from './transports/discord.js'
 import { createLocalTransport, LOCAL_CHANNEL } from './transports/local.js'
 import { createCompositeTransport } from './transports/composite.js'
 import { safeFileName } from './transports/attachments.js'
+import { MARKS_MODES, REACTIONS } from './transports/marks.js'
 import { createProgressTracker, tenthsOf, typicalTurns } from './progress.js'
 import { LANGUAGES, languageOf } from './i18n.js'
 import { defaultWords, messages } from './messages.js'
@@ -273,6 +274,9 @@ const DEFAULTS = {
   markEveryMs: 5000,
   // The pause unit between tries of a mark that ended a turn and failed (×1, ×5, ×15).
   markRetryMs: 3000,
+  // How much of a turn shows on the person's message: 'progress' (taken, a digit while it runs, how it ended), 'simple'
+  // (taken, then how it ended) or 'off' (nothing; a quiet word's salute and the model's own reaction still show).
+  marks: 'progress',
   // `{name}` is the persona's first heading ("아리"), else the bot's own name. Unset, it is the
   // `language`'s own ("⏳ {name} is working…"). A Unicode emoji, not Slack's `:hourglass_flowing_sand:`,
   // which Discord and Telegram print as text.
@@ -380,6 +384,20 @@ function saysNothing(text: string): boolean {
  * models write it, one full stop after it and one pair of backticks around it are let pass; any other text is not.
  */
 const isQuietAnswer = (text: string) => /^\[quiet\]$/i.test(text.trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1'))
+/**
+ * The model's reaction, `[react:👍]`: the whole answer, or its first line with the answer after it (`rest`). As models
+ * write it, one pair of backticks around it and one full stop after it are let pass. All or nothing: an emoji not on
+ * the shared list, or a token not alone on its line, and the answer is text. The emoji is compared without VS16.
+ */
+function reactionIn(text: string): { emoji: string; rest: string } | null {
+  const answer = text.trim()
+  const cut = answer.indexOf('\n')
+  const first = (cut === -1 ? answer : answer.slice(0, cut)).trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1')
+  const token = /^\[react:([^\]\s]+)\]$/.exec(first)
+  const bare = (e: string) => e.replace(/\uFE0F/g, '')
+  const emoji = token === null ? undefined : REACTIONS.find((e) => bare(e) === bare(token[1]))
+  return emoji === undefined ? null : { emoji, rest: cut === -1 ? '' : answer.slice(cut + 1).trim() }
+}
 /** A whole message, in any language, that tells it to stay out of the conversation until it is named again. */
 const QUIET_WORDS = defaultWords('quiet')
 /** The approval buttons' own words, in every language: the only ones a requester's answer without a mention may be. */
@@ -460,6 +478,7 @@ export function apply(ctx, config) {
   for (const setting of ['backgroundKeepMs', 'maxKeptAgents']) {
     if (!Number.isInteger(cfg[setting]) || cfg[setting] < 0) problems.push(`${setting}: must be a whole number, 0 or more (got: ${String(cfg[setting])})`)
   }
+  if (cfg.marks != null && !MARKS_MODES.includes(cfg.marks)) problems.push(`marks: must be 'progress', 'simple' or 'off' (got: ${String(cfg.marks)})`)
   if (!['ask', 'deny'].includes(cfg.readOutside)) problems.push(`readOutside: must be 'ask' or 'deny' (got: ${String(cfg.readOutside)})`)
   if (!['open', 'local', 'public'].includes(cfg.commandNetwork)) problems.push(`commandNetwork: must be 'open', 'local' or 'public' (got: ${String(cfg.commandNetwork)})`)
   if (cfg.fetchAllowedHosts != null && (!Array.isArray(cfg.fetchAllowedHosts) || cfg.fetchAllowedHosts.some((h: unknown) => typeof h !== 'string'))) {
@@ -1065,6 +1084,11 @@ export function apply(ctx, config) {
       ]).join('\n'))
       // Not in the terminal, which is always talking to it and has no message to salute.
       if (origin.channel !== LOCAL_CHANNEL) standing.push('[staying out] If someone here asks you to stop joining this conversation, answer with exactly [quiet] and nothing else.')
+      // Only the emoji this platform can put, and only where it can put one.
+      const reactions = via(origin).reactions
+      if (typeof via(origin).react === 'function' && Array.isArray(reactions) && reactions.length > 0) {
+        standing.push(`[reacting] When a reaction says enough, answer with just [react:👍] (or one of ${reactions.join(' ')}) and it goes on the person's message instead of a reply; on a line of its own before your answer, it goes on as well.`)
+      }
 
       // The conversation's own link, so a reference to it can be clickable. Slack links its own
       // <#C…> mention, but a description of a thread stays text without this.
@@ -3572,6 +3596,8 @@ export function apply(ctx, config) {
       const replyTarget = { channel, threadTs }
       let restoreRequester: (() => void) | null = null
       let ticking: { stop: () => void; ran: () => number } = { stop: () => {}, ran: () => 0 }
+      // The model's reaction to put on the message (`[react:👍]`), when its answer had one this platform can put.
+      let reaction: string | null = null
       // How long the turn ran, waits for an approval left out: what a typical turn is learned from.
       let ran = 0
       // How it ended, on the person's message: none for one that did not mention it.
@@ -3643,6 +3669,15 @@ export function apply(ctx, config) {
             return historyText
           }
           r = await withTimeout(runTurn(prompt, existing, { channel, threadTs, user: message.user, ...(quiet ? { quiet: true } : {}) }, historyText, attachmentText, key, attachmentImages, onGone), backstopMs)
+          // The model's reaction comes off its answer before anything is said with it. One this platform cannot put is
+          // never swapped for another: its text is the answer, or, with none, the emoji itself.
+          const token = r.reason?.kind === 'completed' && typeof r.text === 'string' ? reactionIn(r.text) : null
+          if (token !== null) {
+            const part = via(replyTarget)
+            reaction = typeof part.react === 'function' && Array.isArray(part.reactions) && part.reactions.includes(token.emoji) ? token.emoji : null
+            if (reaction === null) log(`reaction ${token.emoji}: not one this platform can put — said as text`)
+            r = { ...r, text: token.rest !== '' || reaction !== null ? token.rest : token.emoji }
+          }
           // Said with the answer, so it reads before it and keeps the platform's working status (a message of its own
           // ended Slack's). A quiet turn says nothing: it may answer nothing at all.
           if (r.sessionLost === true && !quiet && typeof r.text === 'string' && r.text !== '') r = { ...r, text: `${say.sessionLost}\n\n${r.text}` }
@@ -3682,6 +3717,18 @@ export function apply(ctx, config) {
           if (placeholderTs !== null) await Promise.resolve(via(replyTarget).remove?.(replyTarget, placeholderTs)).catch(() => false)
           markOf(replyTarget, ts, { kind: 'quiet' })
           unmarkInflight(key, ts)
+        } else if (ok && reaction !== null && r.text === '') {
+          // A reaction alone is the answer: nothing is posted, and what was streamed of it and a working message come
+          // down. A turn that did not mention it may answer so too, as a person would to a message they saw.
+          if (!quiet && streamsTo(replyTarget)) via(replyTarget).stream(replyTarget, { kind: 'reset' })
+          if (placeholderTs !== null) await Promise.resolve(via(replyTarget).remove?.(replyTarget, placeholderTs)).catch(() => false)
+          via(replyTarget).react(replyTarget, ts, reaction)
+          if (quiet) { state.touched[key] = Date.now(); saveState() }
+          health.answered++
+          writeHealth()
+          log(`answered channel=${channel} with the reaction ${reaction} ${Date.now() - started}ms`)
+          if (!quiet) typical.record(ran)
+          ended('done')
         } else if (quiet && !answers && !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user')) {
           log(`kept quiet channel=${channel} ${ok ? 'no reply' : String(r.reason?.kind ?? 'unknown')} ${Date.now() - started}ms`)
           if (placeholderTs !== null) await via(replyTarget).remove?.(replyTarget, placeholderTs).catch(() => false)
@@ -3693,6 +3740,7 @@ export function apply(ctx, config) {
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
           // The check once the answer is out: a refused post is a cross. Only an answer that went out is a typical
           // turn, timed without the waits for an approval.
+          if (reaction !== null) via(replyTarget).react(replyTarget, ts, reaction)
           const out = await replyInPlaceOf(replyTarget, r.text, placeholderTs, true, ts)
           if (out && !quiet) typical.record(ran)
           ended(out ? 'done' : 'failed')

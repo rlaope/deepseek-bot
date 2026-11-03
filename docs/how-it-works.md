@@ -27,7 +27,11 @@ usually takes, held while an approval waits), then ✅, ❌ or ⏹️ (it needs 
 `reactions:read` to tidy them after a restart). Discord shows the same marks, the digit as a keycap (1️⃣ to 9️⃣;
 it needs *Add Reactions* in the channel). Telegram takes one reaction per message from its own short list, with no
 digits and no check mark: 👀, then ✍ while it runs, then 👌, 😢 or 🫡. A message that did not mention the bot
-gets no mark on any platform.
+gets no mark on any platform. `marks: simple` leaves out the digit (and Telegram's ✍), `marks: off` every mark but
+a quiet word's salute ([setup](setup.md#marks-and-reactions)).
+
+The model may also answer with a reaction of its own: `[react:👍]` alone puts 👍 on the message and posts nothing,
+and on its own first line before text it goes on beside the answer. The marks never take it off, even a 👀 or a ✅.
 
 ### Its language
 
