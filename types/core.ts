@@ -26,6 +26,8 @@ export interface TurnOutcome extends TurnSummary {
   sessionId: string
   /** A stop for this turn was already reported to the conversation, so the turn says nothing more. */
   reported?: boolean
+  /** The stop came from a quiet word: nothing is said of it, not even in the working message's place. */
+  silent?: boolean
   /** The conversation's session log was gone, and the turn ran in a new session. */
   sessionLost?: boolean
   /** The turn's agent owned a background job and could not be kept (maxKeptAgents, or past backgroundKeepMs): released,

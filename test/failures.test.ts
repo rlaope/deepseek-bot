@@ -501,6 +501,19 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
     check(`quiet (${shape}): muted`, q.read().muted?.['C_ALLOWED:t1'] !== undefined, JSON.stringify(q.read().muted))
     q.done()
   }
+  // (c7) Where the platform refuses to delete the running turn's working message, it is left as it is: never edited into
+  // a report of the stop, which a quiet word does not make.
+  {
+    const q = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { marks: true, remove: 'refused' } } })
+    await sleep(60)
+    q.transport.deliver(q.transport.message({ ts: '3001.1', text: '배포 로그 봐줘' }))
+    await sleep(300)
+    q.transport.deliver(q.transport.message({ ts: '3001.2', text: '조용히 해', user: 'U_OTHER' }))
+    await sleep(700)
+    const said = q.transport.posted.filter((p) => !/작업 중/.test(p.text)).map((p) => p.text)
+    check('quiet: a refused delete leaves the working message, with no stop report in its place', q.transport.removed.length > 0 && said.length === 0 && q.logs.some((l) => /left as it is/.test(l)), `said ${JSON.stringify(said)} removed ${JSON.stringify(q.transport.removed)}`)
+    q.done()
+  }
   // (f) Once only messages that did not mention it remain, the in-flight record says so: a restart then says nothing.
   // The turn for the mention times out at about 0.65 s, the quiet one after it at about 1.25 s: looked at between.
   const f = boot({ agent: 'slow', config: { replyMode: 'thread', runTimeoutMs: 500, fake: { typing: true } } })

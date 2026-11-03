@@ -329,7 +329,9 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   // The marker opening an answer that explains itself is still quiet; a real answer that says "no reply" is not.
   for (const [text, posts, why] of [['[no reply]\n\n(This is between the two of them.)', false, 'the marker, then an explanation'], ['아직 no reply야. 내일 다시 물어볼게.', true, 'a Korean answer that says "no reply"'], ['[No_Reply]', false, 'the marker in another case'], ['둘이 하는 얘기야.\n[no reply]', false, 'an explanation, then the marker'],
     // Other silence tokens models are trained on: the whole answer only, any case; in a sentence or in code they are text.
-    ['[SILENT]', false, '"[SILENT]" as the whole answer'], [' no_reply \n', false, '"NO_REPLY" as the whole answer, in another case'], ['로그에 [SILENT] 라고 찍혀', true, '"[SILENT]" in a sentence'], ['`[SILENT]`', true, '"[SILENT]" in code'], ['```\nNO_REPLY\n```', true, '"NO_REPLY" in a code block']]) {
+    ['[SILENT]', false, '"[SILENT]" as the whole answer'], [' no_reply \n', false, '"NO_REPLY" as the whole answer, in another case'], ['로그에 [SILENT] 라고 찍혀', true, '"[SILENT]" in a sentence'], ['`[SILENT]`', true, '"[SILENT]" in code'], ['```\nNO_REPLY\n```', true, '"NO_REPLY" in a code block'],
+    // Code elsewhere in the answer does not hide the marker outside it.
+    ['Not for me (see `x`).\n[no reply]', false, 'an explanation with code, then the marker'], ['[no reply] `x`', false, 'the marker, then code']]) {
     const v = quiet(text as string)
     await sleep(80)
     v.transport.deliver(v.transport.message({ addressed: false, text: '그 업체 답장 왔어?' }))
@@ -619,6 +621,15 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   await sleep(300)
   check('mute: a "[quiet]" answer to a follow-up without a mention mutes, saluted', tq.transport.posted.length === 0 && tq.read().muted?.['C_ALLOWED:t1'] !== undefined && JSON.stringify(kindsOf(tq, '2005.0')) === '["quiet"]', `${JSON.stringify(tq.transport.posted.map((p) => p.text))} ${JSON.stringify(kindsOf(tq, '2005.0'))}`)
   tq.done()
+  // As models write it: in backticks, or with a full stop.
+  for (const text of ['`[quiet]`', '[quiet].', '`[quiet]`.']) {
+    const x = muting(text)
+    await sleep(80)
+    x.transport.deliver(x.transport.message({ ts: '2006.5', text: '빠져 있어 줄래?' }))
+    await sleep(300)
+    check(`mute: "${text}" is the quiet answer too`, x.transport.posted.length === 0 && x.read().muted?.['C_ALLOWED:t1'] !== undefined, JSON.stringify(x.transport.posted.map((p) => p.text)))
+    x.done()
+  }
   // All or nothing: "[quiet]" with other words is an ordinary answer.
   for (const text of ['[quiet] ok', '알겠어. [quiet]']) {
     const x = muting(text)

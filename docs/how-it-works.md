@@ -737,10 +737,12 @@ key) — until someone names it again.
   punctuation ignored and nothing else in it: `quiet`, `be quiet`, `shut up`, `stay out`; `조용히`, `조용히 해`,
   `조용히해`, `빠져`, `그만 끼어들어`; `安静`, `别说话`. Understood in every language whatever `language` is set to;
   a sentence that contains one is an ordinary message. No model call: what is running stops and what waits is
-  withdrawn, as a stop word does, but nothing is said about it.
+  withdrawn, as a stop word does, but nothing is said about it: a working message comes down, and where the platform
+  refuses the delete it is left as it is rather than edited into a report.
 - **`[quiet]`**: told in its standing block that it may, the model answers exactly `[quiet]` when someone asks it in
   other words ("우리끼리 얘기할게, 넌 빠져 있어"). Nothing is posted and the conversation is muted. Only the whole
-  answer counts: `[quiet]` with other text is posted as it is.
+  answer counts, with one pair of backticks around it or one full stop after it let pass: `[quiet]` with other text
+  is posted as it is.
 - **The acknowledgement** is a reaction on the message that asked, and nothing else: `saluting_face` on Slack, 🫡 on
   Discord and Telegram (on Telegram the same 🫡 as a stopped turn's end mark; the message that asked gets no other
   mark). Where the platform refuses the reaction it is logged, and no text is sent instead.
@@ -761,8 +763,9 @@ Under `thread` and `all`, a message that opens with someone else's mention (`@mi
 opens no turn, whatever the mode. One that names the bot after theirs is still a mention.
 
 The silence answer of a turn the bot was not named in, `[no reply]`, has two more spellings models are taught,
-`[SILENT]` and `NO_REPLY`, each only as the whole answer and in any case; in a sentence, or in code, any of them is
-text.
+`[SILENT]` and `NO_REPLY`, each only as the whole answer and in any case; in a sentence it is text. All three are read
+outside the answer's code: a marker only inside code is text, and code elsewhere (``Not for me (see `x`).`` then
+`[no reply]`) does not keep the marker from counting.
 
 ## The terminal (dsh)
 
