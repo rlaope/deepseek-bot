@@ -1,6 +1,6 @@
 /**
- * Progress on the person's message as the bot's own reaction, for Discord and Telegram: what `Transport.mark` asks
- * for, kept per message. Slack's is its own (`slack.ts`), written first, with the same rules.
+ * Progress on the person's message as the bot's own reaction, for Slack, Discord and Telegram: what `Transport.mark`
+ * asks for, kept per message.
  *
  * The platform supplies the calls. `add` shows one reaction; `remove`, where the platform has it, takes one off — a
  * platform without it (Telegram) replaces the bot's reaction with each `add`; `held` says which of the bot's are on a
@@ -9,11 +9,13 @@
  * tried again by the next mark; and the end, which has no next mark, is tried again after a pause, a few times.
  *
  * A call answers how it went: `refused` stops every mark until the gateway restarts (said once), `gone` lets that
- * message go (deleted, or a chat that does not allow the reaction), `failed` is worth another try.
+ * message go (deleted, or a chat that does not allow the reaction) once ours are taken off it where they can be,
+ * `unreachable` lets it go with no other call on it (a platform that can tell the message or its channel is out of
+ * reach), `failed` is worth another try.
  */
 import type { ProgressMark, Target } from '../types/transport.js'
 
-export type MarkOutcome = 'ok' | 'failed' | 'gone' | 'refused'
+export type MarkOutcome = 'ok' | 'failed' | 'gone' | 'unreachable' | 'refused'
 
 export interface MarkNames {
   seen: string
@@ -27,19 +29,27 @@ export interface MarkNames {
 export interface MarkHost {
   names: MarkNames
   add(channel: string, ts: string, name: string): Promise<MarkOutcome>
-  remove?: (channel: string, ts: string, name: string) => Promise<MarkOutcome>
+  /** `clearing`: ours coming off a message let go as `gone`, whose answers are not acted on. */
+  remove?: (channel: string, ts: string, name: string, clearing: boolean) => Promise<MarkOutcome>
   /** Which reactions of the bot's a message already carries, or null when that cannot be read. */
   held?: (channel: string, ts: string) => Promise<string[] | null>
   log: (...parts: unknown[]) => void
-  /** Said once, when a call comes back `refused`. */
+  /** Said once, when a call comes back `refused`: read then, so it can name what the platform answered. */
   refusal: string
   /** The pause unit between tries of the end (×1, ×5, ×15). */
   retryMs: number
 }
 
+// Spread over a minute: three tries within one rate window would all be refused together.
 const END_PAUSES = [1, 5, 15]
 
-export function reactionMarks(host: MarkHost): (target: Target, ts: string, state: ProgressMark) => void {
+export interface Marks {
+  (target: Target, ts: string, state: ProgressMark): void
+  /** Diagnostic only: messages whose marks are still held. */
+  readonly messages: number
+}
+
+export function reactionMarks(host: MarkHost): Marks {
   const { names, log, remove } = host
   // By the name without U+FE0F, which a platform may write either way (a keycap, ⏹️): the name this sends.
   const bare = (name: string) => name.replace(/\uFE0F/g, '')
@@ -82,7 +92,7 @@ export function reactionMarks(host: MarkHost): (target: Target, ts: string, stat
       marked.clear()
       return true
     }
-    if (outcome === 'gone') { entry.dead = true; return true }
+    if (outcome === 'gone' || outcome === 'unreachable') { entry.dead = true; return true }
     return false
   }
 
@@ -105,7 +115,7 @@ export function reactionMarks(host: MarkHost): (target: Target, ts: string, stat
         if (!entry.shown.has(want)) {
           const r = await host.add(channel, ts, want).catch(() => 'failed' as const)
           // Refused for this message (too many reactions on it, say): ours still come off, so no digit stays.
-          if (r === 'gone' && remove !== undefined) for (const old of [...entry.shown]) await remove(channel, ts, old).catch(() => 'failed')
+          if (r === 'gone' && remove !== undefined) for (const old of [...entry.shown]) await remove(channel, ts, old, true).catch(() => 'failed')
           if (over(r, entry)) return
           if (r === 'ok') {
             // Without a remove, an add replaces what was there.
@@ -116,7 +126,7 @@ export function reactionMarks(host: MarkHost): (target: Target, ts: string, stat
         // Only once the wanted one is on: a newer mark's own pass takes these off.
         for (const old of failed || remove === undefined ? [] : [...entry.shown]) {
           if (old === want || entry.want !== want) continue
-          const r = await remove(channel, ts, old).catch(() => 'failed' as const)
+          const r = await remove(channel, ts, old, false).catch(() => 'failed' as const)
           if (over(r, entry)) return
           if (r === 'ok') entry.shown.delete(old)
           else failed = true
@@ -134,5 +144,5 @@ export function reactionMarks(host: MarkHost): (target: Target, ts: string, stat
     }
   }
 
-  return mark
+  return Object.defineProperty(mark, 'messages', { get: () => marked.size }) as Marks
 }
