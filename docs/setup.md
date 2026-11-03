@@ -40,6 +40,9 @@ before switching, and the old one's tokens stay where they are. A token already 
 again instead of asked for. At Done it offers one restart (now, or later) and waits for it.
 `dsh gateway setup slack` goes straight to one messenger.
 
+One messenger at a time beside the terminal: every conversation the terminal does not claim goes to the
+first messenger listed, so a second would never be answered, and `dsh gateway setup` replaces rather than adds.
+
 `setup` saves the tokens to `~/.dsh/.env` (mode 600) and puts the platform in the profile's deepbot
 row — nothing else in the file changes. A switch also replaces the old messenger's channel ids
 (with every channel) and its people (with the ones given).
