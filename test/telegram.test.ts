@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createTelegramTransport, toTelegramHtml } from '../dist/transports/telegram.js'
+import { bootAround } from './core-around.ts'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -500,6 +501,166 @@ function groupMessage(overrides = {}) {
   await t2.identity()
   const refused = await t2.remove({ channel: '7', threadTs: null }, '121')
   check('remove: a refusal is false, and said', refused === false && t2.logs.some((l) => /delete failed: .*can't be deleted/.test(l)), t2.logs.join(' | '))
+}
+
+// 18. A photo sent with no caption opens a turn, and the model is told so and shown the picture; a message with neither
+// opens nothing. Through the core: the transport let a file-only message through, and the core dropped it.
+{
+  const home = mkdtempSync(join(tmpdir(), 'tg-home-'))
+  const api = fakeApi({ updates: [
+    privateMessage({ text: undefined, photo: [{ file_id: 'small-PHOTO1', file_size: 4 }, { file_id: 'large-PHOTO1', file_size: 12 }] }),
+    { update_id: 3, message: { message_id: 12, from: { id: 5, username: 'alice' }, chat: { id: 9, type: 'private' } } },
+  ] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(900)
+  await t.close()
+  const said = core.texts()
+  check('files only: a Telegram photo without a caption opens one turn', said.length === 1, `${said.length} turn(s)`)
+  check('files only: the model is told the person sent a file without text', /sent a file without text: photo-PHOTO1\.jpg/.test(said[0] ?? ''), (said[0] ?? '').slice(-200))
+  check('files only: and is given the photo, written and shown', /- photo-PHOTO1\.jpg \(image\/jpeg[^\n]*→ \S*10-photo-PHOTO1\.jpg/.test(said[0] ?? '') && core.images()[0]?.length === 1, `${JSON.stringify(core.images())} ${(said[0] ?? '').slice(0, 300)}`)
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
+// 19. An album: Telegram sends one update per item, sharing a media_group_id, and only one carries the caption. It is
+// one message: one turn, its text the caption wherever it is, its files every item's in order. Taken one by one, a
+// caption-less album opened a turn per photo, and a captioned one a turn that saw the first photo only.
+{
+  const item = (n: number, extra: Record<string, unknown> = {}) => ({ update_id: 30 + n, message: { message_id: 30 + n, media_group_id: 'G1', from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, photo: [{ file_id: `small-ALBUM${n}`, file_size: 4 }, { file_id: `large-ALBUM${n}`, file_size: 12 }], ...extra } })
+  for (const [label, updates, caption] of [
+    ['without a caption', [item(1), item(2), item(3)], null],
+    ['with a caption on its second item', [item(1), item(2, { caption: 'what are these?' }), item(3)], 'what are these?'],
+  ] as const) {
+    const home = mkdtempSync(join(tmpdir(), 'tg-album-'))
+    const api = fakeApi({ updates: [...updates] })
+    const t = transportFor(api, home)
+    const core = bootAround(t, home)
+    await sleep(2600)
+    await t.close()
+    const said = core.texts()
+    const asked = (said[0] ?? '').split('[user message]\n').at(-1)
+    check(`album ${label}: one turn`, said.length === 1, `${said.length} turn(s)`)
+    check(`album ${label}: with all three photos, in order, and shown`, /ALBUM1\.jpg[\s\S]*ALBUM2\.jpg[\s\S]*ALBUM3\.jpg/.test(said[0] ?? '') && core.images()[0]?.length === 3, `${core.images()[0]?.length} image(s) ${(said[0] ?? '').slice(0, 400)}`)
+    check(`album ${label}: the person's message is ${caption === null ? 'that three files came without text' : 'the caption'}`, caption === null ? asked === '(sent 3 files without text: photo-ALBUM1.jpg, photo-ALBUM2.jpg, photo-ALBUM3.jpg)' : asked === caption, JSON.stringify(asked))
+    core.done()
+    rmSync(home, { recursive: true, force: true })
+  }
+
+  // Across a restart: an album still being gathered is not confirmed to Telegram, so a process that stops then gets it
+  // again whole; one that was answered is confirmed, and a restart after it does not answer it again. The fake keeps
+  // updates until a getUpdates offset passes them, as Telegram does.
+  // The items arrive 150 ms apart, as an album's often do, each in a poll of its own.
+  const started = Date.now()
+  const store = [item(1), item(2, { caption: 'what are these?' }), item(3)].map((update, i) => ({ ...update, arrives: started + 150 * i }))
+  const offsets: number[] = []
+  const plain = fakeApi()
+  const telegramLike = { ...plain, fetchImpl: async (url, init) => {
+    const method = String(url).split('/').pop()
+    if (method !== 'getUpdates') return plain.fetchImpl(url, init)
+    const { offset = 0 } = JSON.parse(String(init?.body ?? '{}'))
+    offsets.push(offset)
+    store.splice(0, store.length, ...store.filter((u) => u.update_id >= offset))
+    const result = store.filter((u) => u.arrives <= Date.now()).map(({ arrives, ...update }) => update)
+    if (result.length === 0) await sleep(80)
+    return { ok: true, status: 200, json: async () => ({ ok: true, result }) }
+  } }
+  const home = mkdtempSync(join(tmpdir(), 'tg-album-'))
+  const first = transportFor(telegramLike, home)
+  const before = bootAround(first, home)
+  await sleep(500)
+  await first.close()
+  await sleep(1500)
+  check('album across a restart: stopped while it was gathered, nothing was answered', before.texts().length === 0, `${before.texts().length} turn(s)`)
+  check('album across a restart: and nothing of it was confirmed to Telegram', store.length === 3 && offsets.every((o) => o <= 31), `${store.length} kept, offsets ${JSON.stringify(offsets)}`)
+  before.done()
+  const second = transportFor(telegramLike, home)
+  const after = bootAround(second, home)
+  await sleep(2600)
+  await second.close()
+  check('album across a restart: the next process answers it once, whole', after.texts().length === 1 && after.images()[0]?.length === 3 && (after.texts()[0] ?? '').endsWith('[user message]\nwhat are these?'), `${after.texts().length} turn(s), ${after.images()[0]?.length} image(s)`)
+  check('album across a restart: then it is confirmed', store.length === 0 && offsets.at(-1) === 34, `${store.length} kept, last offset ${offsets.at(-1)}`)
+  after.done()
+  const third = transportFor(telegramLike, home)
+  const again = bootAround(third, home)
+  await sleep(1800)
+  await third.close()
+  check('album across a restart: a restart after it does not answer it again', again.texts().length === 0, `${again.texts().length} turn(s)`)
+  again.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
+// 20. What a chat says after an album waits behind it: an album of three, then "which one is cheaper?", is the album's
+// turn first and then the question's. Taken as it came, the question was answered first, without the photos, and the
+// album 1.2 s later. Another chat does not wait for it.
+{
+  const photo = (n: number) => ({ update_id: 40 + n, message: { message_id: 40 + n, media_group_id: 'G2', from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, photo: [{ file_id: `large-ORDER${n}`, file_size: 12 }] } })
+  const text = (id: number, chat: number, words: string) => ({ update_id: id, message: { message_id: id, from: { id: 5, username: 'alice' }, chat: { id: chat, type: 'private' }, text: words } })
+  const home = mkdtempSync(join(tmpdir(), 'tg-order-'))
+  const api = fakeApi({ updates: [photo(1), photo(2), photo(3), text(44, 7, 'which one is cheaper?'), text(45, 8, 'hello from elsewhere')] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(800)
+  const early = core.texts().map((said) => said.split('[user message]\n').at(-1))
+  await sleep(1800)
+  await t.close()
+  const asked = core.texts().map((said) => said.split('[user message]\n').at(-1))
+  check('order: another chat\'s message is not held while an album is gathered', JSON.stringify(early) === JSON.stringify(['hello from elsewhere']), JSON.stringify(early))
+  check('order: the album is taken before what its chat said after it', JSON.stringify(asked) === JSON.stringify(['hello from elsewhere', '(sent 3 files without text: photo-ORDER1.jpg, photo-ORDER2.jpg, photo-ORDER3.jpg)', 'which one is cheaper?']), JSON.stringify(asked))
+  check('order: with its three photos', core.images()[1]?.length === 3, `${core.images()[1]?.length} image(s)`)
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
+// 21. An update Telegram sends again after a restart, already taken by the process before: refused by the next one,
+// which reads the same state. What waits behind an album is not confirmed to Telegram until it is taken, so after a
+// crash it comes again; a request for usage is answered at once and no turn's record is written for it, so the seen
+// mark was kept only by the half-second debounced save.
+{
+  const home = mkdtempSync(join(tmpdir(), 'tg-replay-'))
+  const ask = { update_id: 60, message: { message_id: 60, from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, text: 'usage' } }
+  const one = fakeApi({ updates: [ask] })
+  const t1 = transportFor(one, home)
+  const before = bootAround(t1, home)
+  await sleep(250)
+  await t1.close()
+  const two = fakeApi({ updates: [ask] })
+  const t2 = transportFor(two, home)
+  const after = bootAround(t2, home, { stateDir: before.stateDir })
+  await sleep(600)
+  await t2.close()
+  const replies = (api) => api.calls.filter((c) => c.method === 'sendMessage').length
+  check('replay: the first process answers it', replies(one) === 1, `${replies(one)} reply(ies)`)
+  check('replay: a new process with the same state refuses it', replies(two) === 0, `${replies(two)} reply(ies)`)
+  after.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
+// 22. An entry that cannot be read does not stop its chat: an album item the transport throws on (a photo with no file
+// id) is logged and skipped, and what the chat said after it is still taken. Thrown in the album's timer, it was an
+// uncaught exception, which ends the gateway.
+{
+  const thrown: unknown[] = []
+  const catcher = (e: unknown) => { thrown.push(e) }
+  process.on('uncaughtException', catcher)
+  process.on('unhandledRejection', catcher)
+  const home = mkdtempSync(join(tmpdir(), 'tg-throw-'))
+  const api = fakeApi({ updates: [
+    { update_id: 70, message: { message_id: 70, media_group_id: 'G3', from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, photo: [{ file_size: 4 }] } },
+    { update_id: 71, message: { message_id: 71, from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, text: 'after it' } },
+  ] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(2000)
+  await t.close()
+  process.off('uncaughtException', catcher)
+  process.off('unhandledRejection', catcher)
+  const asked = core.texts().map((said) => said.split('[user message]\n').at(-1))
+  check('unreadable: nothing is thrown out of the transport', thrown.length === 0, thrown.map(String).join(' | '))
+  check('unreadable: it is logged', t.logs.some((l) => /telegram: could not read update 70/.test(l)), t.logs.join(' | ').slice(0, 300))
+  check('unreadable: and the chat\'s next message is still taken', JSON.stringify(asked) === JSON.stringify(['after it']), JSON.stringify(asked))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

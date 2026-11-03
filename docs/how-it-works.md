@@ -471,6 +471,10 @@ downloads it into the agent home, the core admits it through the harness's attac
 before the message is accepted, and the route projection happens in the llm adapter — for
 image-capable models only, so a text-only deployment degrades to a filename rather than failing.
 
+A message may be files alone: a picture without a caption, an upload without words. It is a turn like any other,
+and the person's message reads `(sent a file without text: <name>)` to the model, the names as the attachment list
+gives them. A Telegram album, one update per item, is gathered into one message (the caption, every item's file).
+
 **The model has to declare that it accepts images.** Without this the model is handed a text
 descriptor instead:
 

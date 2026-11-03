@@ -38,6 +38,19 @@ is built before the thing it stands on. The detailed history of each milestone i
 
 ## Open
 
+- **A wordless turn opens even when no attachment is usable.** A message of files alone is a turn whether or not
+  anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
+  no download URL, a Telegram voice note or animation, a Discord voice message. It costs a model call that can only say
+  it cannot open the file. Not fixed.
+- **The state file is written at once per new inbound event, by a plain write.** `sessions.json` is written without a
+  temporary file and a rename, as every immediate save is; with one write per event that passes the allowlist, a full
+  disk (`ENOSPC`) mid-write can truncate it more often than before. Not fixed.
+- **A Telegram button press sent again after a crash is not deduplicated.** An unconfirmed `callback_query` comes again
+  to the next process and is handed over again; it most likely finds no pending request for its id and is answered as
+  stale. Not fixed.
+- **An album can be cut in two by getUpdates' page.** While an album is gathered, getUpdates is sent its first update
+  as the offset and returns at most 100 updates from there; with more than 100 arriving after its first item inside
+  the 1.2 s window, a later item is not seen until the album is taken, and becomes a message of its own. Not fixed.
 - **Workspace temp directories are never removed.** Each workspace (a tenant, a scenario's) leaves a
   `deepbot-cmd-<hash>` directory in the user's temp; macOS clears it only after days unused. Pruning old ones could
   join the log rotation job.
@@ -230,6 +243,12 @@ Decided against:
   (Slack `event.user`, Telegram `from.id`, Discord `author.id`), checked through the fake transport.
 - Discord and Telegram typing, uploads and approval buttons, and Telegram's HTML rendering: mocked
   APIs only, no live server or bot.
+- A message of files alone (an upload without text, a photo without a caption, a file in a Slack DM or with only a
+  mention): fake platform APIs only. The event shapes are from the platforms' documentation, not seen: that a Slack
+  DM's `file_share` arrives with empty text, an app_mention with only a file carries the file and only the mention,
+  and a Telegram photo without a caption has no `text`. Whether a model asks or guesses on a picture with no words
+  is not measured. A Telegram album is gathered by its `media_group_id` until no item has come for 1.2 s; how far
+  apart Telegram sends an album's items was not measured, and items further apart than that are two messages.
 - Slack approval buttons in a real workspace: they need Interactivity turned on in the app's
   settings; without it a press does nothing and the person types the answer, which the request offers.
 - Slack's working status in a live workspace: no turn has run on this code there yet. Which method a

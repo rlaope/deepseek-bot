@@ -226,6 +226,20 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A message of files alone got nothing, on every platform.** A Discord upload without text, a Telegram photo
+  without a caption and a file shared in a Slack DM were each dropped: the core returned on the empty text, and
+  Slack's transport before it (a DM's `file_share` has empty text, and an app_mention with only a file has nothing
+  left once the mention is taken out). Such a message is a turn now: the model gets the attachment list as for any
+  message, and the person's message reads `(sent a file without text: <name>)`. A message with neither text nor
+  files still opens nothing, and other Slack subtypes still do not come in. An unaddressed one in a thread the bot
+  takes part in (`replyMode: thread`) is a quiet turn, as a message with words is. A Telegram album, which comes as one
+  update per item with the caption on one of them, is one message: its text is the caption and its files every item's,
+  gathered until no item has come for 1.2 s; until then its items are not confirmed to Telegram, so a restart
+  meanwhile gets the album again whole. Taken one by one, it opened a turn per photo. What the chat says after an
+  album waits behind it, so "which one is cheaper?" after three photos is answered after them and with them in the
+  conversation; other chats do not wait. A message already handled is marked so at once, not on the half-second
+  debounced save: a usage request or a stop sent again after a restart within it was answered twice. Checked in the Discord, Telegram
+  and Slack suites through the core, red before; against fake platform APIs only.
 - **`replyMode: thread` and `all` did nothing on Discord and Telegram.** Validation accepted them, but neither
   transport reads the mode, and the core's quiet path needs a thread, which a Discord channel or Telegram chat does
   not have: the bot answered a mention, a reply to it or a DM as with `mention`. The plugin now refuses to start with

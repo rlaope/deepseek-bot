@@ -51,6 +51,8 @@ interface TelegramMessage {
   video?: TelegramFileRef
   voice?: TelegramFileRef
   reply_to_message?: TelegramMessage
+  /** An album: one message per item, sharing this id; the caption is on one of them. */
+  media_group_id?: string
 }
 interface TelegramCallbackQuery { id: string; from?: TelegramUser; data?: string; message?: TelegramMessage }
 interface TelegramUpdate { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; callback_query?: TelegramCallbackQuery }
@@ -104,7 +106,8 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
   let botUsername: string | null = null
   let stopped = false
   let polling = false
-  let offset = 0
+  /** The first update not yet taken. What getUpdates is sent stops before an album still being gathered. */
+  let next = 0
   let onMessage: ((message: InboundMessage) => void) | null = null
   let onAction: ((action: ActionEvent) => void) | null = null
 
@@ -299,16 +302,17 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     seenMessages.set(chat, ring)
   }
 
-  function parseUpdate(update: TelegramUpdate): InboundMessage | null {
-    const message = update.message
-    if (!message) return null
+  /** One message, or an album's items in order: its text is the caption, wherever it is, and its files every item's. */
+  function parseMessages(items: TelegramMessage[]): InboundMessage | null {
+    const message = items[0]
     if (message.from?.is_bot) return null
-    const text = message.text ?? message.caption ?? ''
-    const files = filesOf(message)
+    const said = items.find((item) => (item.text ?? item.caption ?? '').trim() !== '') ?? message
+    const text = said.text ?? said.caption ?? ''
+    const files = items.flatMap(filesOf)
     if (text.trim() === '' && files.length === 0) return null
-    const addressed = addressedToBot(message)
-    if (addressed && text.trim() !== '') remember(message, stripMention(text))
-    else if (text.trim() !== '') remember(message, text)
+    const addressed = items.some(addressedToBot)
+    if (addressed && text.trim() !== '') remember(said, stripMention(text))
+    else if (text.trim() !== '') remember(said, text)
     return {
       eventId: `tg-${message.chat.id}-${message.message_id}`,
       target: { channel: String(message.chat.id), threadTs: null },
@@ -321,16 +325,66 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     }
   }
 
+  /**
+   * Albums being gathered, and what a chat said after one. Telegram sends an album as one update per item, the caption
+   * on one of them, and says nothing of how many: the album is the items that came until none has for ALBUM_MS. While
+   * one is gathered, its chat's later messages wait behind it, so they are taken in the order they were sent; other
+   * chats do not wait. Until something waiting is taken, getUpdates is not sent an offset past it, so a process that
+   * stops meanwhile leaves it, the album whole, to the next one; what came after it is sent again too, and skipped.
+   */
+  const ALBUM_MS = 1200
+  interface Waiting { first: number; group?: string; items: TelegramMessage[]; ready: boolean; timer: ReturnType<typeof setTimeout> | null }
+  const waiting = new Map<string, Waiting[]>()
+  /** Hand over, in order, what a chat has ready, up to an album still being gathered. */
+  function drain(chat: string) {
+    const queue = waiting.get(chat) ?? []
+    while (queue.length > 0 && queue[0].ready) {
+      const entry = queue.shift()
+      // One that cannot be read is skipped, said in the log: thrown here, in an album's timer it ended the process, and
+      // in a poll it left the chat's queue stuck behind it.
+      try {
+        const parsed = parseMessages(entry.items.sort((a, b) => a.message_id - b.message_id))
+        if (parsed !== null && onMessage !== null) onMessage(parsed)
+      } catch (e) {
+        log(`telegram: could not read update ${entry.first}, skipped: ${String((e as Error)?.message ?? e)}`)
+      }
+    }
+    if (queue.length === 0) waiting.delete(chat)
+  }
+  function take(updateId: number, message: TelegramMessage) {
+    const chat = String(message.chat.id)
+    const queue = waiting.get(chat) ?? []
+    waiting.set(chat, queue)
+    const group = message.media_group_id
+    if (group === undefined) {
+      queue.push({ first: updateId, items: [message], ready: true, timer: null })
+      drain(chat)
+      return
+    }
+    let album = queue.find((entry) => entry.group === group && !entry.ready)
+    if (album === undefined) { album = { first: updateId, group, items: [], ready: false, timer: null }; queue.push(album) }
+    album.items.push(message)
+    if (album.timer !== null) clearTimeout(album.timer)
+    const gathered = album
+    album.timer = setTimeout(() => { gathered.ready = true; gathered.timer = null; drain(chat) }, ALBUM_MS)
+  }
+
   let backoff = 2000
 
   async function pollOnce(): Promise<number> {
+    // While an album is gathered: its items stay unconfirmed, and the poll does not wait, or the album's end would wait
+    // for the next update to come.
+    const gathering = [...waiting.values()].flat().map((entry) => entry.first)
     const updates = await call<TelegramUpdate[]>('getUpdates', {
-      offset,
-      timeout: 30,
+      offset: Math.min(next, ...gathering),
+      timeout: gathering.length > 0 ? 0 : 30,
       allowed_updates: ['message', 'callback_query'],
     })
+    let taken = 0
     for (const update of updates) {
-      offset = update.update_id + 1
+      if (update.update_id < next) continue
+      next = update.update_id + 1
+      taken++
       // A button press. Answered at once, or the button keeps spinning on the person's screen.
       if (update.callback_query !== undefined) {
         const query = update.callback_query
@@ -341,9 +395,11 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
         }
         continue
       }
-      const message = parseUpdate(update)
-      if (message !== null && onMessage !== null) onMessage(message)
+      if (!update.message) continue
+      take(update.update_id, update.message)
     }
+    // Only what was sent again: a pause, so the album's wait is not a loop of requests.
+    if (gathering.length > 0 && taken === 0) await new Promise((resolve) => setTimeout(resolve, 250))
     return updates.length
   }
 
@@ -492,6 +548,9 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
       const was = polling
       stopped = true
       polling = false
+      // An album still being gathered, and what waits behind it, are left unconfirmed, for the next process to take.
+      for (const entry of [...waiting.values()].flat()) if (entry.timer !== null) clearTimeout(entry.timer)
+      waiting.clear()
       return was
     },
   }

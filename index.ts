@@ -56,6 +56,7 @@ import { createTelegramTransport } from './transports/telegram.js'
 import { createDiscordTransport } from './transports/discord.js'
 import { createLocalTransport, LOCAL_CHANNEL } from './transports/local.js'
 import { createCompositeTransport } from './transports/composite.js'
+import { safeFileName } from './transports/attachments.js'
 import { createProgressTracker, tenthsOf, typicalTurns } from './progress.js'
 import { LANGUAGES, languageOf } from './i18n.js'
 import { defaultWords, messages } from './messages.js'
@@ -634,12 +635,17 @@ export function apply(ctx, config) {
       } catch (e) { log('state write failed', String(e)) }
     }, 500)
   }
-  /** Slack redelivers events. Drop anything already handled. */
+  /**
+   * Slack redelivers events, and Telegram sends again what was not confirmed before a restart. Drop anything already
+   * handled. Written at once: a turn's in-flight record writes the state at once anyway, but a message answered without
+   * a turn (usage, a stop) was marked only by the debounced save, and a restart within it answered it twice. Not pruned
+   * here: a conversation quiet for weeks would lose its rows (its usage, its route) before this message was answered.
+   */
   function alreadySeen(eventId) {
     if (!eventId) return false
     if (state.seen[eventId]) return true
     state.seen[eventId] = Date.now()
-    saveState()
+    try { writeFileSync(STATE, JSON.stringify(state, null, 1)) } catch (e) { log('state write failed', String(e)) }
     return false
   }
 
@@ -3393,8 +3399,13 @@ export function apply(ctx, config) {
       // Whitespace and zero-width characters are nothing to say. Found by the edge sweep:
       // an empty string was refused, but "   " and a run of zero-width spaces each started
       // a turn — an expensive way to answer nothing, and a question the model can only guess at.
-      if (message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === '') return
-    const prompt = message.text.slice(0, cfg.maxPromptChars)
+      // Files are something to say, though: sent without words, the model is told so, by the names the manifest uses.
+      const wordless = message.text.replace(/[\s\u200b-\u200f\u2060\ufeff]+/gu, '') === ''
+      if (wordless && message.files.length === 0) return
+    const howMany = message.files.length === 1 ? 'a file' : `${message.files.length} files`
+    const prompt = wordless
+      ? `(sent ${howMany} without text: ${message.files.map((file) => safeFileName(file.name)).join(', ')})`
+      : message.text.slice(0, cfg.maxPromptChars)
     // Chatter does not keep it listening: a mention does, and a reply of its own (below).
     if (!quiet) state.touched[key] = Date.now()
     bindTenant(key)
