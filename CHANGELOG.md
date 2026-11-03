@@ -119,9 +119,10 @@ the caveat about version numbers is at the bottom.
     lays out only the rest: about 0.2 ms a frame at the end of the same answer. Every frame lays out as the whole
     text does; a text that is not the last one with more at its end (a retry, the committed reply) starts over.
   - A new width or palette lays out the blocks in view and a screen around them, about 2–6 ms for the same session.
-    The others keep an estimate of their lines from the width before until they come near the view; one laid out
-    above the reader's place moves it by what the estimate was off. Copying a selection and asking for every line
-    lay out what they cover first.
+    The others keep an estimate of their lines from the width before until they come near the view. A reader
+    scrolled up stays on the block and the part of it they were reading, and a selection on the lines it was made
+    on, however far the estimates above them were off. Copying a selection and asking for every line lay out what
+    they cover first.
   Checked by tests that count the work, not the time (lines laid out over a stream; blocks laid out on a resize),
   each failing with the caching removed, and by a stream compared frame by frame with a whole layout.
 

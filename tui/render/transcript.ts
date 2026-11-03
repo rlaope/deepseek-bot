@@ -120,7 +120,7 @@ export class Transcript {
   /** All lines at this width, every block laid out. Cheap when nothing changed. */
   layout(width: number): Line[] {
     this.build(width)
-    this.ensure(0, Infinity)
+    this.ensure(() => [0, Infinity])
     return this.flat
   }
 
@@ -138,7 +138,10 @@ export class Transcript {
     const theme = themeGeneration()
     if (!this.dirty && width === this.flatWidth && theme === this.flatTheme) return
     const before = this.flat.length
-    this.assemble(width, theme)
+    // Another width or palette: every block above may take another number of lines, so the reader's place and the
+    // selection are kept on their blocks rather than on their line numbers.
+    if (width !== this.flatWidth || theme !== this.flatTheme) this.reassemble(width, theme)
+    else this.assemble(width, theme)
     const grew = this.flat.length - before
     this.dirty = false
     if (!this.follow && grew > 0 && width === this.lastWidth && !this.quiet) this.unseen += grew
@@ -181,34 +184,62 @@ export class Transcript {
    * Lay out the estimated blocks with a line in [from, to). One above the reader's place moves it by what its
    * estimate was off, so the lines in view stay. Returns whether any was laid out.
    */
-  private ensure(from: number, to: number): boolean {
+  private ensure(range: () => [number, number]): boolean {
     const width = this.flatWidth
     const theme = this.flatTheme
     let any = false
     for (;;) {
+      const [from, to] = range()
       const due = this.spans.filter((s) => !s.exact && s.to > from && s.from < to)
       if (due.length === 0) return any
       any = true
-      for (const s of due) {
-        const lines = s.block.lines(width)
-        this.cache.set(s.block.id, { version: s.block.version, width, theme, lines })
-        if (s.to <= this.top) this.top = Math.max(0, this.top + lines.length - (s.to - s.from))
-      }
-      this.assemble(width, theme)
+      for (const s of due) this.cache.set(s.block.id, { version: s.block.version, width, theme, lines: s.block.lines(width) })
+      this.reassemble(width, theme)
     }
+  }
+
+  /**
+   * `assemble`, with the reader's place (unless following) and the selection's ends kept where they were in their
+   * blocks: a block's line count changing above them moves them with it, and within a block that changed they keep
+   * their share of it.
+   */
+  private reassemble(width: number, theme: number): void {
+    const top = this.follow ? null : this.mark(this.top)
+    const ends = this.selection === null ? null : [this.mark(this.selection.anchor.line), this.mark(this.selection.head.line)]
+    this.assemble(width, theme)
+    if (top !== null) this.top = this.place(top, this.top)
+    if (ends !== null && this.selection !== null) {
+      this.selection.anchor = { ...this.selection.anchor, line: this.place(ends[0], this.selection.anchor.line) }
+      this.selection.head = { ...this.selection.head, line: this.place(ends[1], this.selection.head.line) }
+    }
+  }
+
+  /** A line as its block and where in it: what `place` finds again after the lines moved. */
+  private mark(line: number): { block: Block; offset: number; size: number } | null {
+    const block = this.blockAt(line)
+    const s = block === null ? undefined : this.spans.find((x) => x.block === block)
+    return s === undefined ? null : { block: s.block, offset: line - s.from, size: s.to - s.from }
+  }
+
+  private place(at: { block: Block; offset: number; size: number } | null, fallback: number): number {
+    const s = at === null ? undefined : this.spans.find((x) => x.block === at.block)
+    if (at === null || s === undefined) return fallback
+    const size = s.to - s.from
+    return s.from + Math.min(Math.max(0, size - 1), Math.floor((at.offset * size) / Math.max(1, at.size)))
   }
 
   /** The visible slice for a viewport of `height` rows, adjusting `top` for follow mode. */
   visible(width: number, height: number): Line[] {
     this.build(width)
     this.lastHeight = height
-    // The rows in view laid out, and a screen above and below them, so a scroll finds them ready.
-    for (;;) {
+    const settle = () => {
       const maxTop = Math.max(0, this.flat.length - height)
       if (this.follow) this.top = maxTop
       this.top = Math.max(0, Math.min(this.top, maxTop))
-      if (!this.ensure(this.top - height, this.top + 2 * height)) break
     }
+    settle()
+    // The rows in view laid out, and a screen above and below them, so a scroll finds them ready.
+    this.ensure(() => { settle(); return [this.top - height, this.top + 2 * height] })
     const maxTop = Math.max(0, this.flat.length - height)
     // At the bottom again — the viewport grew, or what was hidden fits — is following again: nothing is unseen.
     if (this.top >= maxTop) { this.follow = true; this.unseen = 0 }
@@ -300,8 +331,9 @@ export class Transcript {
     if (this.selection === null) return ''
     const { anchor, head } = this.selection
     if (anchor.line === head.line && anchor.col === head.col) return ''
-    this.ensure(Math.min(anchor.line, head.line), Math.max(anchor.line, head.line) + 1)
-    return extract(this.flat, anchor, head)
+    // Laid out first: its ends move with their lines, so they are read again after.
+    this.ensure(() => { const { anchor: a, head: h } = this.selection!; return [Math.min(a.line, h.line), Math.max(a.line, h.line) + 1] })
+    return extract(this.flat, this.selection.anchor, this.selection.head)
   }
 
   /** Whether the cell (line, col) is inside the selection, for highlighting. */

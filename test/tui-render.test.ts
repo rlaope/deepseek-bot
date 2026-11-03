@@ -650,6 +650,39 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   check('resize: (control) at the width it was laid out at, nothing is laid out again', (calls = 0, tr.visible(100, 28), calls === 0))
 }
 
+// A resize while scrolled up keeps the reader on what they were reading, and a selection on what it selected.
+{
+  const none = { text: '', style: '' }
+  // Ten short lines a block: as many at 40 columns as at 80, so every estimate from the other width is off.
+  const blocks = () => Array.from({ length: 40 }, (_, i) => ({ id: `b${i}`, version: 0, lines: (w) => layout(Array.from({ length: 10 }, (_, j) => `block ${i} line ${j}`).join('\n'), w, '', { first: none, rest: none }) }))
+  const text = (line) => line.spans.map((sp) => sp.text).join('')
+  for (const [from, to] of [[80, 40], [40, 80]]) {
+    const tr = new Transcript()
+    for (const b of blocks()) tr.push(b)
+    tr.layout(from); tr.visible(from, 20)
+    tr.top = 300; tr.follow = false
+    tr.visible(from, 20)
+    const shown = tr.visible(to, 20)
+    check(`resize: scrolled up, ${from}→${to} columns keeps the block that was at the top`, text(shown[0]) === 'block 30 line 0' && tr.blockAt(tr.top)?.id === 'b30', `${JSON.stringify(text(shown[0]))} at ${tr.top}`)
+    tr.scroll(-5); const up = tr.visible(to, 20)
+    check(`resize: (control) and ${from}→${to} still scrolls from there`, text(up[0]) === 'block 29 line 5', JSON.stringify(text(up[0])))
+  }
+  {
+    // A selection made after a resize, then blocks above it laid out (to the top and back): it stays on its text.
+    const tr = new Transcript()
+    for (const b of blocks()) tr.push(b)
+    tr.layout(80); tr.visible(80, 20)
+    tr.top = 300; tr.follow = false
+    tr.visible(40, 20)
+    const at = tr.top
+    tr.beginSelection({ line: at + 1, col: 0 }); tr.extendSelection({ line: at + 3, col: 99 })
+    const before = tr.selectedText()
+    tr.toTop(); tr.visible(40, 20)
+    const after = tr.selectedText()
+    check('selection: blocks above it laid out, it still copies the lines it was made on', before === 'block 30 line 1\nblock 30 line 2\nblock 30 line 3' && after === before, JSON.stringify({ before, after }))
+  }
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)
