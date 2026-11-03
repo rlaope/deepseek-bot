@@ -65,7 +65,7 @@ function groups(address: string): number[] | null {
 }
 
 /**
- * The IPv4 address an IPv6 one carries, or null: NAT64 (64:ff9b::/96) and the old compatible form (::a.b.c.d, with
+ * The IPv4 address an IPv6 one carries, or null: NAT64 (64:ff9b::/96, and the local-use 64:ff9b:1::/48) and the old compatible form (::a.b.c.d, with
  * :: and ::1 among them) in the last 32 bits, 6to4 (2002::/16) in the 32 after the prefix. A mapped one
  * (::ffff:a.b.c.d) needs nothing: BlockList checks it against the IPv4 rules itself.
  */
@@ -73,7 +73,7 @@ function carriedIPv4(address: string): string | null {
   const g = groups(address)
   if (g === null) return null
   const quad = (hi: number, lo: number) => [hi >> 8, hi & 255, lo >> 8, lo & 255].join('.')
-  const translated = g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)
+  const translated = g[0] === 0x64 && g[1] === 0xff9b && (g.slice(2, 6).every((x) => x === 0) || g[2] === 1)
   const compatible = g.slice(0, 6).every((x) => x === 0)
   if (translated || compatible) return quad(g[6], g[7])
   if (g[0] === 0x2002) return quad(g[1], g[2])
