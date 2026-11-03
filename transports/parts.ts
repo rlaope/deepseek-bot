@@ -10,7 +10,8 @@
  * one), inside an `&…;` entity (Slack's text is escaped so), on a ``` fence's own line, right after the line that
  * opens one or right before the line that closes one. A cut inside a code block closes it at the end of the part and
  * opens it again, with its info string, at the start of the next, so each part is shown as code where the answer was
- * code and as text where it was text. Without those added fences, the parts are the answer, whole and in order.
+ * code and as text where it was text; without the info string when that would take more than a quarter of the room,
+ * and not at all when the bare mark would. Without those added fences, the parts are the answer, whole and in order.
  */
 export function numberedParts(text: string, limit: number): string[] {
   if (text.length === 0) return ['(empty response)']
@@ -20,19 +21,26 @@ export function numberedParts(text: string, limit: number): string[] {
   let count = Math.ceil(text.length / limit)
   for (;;) {
     const room = Math.max(2, limit - `(${count}/${count})\n`.length)
+    // A reopened fence is paid for in every part it opens: one about as long as the room left a character or two of
+    // the answer per part, and each part over the limit. A long info string is left off; a mark too long even bare
+    // carries nothing, and the code goes on as text in the next part.
+    const reopenOf = (fence: Fence | null): string => {
+      if (fence === null) return ''
+      if (fence.mark.length + fence.info.length + 1 <= room / 4) return `${fence.mark}${fence.info}\n`
+      return fence.mark.length + 1 <= room / 4 ? `${fence.mark}\n` : ''
+    }
     const parts: string[] = []
     for (let i = 0; i < text.length;) {
-      const open = shape.fenceAt(i)
-      const reopen = open === null ? '' : `${open.mark}${open.info}\n`
+      const reopen = reopenOf(shape.fenceAt(i))
       const max = Math.max(i + 1, i + room - reopen.length)
       let end = cutBefore(text, shape.blocked, i, max)
       let close = ''
       const crossing = end < text.length ? shape.fenceAt(end) : null
-      if (crossing !== null) {
+      if (crossing !== null && reopenOf(crossing) !== '') {
         // Room for the closing mark, and for its line end when the part does not end on one.
         end = cutBefore(text, shape.blocked, i, Math.max(i + 1, max - crossing.mark.length - 1))
         const inside = end < text.length ? shape.fenceAt(end) : null
-        if (inside !== null) close = `${text[end - 1] === '\n' ? '' : '\n'}${inside.mark}`
+        if (inside !== null && reopenOf(inside) !== '') close = `${text[end - 1] === '\n' ? '' : '\n'}${inside.mark}`
       }
       parts.push(`${reopen}${text.slice(i, end)}${close}`)
       i = end
