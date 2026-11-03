@@ -141,7 +141,9 @@ Create an application at <https://discord.com/developers/applications>, add a bo
 *Read Message History*, *Attach Files* and *Add Reactions* permissions (the last for the progress marks; a
 channel that denies it just goes without them). Give `dsh gateway setup` the bot token; at a
 terminal it checks the intent and makes the invite link for you. For `--users`: Developer Mode on, then
-right-click a name → Copy User ID.
+right-click a name → Copy User ID. A message in a channel the gateway has not told the bot of waits up to
+`channelLookupMs` (5000, in the deepbot row) for Discord to say whether that channel is a thread; past it, the
+message goes on with its parent unknown.
 
 ## The model provider
 

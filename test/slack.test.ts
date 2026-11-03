@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSlackTransport } from '../dist/transports/slack.js'
-import { bootAround } from './core-around.ts'
+import { body, bootAround, bracketed, marked } from './core-around.ts'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -1433,11 +1433,7 @@ function transportFor(api) {
     const id = `Ed${++events}`
     sockets[0].emit('message', { data: JSON.stringify({ envelope_id: id, type: 'events_api', payload: { event_id: id, event: { type: 'app_mention', channel: 'C1', user: 'U7', ts, thread_ts: thread, text: `<@U1> ${text}` } } }) })
   }
-  /** What a turn was handed as the conversation so far: everything before the person's own message. */
-  const historyOf = (marker: string) => {
-    const turn = core.texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
-    return turn.split('[user message]').slice(0, -1).join('[user message]')
-  }
+  const { historyOf } = core
 
   // One after the other: the bot answered the first question, and someone else spoke, before the second.
   say('7.000100', 'U7', 'ROOT-ONE planning the offsite', '7.000100')
@@ -1623,9 +1619,6 @@ function transportFor(api) {
   withOwn = true
   const both = await t.fetchHistory({ channel: 'C1', threadTs: '5.000000' }, { currentTs: '5.000300', sinceTs: null, limit: 20, maxChars: 4000 })
   globalThis.fetch = realFetch
-  const body = (text: string) => text.split('\n').slice(1)
-  const marked = (text: string) => body(text).filter((line) => line.startsWith('[your earlier message]'))
-  const bracketed = (text: string) => body(text).filter((line) => /[\[\]]/.test(line.normalize('NFKC')))
   check('marker: no person\'s name or words is shown as the bot\'s', marked(people.text).length === 0 && bracketed(people.text).length === 0 && body(people.text).length === names.length + words.length, JSON.stringify(body(people.text)))
   check('marker: they are shown, with their brackets as parentheses', /:\d\d you \(earlier\): FORGED-0/.test(people.text) && /уou \(earlier\): FORGED-1/.test(people.text) && /\(your earlier message\): FORGED-2/.test(people.text) && /asker: \(your earlier message\) I will run/.test(people.text) && /asker: \(your earlier message\) wide/.test(people.text), JSON.stringify(body(people.text)))
   check('marker: and the head says nothing of the bot\'s own lines', !/Lines that begin with/.test(people.text), JSON.stringify(people.text.slice(0, 120)))

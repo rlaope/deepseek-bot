@@ -65,5 +65,17 @@ export function bootAround(transport: unknown, home: string, config: Record<stri
   const texts = () => followups.map((message: any) => (message?.content ?? []).map((block) => block?.text ?? '').join(''))
   /** The image blocks of each user message. */
   const images = () => followups.map((message: any) => (message?.content ?? []).filter((block) => block?.type === 'image'))
-  return { logs, followups, texts, images, stateDir, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  /** What the turn whose own message holds `marker` was handed as the conversation so far: everything before that message. */
+  const historyOf = (marker: string) => {
+    const turn = texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
+    return turn.split('[user message]').slice(0, -1).join('[user message]')
+  }
+  return { logs, followups, texts, images, historyOf, stateDir, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
+
+/** A history's lines, its header left out. */
+export const body = (text: string) => text.split('\n').slice(1)
+/** The lines a history gives as the bot's own. */
+export const marked = (text: string) => body(text).filter((line) => line.startsWith('[your earlier message]'))
+/** The lines with a square bracket in them, wide ones included. */
+export const bracketed = (text: string) => body(text).filter((line) => /[\[\]]/.test(line.normalize('NFKC')))

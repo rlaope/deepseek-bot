@@ -275,6 +275,8 @@ const DEFAULTS = {
   markEveryMs: 5000,
   // The pause unit between tries of a mark that ended a turn and failed (×1, ×5, ×15).
   markRetryMs: 3000,
+  // How long Discord waits to be told whether a channel it was not told of is a thread, before its message goes on without.
+  channelLookupMs: 5000,
   // How much of a turn shows on the person's message: 'progress' (taken, a digit while it runs, how it ended), 'simple'
   // (taken, then how it ended) or 'off' (nothing; a quiet word's salute and the model's own reaction still show).
   marks: 'progress',
@@ -380,11 +382,13 @@ function saysNothing(text: string): boolean {
   const outside = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, '').trim()
   return outside !== '' && (NO_REPLY.test(outside) || SILENT.test(outside))
 }
+/** A token as models write it, with one full stop after it and one pair of backticks around it taken off. */
+const unwrapped = (token: string) => token.replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1')
 /**
  * The whole answer of a turn told to stay out of the conversation: nothing is posted, and the conversation is muted. As
  * models write it, one full stop after it and one pair of backticks around it are let pass; any other text is not.
  */
-const isQuietAnswer = (text: string) => /^\[quiet\]$/i.test(text.trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1'))
+const isQuietAnswer = (text: string) => /^\[quiet\]$/i.test(unwrapped(text.trim()))
 /**
  * The model's reaction, `[react:👍]`: the whole answer, or its first line with the answer after it (`rest`). As models
  * write it, one pair of backticks around it and one full stop after it are let pass. A token not alone on its line, or
@@ -394,7 +398,7 @@ const isQuietAnswer = (text: string) => /^\[quiet\]$/i.test(text.trim().replace(
 function reactionIn(text: string): { emoji: string; rest: string } | null {
   const answer = text.trim()
   const cut = answer.indexOf('\n')
-  const first = (cut === -1 ? answer : answer.slice(0, cut)).trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1')
+  const first = unwrapped((cut === -1 ? answer : answer.slice(0, cut)).trim())
   const token = /^\[react:([^\]\s]+)\]$/.exec(first)
   if (token === null) return null
   const bare = (e: string) => e.replace(/[\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '')
@@ -480,6 +484,7 @@ export function apply(ctx, config) {
   for (const setting of ['backgroundKeepMs', 'maxKeptAgents']) {
     if (!Number.isInteger(cfg[setting]) || cfg[setting] < 0) problems.push(`${setting}: must be a whole number, 0 or more (got: ${String(cfg[setting])})`)
   }
+  if (!Number.isInteger(cfg.channelLookupMs) || cfg.channelLookupMs <= 0) problems.push(`channelLookupMs: must be a whole number of milliseconds, more than 0 (got: ${String(cfg.channelLookupMs)})`)
   // Unset or empty (`marks:` with nothing after it) is the default, as for language.
   if (cfg.marks != null && String(cfg.marks).trim() !== '' && !MARKS_MODES.includes(cfg.marks)) problems.push(`marks: must be 'progress', 'simple' or 'off' (got: ${String(cfg.marks)})`)
   if (!['ask', 'deny'].includes(cfg.readOutside)) problems.push(`readOutside: must be 'ask' or 'deny' (got: ${String(cfg.readOutside)})`)
@@ -1490,7 +1495,7 @@ export function apply(ctx, config) {
       for (const ts of record.marked ?? []) markOf(target, ts, { kind: 'failed' })
       // Told to stay out of it: nothing is said there, and a working message left behind comes down.
       if (state.muted?.[key] !== undefined) {
-        if (typeof record.placeholder === 'string') await Promise.resolve(via(target).remove?.(target, record.placeholder)).catch(() => false)
+        if (typeof record.placeholder === 'string') await takeDown(target, record.placeholder)
         log(`inflight ${key}: muted, dropped without a notice`)
         forget(key)
         continue
@@ -3310,6 +3315,11 @@ export function apply(ctx, config) {
     return typeof transport.forTarget === 'function' ? transport.forTarget(target) : transport
   }
 
+  /** Take one of the bot's own messages down where the platform can; a refusal leaves it. */
+  function takeDown(target: Origin, ts: string): Promise<boolean> | undefined {
+    return via(target).remove?.(target, ts).catch(() => false)
+  }
+
   /** Session ids say where the conversation lives: `slack-…` (every platform so far), `tui-…`. */
   function sessionPrefixFor(origin: Origin | null): string {
     const prefix = origin === null ? undefined : via(origin).sessionPrefix
@@ -3454,7 +3464,7 @@ export function apply(ctx, config) {
     }
     // Told to stay out (a quiet word, or the model's "[quiet]"): nothing it would join without being named — a message
     // without a mention, or one only the mode gives it (replyMode 'all'). Each still reaches the next turn as history.
-    if ((quiet || message.byMode === true) && state.muted?.[target.threadTs === null ? channel : `${channel}:${target.threadTs}`] !== undefined) return
+    if ((quiet || message.byMode === true) && state.muted?.[keyOf(target)] !== undefined) return
     // Nor for anyone outside allowedUsers — and no reply, which would be a way to make it post.
     if (!mayTalk(message.user, channel)) { log(`ignored: ${message.user} is not in allowedUsers (channel=${channel})`); return }
     if (alreadySeen(message.eventId)) { log(`duplicate event ignored event_id=${message.eventId}`); return }
@@ -3571,7 +3581,7 @@ export function apply(ctx, config) {
       if (stopped !== 'running') {
         await progress.settle(key)
         const left = progress.take(key)?.ts ?? null
-        if (left !== null) await Promise.resolve(via({ channel, threadTs }).remove?.({ channel, threadTs }, left)).catch(() => false)
+        if (left !== null) await takeDown({ channel, threadTs }, left)
       }
       settleInflight(key)
       return
@@ -3708,6 +3718,11 @@ export function apply(ctx, config) {
         const orphaned = quiet && ![...(waiting.get(key) ?? [])].some((t) => t.quiet !== true)
         if (!quiet || orphaned) await progress.settle(key)
         const placeholderTs = quiet && !orphaned ? null : progress.take(key)?.ts ?? null
+        /** An answer that is not posted: what was streamed of it comes down, and so does a working message. */
+        const withdrawAnswer = async () => {
+          if (!quiet && streamsTo(replyTarget)) via(replyTarget).stream(replyTarget, { kind: 'reset' })
+          if (placeholderTs !== null) await takeDown(replyTarget, placeholderTs)
+        }
         const ok = r.reason?.kind === 'completed'
         // A message that did not mention it gets an answer or nothing: not "[no reply]", and not a failure, a timeout
         // or an empty answer, in a thread where nobody asked it. A stop said to it with a mention is reported.
@@ -3719,15 +3734,13 @@ export function apply(ctx, config) {
           saveStateNow()
           log(`quiet: the model asked to stay out of ${key} — muted`)
           // What was streamed of it comes down; so does a working message.
-          if (!quiet && streamsTo(replyTarget)) via(replyTarget).stream(replyTarget, { kind: 'reset' })
-          if (placeholderTs !== null) await Promise.resolve(via(replyTarget).remove?.(replyTarget, placeholderTs)).catch(() => false)
+          await withdrawAnswer()
           markOf(replyTarget, ts, { kind: 'quiet' })
           unmarkInflight(key, ts)
         } else if (ok && reaction !== null && r.text === '') {
           // A reaction alone is the answer: nothing is posted, and what was streamed of it and a working message come
           // down. A turn that did not mention it may answer so too, as a person would to a message they saw.
-          if (!quiet && streamsTo(replyTarget)) via(replyTarget).stream(replyTarget, { kind: 'reset' })
-          if (placeholderTs !== null) await Promise.resolve(via(replyTarget).remove?.(replyTarget, placeholderTs)).catch(() => false)
+          await withdrawAnswer()
           via(replyTarget).react(replyTarget, ts, reaction)
           if (quiet) { state.touched[key] = Date.now(); saveState() }
           health.answered++
@@ -3737,7 +3750,7 @@ export function apply(ctx, config) {
           ended('done')
         } else if (quiet && !answers && !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user')) {
           log(`kept quiet channel=${channel} ${ok ? 'no reply' : String(r.reason?.kind ?? 'unknown')} ${Date.now() - started}ms`)
-          if (placeholderTs !== null) await via(replyTarget).remove?.(replyTarget, placeholderTs).catch(() => false)
+          if (placeholderTs !== null) await takeDown(replyTarget, placeholderTs)
         } else if (ok && r.text) {
           // A reply of its own keeps it listening in the thread.
           if (quiet) { state.touched[key] = Date.now(); saveState() }

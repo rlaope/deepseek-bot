@@ -770,6 +770,15 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   for (const marks of ['progress', 'simple', 'off', undefined, null, '']) check(`marks: ${String(marks)} is accepted`, refusal(marks) === '', refusal(marks))
 }
 
+// 3g. channelLookupMs, how long Discord's lookup of a channel's parent may take: a whole number of milliseconds, more than
+// 0. Anything else is refused at start; the transport took it as 5000 without a word.
+{
+  const refusal = (config: Record<string, unknown>) => { try { boot({ config }).done(); return '' } catch (err) { return String((err as Error).message) } }
+  for (const value of [0, -1, 2.5, 'ten', null]) check(`channelLookupMs: ${JSON.stringify(value)} is a config error`, /channelLookupMs: must be a whole number of milliseconds, more than 0/.test(refusal({ channelLookupMs: value })), refusal({ channelLookupMs: value }).split('\n')[1] ?? 'accepted')
+  check('channelLookupMs: 400 is accepted', refusal({ channelLookupMs: 400 }) === '', refusal({ channelLookupMs: 400 }))
+  check('channelLookupMs: (control) unset is the default, accepted', refusal({}) === '', refusal({}))
+}
+
 // 4. The same platform event twice is handled once.
 {
   const t = boot()

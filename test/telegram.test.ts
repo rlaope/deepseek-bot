@@ -814,10 +814,7 @@ function groupMessage(overrides = {}) {
   batches.push([asked(95, 'QUESTION-THREE and then?')])
   await sleep(700)
   await t.close()
-  const historyOf = (marker: string) => {
-    const turn = core.texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
-    return turn.split('[user message]').slice(0, -1).join('[user message]')
-  }
+  const { historyOf } = core
   const a = historyOf('QUESTION-A')
   const b = historyOf('QUESTION-B')
   const pictures = historyOf('ALBUM-CAPTION')
