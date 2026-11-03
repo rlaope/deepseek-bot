@@ -77,8 +77,10 @@ function main(): void {
     remember: (text) => appendHistory(history, text),
     stepEffort: () => commands?.stepEffort(),
     branchOf: gitBranch,
-    // ctrl+z: stopped as a shell stops a job, and drawn again when it continues. No job control on Windows.
-    suspend: process.platform === 'win32' ? undefined : (resumed) => { process.once('SIGCONT', resumed); process.kill(process.pid, 'SIGTSTP') },
+    // ctrl+z: stopped as a shell stops a job, and drawn again when it continues. The whole process group, as vim
+    // does, so a wrapper it runs under (pnpm exec, npx) stops too and the shell gets its prompt back. No job
+    // control on Windows.
+    suspend: process.platform === 'win32' ? undefined : (resumed) => { process.once('SIGCONT', resumed); process.kill(0, 'SIGTSTP') },
     io: processIO(process.stdin, process.stdout),
     env: process.env,
     platform: process.platform,

@@ -1029,7 +1029,8 @@ export class App {
       case 'char':
         if (key.alt && key.ch === 'b') this.editor.wordLeft()
         else if (key.alt && key.ch === 'f') this.editor.wordRight()
-        else this.editor.insert(key.ch ?? '')
+        // Never a control character (an ESC, a C1 code from CSI u): nothing to see, and it would be sent.
+        else if (!/^[\x00-\x1f\x7f-\x9f]$/.test(key.ch ?? '')) this.editor.insert(key.ch ?? '')
         break
       default: return
     }

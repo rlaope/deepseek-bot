@@ -134,14 +134,17 @@ export class Connection {
     this.socket = socket
     const reader = new FrameReader()
     socket.setEncoding('utf8')
-    socket.on('connect', () => {
+    // Each hello before ready (the first, and one sent again after a refused switch) has HELLO_MS for an answer.
+    const sayHello = () => {
       socket.write(encode(this.hello()))
+      this.stopHelloTimer()
       this.helloTimer = (this.o.setTimer ?? setTimeout)(() => {
         this.helloTimer = null
         this.failed = t().noAnswer(HELLO_MS / 1000)
         socket.destroy()
       }, HELLO_MS)
-    })
+    }
+    socket.on('connect', sayHello)
     socket.on('data', (chunk: string) => {
       // The gateway is answering.
       this.stopHelloTimer()
@@ -162,7 +165,7 @@ export class Connection {
             this.pending = null
             this.o.onRollback?.(frame.message)
             // Before any ready this connection has no conversation yet: ask for the one it had.
-            if (!this.ready) socket.write(encode(this.hello()))
+            if (!this.ready) sayHello()
           } else if (!this.ready) {
             this.o.onState('disconnected', t().refused(frame.message))
           }
@@ -193,6 +196,7 @@ export class Connection {
     const due = now() + BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)]
     this.attempt++
     const tick = () => {
+      if (this.closed) return
       const left = due - now()
       if (left <= 0) { this.timer = null; this.open(); return }
       const seconds = Math.ceil(left / 1000)

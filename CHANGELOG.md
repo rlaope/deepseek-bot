@@ -247,19 +247,22 @@ the caveat about version numbers is at the bottom.
     to a subagent; an answer to a question is refused the same way, the question open again with its words in the
     box.
   - A lone ESC waited 30 ms for the rest of a sequence, so an arrow split over a slow link stopped the turn and typed
-    `[A`. It waits 100 ms (`ESCAPE_MS`, vim's ttimeoutlen in its defaults), and the rest of a sequence arriving within
-    another 100 ms after an ESC taken as Esc is that key, not typed text.
+    `[A`. It waits 100 ms (`ESCAPE_MS`, vim's ttimeoutlen in its defaults). Within another 100 ms after an ESC (or
+    the start of a sequence, `ESC [`) taken as Esc, what completes a sequence the parser knows is that key; anything
+    else (`[link](x)`) is typed as written. Two Escs close together are two Escs: before, the second was typed into
+    the box as an invisible ESC that Enter sent. No control character is put in the box.
   - A gateway that took the connection and never answered the hello left the terminal "connecting…" for good. After
     10 s it is a failed connect, retried with the backoff, and the status line says the gateway did not answer.
-  - The wait before a reconnect read "reconnecting in 1000ms" and never changed; it counts down in seconds.
+  - The wait before a reconnect read "reconnecting in 1000ms" and never changed; it counts down in seconds. A hello
+    sent again after a refused switch has the same timeout.
   - The paste cap cut by UTF-16 units and could split a surrogate pair; it cuts where a character ends. One final
     newline of a paste is dropped, so it leaves no empty last line to send. A paste of more than 1,000 characters on
     however few lines is a chip (`[paste #1 150,000 chars]`), as one of more than ten lines is: a 150 KB line was a
     box of thousands of rows.
   - Words: alt+b and alt+f, alt+← and alt+→ (rxvt's `ESC ESC [ D` too, which typed an ESC and `[D`), ctrl+← and
     ctrl+→ move by word (alt+b and alt+f typed letters, ctrl+← moved one character); a chip is one word.
-  - ctrl+z gives the terminal back and stops `dsh` as a shell stops a job; `fg` draws it again whole (not on
-    Windows, which has no job control).
+  - ctrl+z gives the terminal back and stops `dsh`'s process group as a shell stops a job (so `pnpm exec` or `npx`
+    around it stops too); `fg` draws it again whole (not on Windows, which has no job control).
   - Enter on `/model` or `/tenant` in the completion list only put the command in, as if its argument were needed;
     both run without one, so Enter runs them. Tab still leaves a space for the argument.
 

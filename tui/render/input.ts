@@ -131,9 +131,16 @@ export class InputParser {
     return this.buffer.length > 0 && this.pasting === null
   }
 
-  /** Whether what waits is an ESC alone, which `flush()` makes the escape key. */
-  get lone(): boolean {
-    return this.buffer === '\x1b' && this.pasting === null
+  /**
+   * The wait is over and what waits is an ESC alone or the start of a CSI or SS3 sequence: the escape key, and what
+   * followed the ESC handed back, for the caller to complete with what comes next or to type. Null for anything else
+   * (which `flush()` takes).
+   */
+  escapeHeld(): { event: KeyEvent; rest: string } | null {
+    const m = /^\x1b(\[[\d;<]*|O)?$/.exec(this.buffer)
+    if (m === null || this.pasting !== null) return null
+    this.buffer = ''
+    return { event: key('escape'), rest: m[1] ?? '' }
   }
 
   private one(events: InputEvent[]): number {
@@ -144,6 +151,8 @@ export class InputParser {
       return String.fromCodePoint(b.codePointAt(0)!).length
     }
     if (b.length === 1) return 0
+    // Two Escs, or an ESC before a sequence not here yet: wait (flush makes the first one Esc and goes on).
+    if (b === '\x1b\x1b') return 0
     if (b.startsWith(PASTE_BEGIN)) { this.pasting = ''; return PASTE_BEGIN.length }
 
     if (b[1] === '[') {
