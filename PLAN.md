@@ -121,11 +121,24 @@ is built before the thing it stands on. The detailed history of each milestone i
     that is not checked.
 - **Muting, what is still left** (found in the integration review of the answer markers, not fixed):
   - The quiet word itself ("조용히 해", or "넌 빠져 있어" that the model answered `[quiet]`) is in the thread, so the
-    next turn's history replays it, and the model may read it as asked again and mute once more.
+    next turn's history replays it, and with the standing block's `[quiet]` instruction the model may read it as
+    asked again and mute once more. To do: a scenario "quiet word, then a mention: the answer must not be `[quiet]`";
+    if it fails, move the history pointer past the quiet word or mark it as handled.
   - Under `replyMode: all`, each top-level message starts its own thread: a mute said there covers only that
-    message's thread, and the next top-level message is heard.
+    message's thread, and the next top-level message is heard (the documented scope). A possible feature: a
+    channel-level mute for top-level messages under `all`.
+  - A mention waiting behind a `[quiet]` answer when the process crashes ends ❌ with no notice: `recoverInflight`'s
+    muted branch drops every notice for a muted conversation. To fix later: compare the record's `since` with
+    `state.muted[key]` and post the restart-lost notice only for a message that named the bot after the mute, with a
+    test of its own — a blind fix would also announce a turn the quiet word itself stopped.
+  - A byMode message (`replyMode: all`) that arrives while muted gets no mark; one already waiting when the mute came
+    ends with the stopped mark. Intended, and only cosmetic.
   - The model's reaction and the marks compare emoji differently: `reactionIn` ignores VS16 and skin tones,
     `transports/marks.ts` only VS16.
+- **Architecture, from the review of the answer markers.** The core imports `REACTIONS` and `MARKS_MODES` from
+  `transports/marks.ts` and `OWN_MARKER` from `transports/history.ts`: they belong in a neutral shared module both
+  sides import. `handleEvent` in `index.ts` would read better split into a gates step (allowlist, mute, approvals,
+  stop and quiet words) and an answer step (the turn job and what its answer is).
 - **Several messengers at once.** The composite transport answers whatever the terminal does not claim
   through its first messenger, so `dsh gateway setup` keeps one at a time. Serving two needs each
   conversation routed to the platform it came from, including the messages the bot sends first
