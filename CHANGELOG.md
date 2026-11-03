@@ -230,13 +230,16 @@ the caveat about version numbers is at the bottom.
   - Discord: a thread or forum post is a channel of its own, so a `targetChannels` entry naming its channel did not
     cover it, and the tenant map sent it to the default workspace. The transport now learns each thread's channel from
     the gateway (a guild's active threads as it comes up, then each thread made, changed or listed; a channel's
-    category does not count) or, for a channel it has not heard of, asks once, and puts it on the message. The
-    allowlist accepts a message by its channel or that parent; the tenant map does too, and records the thread's tenant
-    with its first message, since only its messages say whose it is. A lookup that fails is taken as no parent: the
-    thread is ignored rather than one under another channel let in.
+    category does not count) or, for a channel it has not heard of, asks once (5 s at most; only that channel's
+    messages wait for it), and puts it on the message. The allowlist accepts a message by its channel or that parent.
+    With tenant isolation the parent is recorded (only the thread's messages carry it) and the tenant map read through
+    it each time, so a channel moved to another tenant takes its threads. A lookup that fails or times out gives no
+    parent: the thread is ignored rather than one under another channel let in, and with tenant isolation a thread
+    whose parent was never told is not served, since its turn would run in the default workspace.
   - Telegram forum topics: a topic's id is now the conversation's thread, so each topic is its own session and history,
     as a Slack thread is; the answer, the working message, the typing and uploads carry `message_thread_id` (they went
-    to General). General, private chats and groups without topics are the chat as before. A button pressed in a topic
+    to General). General, private chats and groups without topics are the chat as before. A conversation already
+    going on in a topic was keyed by the chat; its next message starts a new session under the topic (`chat:topic`). A button pressed in a topic
     is that topic's. The topic's opening message, which every message in a topic replies to, no longer counts as a
     reply to the bot. Uploads used to send the conversation's thread as `reply_to_message_id`.
   - Telegram groups: an answer replies to its question (`reply_to_message_id`, with `allow_sending_without_reply`), on

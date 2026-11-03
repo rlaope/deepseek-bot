@@ -319,11 +319,13 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
    * Each channel's parent when it is a thread, null when it is not (a category is not a parent here: allowing one
    * would not have allowed its channels before either). The gateway tells most of it — every active thread and channel
    * of a guild as it comes up, then each thread made, changed or listed — and a channel it has not told of is asked for
-   * once, with the messages behind it waiting so they stay in order. A refused lookup is taken as no parent and not
-   * kept, so a thread under an allowed channel is ignored rather than one under another let in.
+   * once, with that channel's later messages waiting behind it so they stay in order; other channels do not wait. A
+   * lookup refused, or not answered within `channelLookupMs` (5 s), is not kept and its message goes on marked
+   * `parentUnknown`: a thread under an allowed channel is ignored rather than one under another let in, and with tenant
+   * isolation the core does not serve it.
    */
   const parents = new Map<string, string | null>()
-  const asking = new Map<string, Promise<string | null>>()
+  const asking = new Map<string, Promise<string | null | undefined>>()
   function learn(channel: DiscordChannel | undefined): void {
     if (typeof channel?.id !== 'string') return
     parents.set(channel.id, THREAD_TYPES.has(Number(channel.type)) && typeof channel.parent_id === 'string' ? channel.parent_id : null)
@@ -334,36 +336,41 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     else if (name === 'THREAD_CREATE' || name === 'THREAD_UPDATE' || name === 'CHANNEL_CREATE' || name === 'CHANNEL_UPDATE') learn(data as DiscordChannel)
     else if ((name === 'THREAD_DELETE' || name === 'CHANNEL_DELETE') && typeof data.id === 'string') parents.delete(data.id)
   }
-  function parentOf(channel: string): Promise<string | null> {
+  /** A thread's parent, null for a channel that is not one, undefined when it could not be told. */
+  function parentOf(channel: string): Promise<string | null | undefined> {
     const known = parents.get(channel)
     if (known !== undefined) return Promise.resolve(known)
     let ask = asking.get(channel)
     if (ask === undefined) {
-      ask = rest<DiscordChannel>(`/channels/${channel}`)
-        .then((found) => { learn({ ...found, id: channel }); return parents.get(channel) ?? null })
-        .catch((e) => { log(`discord: could not tell whether channel ${channel} is a thread, taken as not one: ${String((e as Error)?.message ?? e)}`); return null })
+      const timeoutMs = Number(cfg.channelLookupMs) > 0 ? Number(cfg.channelLookupMs) : 5000
+      ask = rest<DiscordChannel>(`/channels/${channel}`, { signal: AbortSignal.timeout(timeoutMs) })
+        .then((found): string | null => { learn({ ...found, id: channel }); return parents.get(channel) ?? null })
+        .catch((e): undefined => { log(`discord: could not tell whether channel ${channel} is a thread: ${String((e as Error)?.message ?? e)}`); return undefined })
         .finally(() => asking.delete(channel))
       asking.set(channel, ask)
     }
     return ask
   }
-  /** Hand a message over with its parent: at once when it is known and nothing waits ahead, else after what does. */
-  let delivering: Promise<void> | null = null
+  /** Hand a message over with its parent: at once when it is known and nothing of its channel waits, else after that. */
+  const delivering = new Map<string, Promise<void>>()
   function deliver(message: InboundMessage): void {
     const channel = message.target.channel
     const inGuild = (message.raw as DiscordMessage).guild_id !== undefined
-    const hand = (parent: string | null) => {
+    const hand = (parent: string | null | undefined) => {
       if (onMessage === null) return
       attempts++
       onHealth({ connectAttempts: attempts, lastEventAt: Date.now() })
-      onMessage(parent === null ? message : { ...message, parent })
+      onMessage(parent === undefined ? { ...message, parentUnknown: true } : parent === null ? message : { ...message, parent })
     }
-    if (delivering === null && (!inGuild || parents.has(channel))) { hand(inGuild ? parents.get(channel) ?? null : null); return }
-    const run = (delivering ?? Promise.resolve())
-      .then(async () => hand(inGuild ? await parentOf(channel) : null))
+    const ahead = delivering.get(channel)
+    if (ahead === undefined && (!inGuild || parents.has(channel))) { hand(inGuild ? parents.get(channel) ?? null : null); return }
+    // Asked now, so a message behind one whose lookup is still out shares that lookup and its answer.
+    const parent = inGuild ? parentOf(channel) : Promise.resolve(null)
+    const run = (ahead ?? Promise.resolve())
+      .then(async () => hand(await parent))
       .catch((e) => log('discord message handling failed', String((e as Error)?.message ?? e)))
-    delivering = run
-    void run.finally(() => { if (delivering === run) delivering = null })
+    delivering.set(channel, run)
+    void run.finally(() => { if (delivering.get(channel) === run) delivering.delete(channel) })
   }
 
   function parseDispatch(name: string, data: Record<string, any>): InboundMessage | null {

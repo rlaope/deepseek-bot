@@ -48,6 +48,8 @@ is built before the thing it stands on. The detailed history of each milestone i
 - **A Telegram button press sent again after a crash is not deduplicated.** An unconfirmed `callback_query` comes again
   to the next process and is handed over again; it most likely finds no pending request for its id and is answered as
   stale. Not fixed.
+- **Telegram's album queue is per chat, not per topic.** While an album is gathered in one forum topic, a message in
+  another topic of the same chat waits behind it, up to 1.2 s; the order is kept. Not fixed.
 - **An album can be cut in two by getUpdates' page.** While an album is gathered, getUpdates is sent its first update
   as the offset and returns at most 100 updates from there; with more than 100 arriving after its first item inside
   the 1.2 s window, a later item is not seen until the album is taken, and becomes a message of its own. Not fixed.
@@ -130,8 +132,8 @@ Decided against:
 - Threads, topics and group DMs, checked against fake APIs only (`test/discord.test.ts` 14, `test/telegram.test.ts`
   13, 20, 21, `test/slack.test.ts` replyMode, `test/gateway.test.ts` 9, `test/core.test.ts` 2b, 31, 41b). Not seen
   live: that Discord sends a guild's threads in GUILD_CREATE and a new forum post as THREAD_CREATE before its first
-  message (a missed one costs one `GET /channels/{id}`), that a private thread the bot was not added to is readable
-  that way; that Telegram takes `message_thread_id` on sendMessage, sendChatAction and sendDocument in a forum and
+  message (a missed one costs one `GET /channels/{id}`, 5 s at most, holding only that channel), that a private thread
+  the bot was not added to is readable that way; that Telegram takes `message_thread_id` on sendMessage, sendChatAction and sendDocument in a forum and
   `reply_to_message_id` with `allow_sending_without_reply`; whether Slack sends `app_mention` for a group DM mention
   (either way it is one turn). Recall is still per channel: a Discord thread does not see its parent channel's
   passages, and a Telegram topic's are the chat's.

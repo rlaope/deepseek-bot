@@ -25,7 +25,7 @@ function check(name, ok, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** A websocket that behaves like Discord's gateway, and a REST API behind it. */
-function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; historyFails?: boolean; history?: unknown[]; dispatches?: Array<{ t: string; d: unknown }>; channels?: Record<string, unknown> } = {}) {
+function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; historyFails?: boolean; history?: unknown[]; dispatches?: Array<{ t: string; d: unknown }>; channels?: Record<string, unknown>; hang?: string[] } = {}) {
   const sent = []
   const rest = []
   const handlers: Record<string, Array<(event: unknown) => void>> = {}
@@ -64,6 +64,10 @@ function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; histor
     if (path === '/users/@me') return json({ id: '9', username: 'testbot', bot: true })
     const channel = /^\/channels\/([^/?]+)$/.exec(path)?.[1]
     if (channel !== undefined && (init.method ?? 'GET') === 'GET' && options.channels?.[channel] !== undefined) return json(options.channels[channel])
+    // A lookup that never answers, as a stalled connection: only the caller's own signal ends it.
+    if (channel !== undefined && (init.method ?? 'GET') === 'GET' && options.hang?.includes(channel)) {
+      return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted'))))
+    }
     if (path.startsWith('/channels/') && path.includes('/messages') && !path.includes('?')) {
       if ((init.method ?? 'POST') === 'POST') return json({ id: `m${rest.length}`, channel_id: 'C1' })
       return json({ id: options.editTarget ?? 'm1', channel_id: 'C1' })
@@ -556,6 +560,36 @@ function message(overrides = {}) {
   check('thread: under a channel not allowed it does not', !/under the other channel/.test(said) && !/under a category/.test(said), said.slice(0, 300))
   core.done()
   rmSync(home, { recursive: true, force: true })
+}
+
+// 15. A lookup that hangs holds only its own channel, and not past its timeout: one chain for the whole transport held
+// every message (a DM, a channel already known) behind a GET that could take minutes. A lookup that times out is a
+// failed one: the message goes on, marked that its parent could not be told.
+{
+  const api = fakeDiscord({
+    dispatches: [{ t: 'GUILD_CREATE', d: { id: 'G1', channels: [{ id: 'P1', type: 0 }] } }],
+    hang: ['H1'],
+    updates: [
+      message({ id: '900', channel_id: 'H1', content: '<@9> first in the stalled one' }),
+      { id: '901', channel_id: 'D9', content: 'a DM', author: { id: '5', username: 'alice' } },
+      message({ id: '902', channel_id: 'P1', content: '<@9> a known channel' }),
+      message({ id: '903', channel_id: 'H1', content: '<@9> second in the stalled one' }),
+    ],
+  })
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')), { channelLookupMs: 400 })
+  const received = []
+  await t.connect({ onMessage: (m) => received.push(m) })
+  await sleep(150)
+  const early = received.map((m) => m.ts)
+  check('lookup: a DM and a known channel are not held behind a stalled lookup', early.includes('901') && early.includes('902') && !early.includes('900') && !early.includes('903'), JSON.stringify(early))
+  await sleep(600)
+  await t.close()
+  const stalled = received.filter((m) => m.target.channel === 'H1')
+  check('lookup: past its timeout the stalled channel\'s messages go on, in order', stalled.map((m) => m.ts).join(',') === '900,903', JSON.stringify(received.map((m) => m.ts)))
+  check('lookup: marked that their parent could not be told', stalled.length === 2 && stalled.every((m) => m.parentUnknown === true && m.parent === undefined), JSON.stringify(stalled.map((m) => [m.parent, m.parentUnknown])))
+  check('lookup: one request for the channel, said in the log', api.rest.filter((c) => c.path === '/channels/H1').length === 1 && t.logs.some((l) => /could not tell whether channel H1/.test(l)),
+    JSON.stringify(api.rest.filter((c) => c.method === 'GET').map((c) => c.path)))
+  check('lookup: a known channel and a DM are not marked', received.filter((m) => m.target.channel !== 'H1').length === 2 && received.filter((m) => m.target.channel !== 'H1').every((m) => m.parentUnknown === undefined))
 }
 
 const failed = results.filter((r) => !r.ok)

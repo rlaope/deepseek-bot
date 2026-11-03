@@ -987,6 +987,11 @@ one config away:
       acme: { preset: standard, model: { provider: og, model: <id> }, persona: acme }
 ```
 
+A Discord thread or forum post is its channel's tenant unless the map names the thread itself: the channel it is in
+is recorded with its messages and the map read through it each time, so moving a channel to another tenant moves its
+threads. A thread whose channel the transport could not learn, with none recorded, is not served while isolation is
+on: its turn would run in the default workspace.
+
 A tenant's directory is created on its **first message** — provisioning belongs to the message,
 not to a turn that happened to succeed — and seeded from the template if one is
 configured (markdown only). Without a template a tenant simply has no persona, which is the honest

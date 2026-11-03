@@ -56,6 +56,8 @@ export interface InboundMessage {
    * in its channel. The channel allowlist and the tenant map accept a message by either.
    */
   parent?: string
+  /** The platform nests channels and could not tell whether this one is inside another (a lookup failed). */
+  parentUnknown?: boolean
 }
 
 /**
