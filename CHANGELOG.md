@@ -233,6 +233,8 @@ the caveat about version numbers is at the bottom.
   setup discord` or `telegram` refuses, before writing anything, to switch a profile that has either, where the
   gateway would otherwise just not come up. Slack keeps both, with or without the terminal beside it. Checked in the
   core and gateway suites, red before. docs/setup.md and the profile templates say so.
+  **Upgrading:** a Discord or Telegram deployment that set `replyMode: thread` or `all` will now refuse to start. Set
+  `replyMode: mention` before updating; it behaved as `mention` there anyway.
 - **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
   puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat
   above anything said while the turn ran. Both transports can delete now (Discord's message DELETE, Telegram's
