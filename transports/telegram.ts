@@ -211,7 +211,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
   /**
    * Progress on the person's message as the bot's reaction (`marks.ts`). A bot shows one reaction on a message, and
    * each setMessageReaction replaces it; only Telegram's own list of emoji is taken, which has no digits and no check
-   * mark: eyes when taken, writing while it runs, then OK, a sad face or a salute. A chat that limits its reactions,
+   * mark: eyes when taken, writing while it runs, then OK, a sad face or a salute (stopped, or told to be quiet). A chat that limits its reactions,
    * or a message that is gone, is let go; a token refused stops every mark.
    */
   async function react(channel: string, ts: string, name: string): Promise<MarkOutcome> {
@@ -230,7 +230,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     }
   }
   const mark = reactionMarks({
-    names: { seen: '👀', working: ['✍'], done: '👌', failed: '😢', stopped: '🫡' },
+    names: { seen: '👀', working: ['✍'], done: '👌', failed: '😢', stopped: '🫡', quiet: '🫡' },
     add: react,
     log,
     refusal: 'telegram refused setMessageReaction',

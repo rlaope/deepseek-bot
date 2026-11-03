@@ -172,8 +172,8 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
 
   /**
    * Progress on the person's message as the bot's reaction (`marks.ts`): eyes, a keycap digit, then a check, a cross or
-   * a stop. Discord allows about one reaction call per channel every quarter second, so a channel's calls go one at a
-   * time, each waiting out what the last one's headers said, and a 429 is waited out (up to two seconds) and asked
+   * a stop, a salute when told to be quiet. Discord allows about one reaction call per channel every quarter second,
+   * so a channel's calls go one at a time, each waiting out what the last one's headers said, and a 429 is waited out (up to two seconds) and asked
    * again: refused, the digits a turn went through stayed beside its end. A wait longer than that is a failure, which
    * the next mark, or the end's own retry, makes up for. Permissions are per channel: one where the bot may not react (Missing Access,
    * Missing Permissions) is said once and not asked again until the gateway restarts; another 403 (the person blocked
@@ -232,7 +232,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     return (message.reactions ?? []).filter((r) => r.me === true && !r.emoji?.id && typeof r.emoji?.name === 'string').map((r) => r.emoji.name)
   }
   const mark = reactionMarks({
-    names: { seen: '👀', working: ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => `${d}\uFE0F\u20E3`), done: '✅', failed: '❌', stopped: '⏹\uFE0F' },
+    names: { seen: '👀', working: ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => `${d}\uFE0F\u20E3`), done: '✅', failed: '❌', stopped: '⏹\uFE0F', quiet: '🫡' },
     add: (channel, ts, name) => reaction('PUT', channel, ts, name),
     remove: (channel, ts, name) => reaction('DELETE', channel, ts, name),
     held: heldReactions,

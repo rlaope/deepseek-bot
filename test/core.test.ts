@@ -327,7 +327,9 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   check('thread: and no working status either', tq.transport.typing.length === 0, `${tq.transport.typing.length} status(es)`)
   tq.done()
   // The marker opening an answer that explains itself is still quiet; a real answer that says "no reply" is not.
-  for (const [text, posts, why] of [['[no reply]\n\n(This is between the two of them.)', false, 'the marker, then an explanation'], ['아직 no reply야. 내일 다시 물어볼게.', true, 'a Korean answer that says "no reply"'], ['[No_Reply]', false, 'the marker in another case'], ['둘이 하는 얘기야.\n[no reply]', false, 'an explanation, then the marker']]) {
+  for (const [text, posts, why] of [['[no reply]\n\n(This is between the two of them.)', false, 'the marker, then an explanation'], ['아직 no reply야. 내일 다시 물어볼게.', true, 'a Korean answer that says "no reply"'], ['[No_Reply]', false, 'the marker in another case'], ['둘이 하는 얘기야.\n[no reply]', false, 'an explanation, then the marker'],
+    // Other silence tokens models are trained on: the whole answer only, any case; in a sentence or in code they are text.
+    ['[SILENT]', false, '"[SILENT]" as the whole answer'], [' no_reply \n', false, '"NO_REPLY" as the whole answer, in another case'], ['로그에 [SILENT] 라고 찍혀', true, '"[SILENT]" in a sentence'], ['`[SILENT]`', true, '"[SILENT]" in code'], ['```\nNO_REPLY\n```', true, '"NO_REPLY" in a code block']]) {
     const v = quiet(text as string)
     await sleep(80)
     v.transport.deliver(v.transport.message({ addressed: false, text: '그 업체 답장 왔어?' }))
@@ -539,6 +541,121 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   await sleep(400)
   check('marks: none for a message that did not mention it, even when it answers', q.transport.marks.length === 0 && q.transport.posted.length === 1, JSON.stringify(q.transport.marks))
   q.done()
+}
+
+// 3d. Muting a conversation: told in plain words ("조용히 해"), or by the model's whole answer "[quiet]", it stays out of
+// the thread until it is named again. The only acknowledgement is a salute on the message that asked; nothing is posted.
+{
+  const recent = () => ({ sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() - 3600_000 } })
+  const muting = (text: string, config: Record<string, unknown> = {}, state: Record<string, unknown> = recent()) => boot({ agent: 'answer', home: mkdtempSync(join(tmpdir(), 'deepbot-mute-')), config: { replyMode: 'thread', ...config, fake: { marks: true, typing: true, remove: true } }, state, answer: { text } })
+  const kindsOf = (t: ReturnType<typeof boot>, ts: string) => t.transport.marks.filter((m) => m.ts === ts).map((m) => m.state.kind)
+  // Control: before it is muted, a follow-up without a mention is a turn.
+  const m = muting('응, 내가 볼게.')
+  await sleep(80)
+  m.transport.deliver(m.transport.message({ addressed: false, ts: '2000.0', text: '이거 누가 볼래?' }))
+  await sleep(300)
+  check('mute: control — unmuted, a follow-up without a mention is a turn', m.followups.length === 1, `${m.followups.length} turn(s)`)
+  const before = m.transport.posted.length
+  m.transport.deliver(m.transport.message({ ts: '2000.1', text: '조용히 해!' }))
+  await sleep(200)
+  check('mute: a quiet word mutes the conversation, with no model call', m.read().muted?.['C_ALLOWED:t1'] !== undefined && m.followups.length === 1, JSON.stringify(m.read().muted))
+  check('mute: and is acknowledged with one salute on its message, nothing posted', JSON.stringify(kindsOf(m, '2000.1')) === '["quiet"]' && m.transport.posted.length === before, `${JSON.stringify(kindsOf(m, '2000.1'))} ${JSON.stringify(m.transport.posted.slice(before).map((p) => p.text))}`)
+  const typingBefore = m.transport.typing.length
+  m.transport.deliver(m.transport.message({ addressed: false, ts: '2000.2', text: '그럼 내가 볼게' }))
+  await sleep(300)
+  check('mute: muted, a follow-up without a mention opens nothing: no turn, no mark, no status', m.followups.length === 1 && kindsOf(m, '2000.2').length === 0 && m.transport.typing.length === typingBefore, `${m.followups.length} turn(s) ${JSON.stringify(kindsOf(m, '2000.2'))} ${m.transport.typing.length - typingBefore} status(es)`)
+  // A restart keeps it muted: a new process on the same state.
+  const r = muting('응, 내가 볼게.', {}, m.read())
+  await sleep(80)
+  r.transport.deliver(r.transport.message({ addressed: false, ts: '2000.3', text: '이거 누가 볼래?' }))
+  await sleep(300)
+  check('mute: survives a restart', r.followups.length === 0 && r.read().muted?.['C_ALLOWED:t1'] !== undefined, `${r.followups.length} turn(s)`)
+  // Named again, it is back: the mention is an ordinary turn, answered, and the follow-ups after it are heard again.
+  r.transport.deliver(r.transport.message({ ts: '2000.4', text: '이거 봐줘' }))
+  await sleep(300)
+  check('mute: a mention unmutes it and gets a normal answer', r.read().muted?.['C_ALLOWED:t1'] === undefined && r.transport.posted.some((p) => p.text === '응, 내가 볼게.') && kindsOf(r, '2000.4').at(-1) === 'done', `${JSON.stringify(r.read().muted)} ${JSON.stringify(r.transport.posted.map((p) => p.text))} ${JSON.stringify(kindsOf(r, '2000.4'))}`)
+  r.transport.deliver(r.transport.message({ addressed: false, ts: '2000.5', text: '그거 언제 돼?' }))
+  await sleep(300)
+  check('mute: and a follow-up without a mention is a turn again', r.followups.length === 2, `${r.followups.length} turn(s)`)
+  r.done()
+  m.done()
+  // A reply to its own message is addressed as a mention is (Telegram and Discord deliver one so): it unmutes too.
+  const rep = muting('응.', { replyMode: 'mention' }, { ...recent(), muted: { 'C_ALLOWED:t1': Date.now() - 1000 } })
+  await sleep(80)
+  rep.transport.deliver(rep.transport.message({ ts: '2001.0', text: '그 얘기 계속하자' }))
+  await sleep(300)
+  check('mute: a reply to it unmutes it and is answered', rep.read().muted?.['C_ALLOWED:t1'] === undefined && rep.transport.posted.some((p) => p.text === '응.'), JSON.stringify(rep.transport.posted.map((p) => p.text)))
+  rep.done()
+  // Only a whole message is a quiet word, in any language, after any trailing punctuation; a sentence with one is not.
+  for (const [text, mutes] of [['be quiet.', true], ['Shut up', true], ['安静', true], ['빠져~', true], ['조용히 해줘서 고마워', false], ['quiet please, I mean the build', false]] as const) {
+    const w = muting('응.')
+    await sleep(80)
+    w.transport.deliver(w.transport.message({ ts: '2002.0', text }))
+    await sleep(250)
+    check(`mute: "${text}" ${mutes ? 'is' : 'is not'} a quiet word`, (w.read().muted?.['C_ALLOWED:t1'] !== undefined) === mutes && (w.followups.length === 0) === mutes, `${JSON.stringify(w.read().muted)} ${w.followups.length} turn(s)`)
+    w.done()
+  }
+  // A quiet word without a mention is not one: said to someone else in the thread, it is chatter.
+  const un = muting('[no reply]')
+  await sleep(80)
+  un.transport.deliver(un.transport.message({ addressed: false, ts: '2003.0', text: '조용히 해' }))
+  await sleep(300)
+  check('mute: a quiet word without a mention mutes nothing', un.read().muted?.['C_ALLOWED:t1'] === undefined && un.followups.length === 1, `${JSON.stringify(un.read().muted)} ${un.followups.length} turn(s)`)
+  un.done()
+  // The model's whole answer "[quiet]": nothing is posted, it is muted, and the message that asked gets the salute.
+  const tok = muting('[quiet]')
+  await sleep(80)
+  tok.transport.deliver(tok.transport.message({ ts: '2004.0', text: '우리끼리 얘기할게, 넌 좀 빠져 있어' }))
+  await sleep(300)
+  const said = tok.followups.map(textOf).join('\n')
+  check('mute: the model is told it may answer [quiet]', /\[quiet\]/.test(said), said.slice(0, 120))
+  check('mute: a "[quiet]" answer posts nothing and mutes', tok.transport.posted.length === 0 && tok.read().muted?.['C_ALLOWED:t1'] !== undefined, `${JSON.stringify(tok.transport.posted.map((p) => p.text))} ${JSON.stringify(tok.read().muted)}`)
+  check('mute: its message\'s marks end with the salute, nothing after', kindsOf(tok, '2004.0').at(-1) === 'quiet' && !kindsOf(tok, '2004.0').includes('done') && tok.transport.lateMarks.length === 0, JSON.stringify(kindsOf(tok, '2004.0')))
+  tok.done()
+  // In a thread it was not named in, a "[quiet]" answer mutes too, and its message gets the salute as its only mark.
+  const tq = muting('[quiet]')
+  await sleep(80)
+  tq.transport.deliver(tq.transport.message({ addressed: false, ts: '2005.0', text: '봇은 이제 그만 끼어들어도 돼' }))
+  await sleep(300)
+  check('mute: a "[quiet]" answer to a follow-up without a mention mutes, saluted', tq.transport.posted.length === 0 && tq.read().muted?.['C_ALLOWED:t1'] !== undefined && JSON.stringify(kindsOf(tq, '2005.0')) === '["quiet"]', `${JSON.stringify(tq.transport.posted.map((p) => p.text))} ${JSON.stringify(kindsOf(tq, '2005.0'))}`)
+  tq.done()
+  // All or nothing: "[quiet]" with other words is an ordinary answer.
+  for (const text of ['[quiet] ok', '알겠어. [quiet]']) {
+    const x = muting(text)
+    await sleep(80)
+    x.transport.deliver(x.transport.message({ ts: '2006.0', text: '빠져 있어 줄래?' }))
+    await sleep(300)
+    check(`mute: "${text}" is posted as text and mutes nothing`, x.transport.posted.some((p) => p.text === text) && x.read().muted?.['C_ALLOWED:t1'] === undefined, JSON.stringify(x.transport.posted.map((p) => p.text)))
+    x.done()
+  }
+  // replyMode 'all': every channel message comes in addressed by the mode. Muted, only a mention counts.
+  const all = muting('응.', { replyMode: 'all' }, { ...recent(), muted: { 'C_ALLOWED:t1': Date.now() - 1000 } })
+  await sleep(80)
+  all.transport.deliver(all.transport.message({ ts: '2007.0', text: '점심 뭐 먹지', byMode: true }))
+  await sleep(300)
+  check('mute: under replyMode all, muted, a plain channel message is ignored', all.followups.length === 0 && all.transport.posted.length === 0 && kindsOf(all, '2007.0').length === 0 && all.read().muted?.['C_ALLOWED:t1'] !== undefined, `${all.followups.length} turn(s)`)
+  all.transport.deliver(all.transport.message({ ts: '2007.1', text: '이거 봐줘' }))
+  await sleep(300)
+  check('mute: under replyMode all, a mention is answered and unmutes', all.transport.posted.some((p) => p.text === '응.') && all.read().muted?.['C_ALLOWED:t1'] === undefined, JSON.stringify(all.transport.posted.map((p) => p.text)))
+  all.transport.deliver(all.transport.message({ ts: '2007.2', text: '점심 뭐 먹지', byMode: true }))
+  await sleep(300)
+  check('mute: control — unmuted under replyMode all, a plain channel message is answered', all.followups.length === 2, `${all.followups.length} turn(s)`)
+  all.done()
+  // The terminal is always talking to the bot, and shows no salute: a quiet word there is an ordinary message.
+  const tui = muting('응.', { targetChannels: ['C_ALLOWED', 'tui'] }, {})
+  await sleep(80)
+  tui.transport.deliver(tui.transport.message({ target: { channel: 'tui', threadTs: 'c1' }, ts: '2008.0', text: '조용히 해' }))
+  await sleep(300)
+  check('mute: in the terminal a quiet word is an ordinary message', tui.followups.length === 1 && Object.keys(tui.read().muted ?? {}).length === 0, `${tui.followups.length} turn(s) ${JSON.stringify(tui.read().muted)}`)
+  tui.done()
+  // Pruned with the conversation, like its other bookkeeping.
+  const old = Date.now() - 40 * 24 * 3600_000
+  const pr = muting('응.', {}, { sessions: { 'C_ALLOWED:old': 's9' }, touched: { 'C_ALLOWED:old': old }, muted: { 'C_ALLOWED:old': old, 'C_ALLOWED:lone': old } })
+  await sleep(80)
+  pr.transport.deliver(pr.transport.message({ ts: '2009.0', text: '안녕' }))
+  await sleep(1000)
+  check('mute: pruned with the conversation, and on its own when nothing else is kept for it', pr.read().muted?.['C_ALLOWED:old'] === undefined && pr.read().muted?.['C_ALLOWED:lone'] === undefined && pr.read().sessions?.['C_ALLOWED:old'] === undefined, JSON.stringify(pr.read().muted))
+  pr.done()
 }
 
 // 4. The same platform event twice is handled once.

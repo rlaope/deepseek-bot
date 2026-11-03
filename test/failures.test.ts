@@ -292,6 +292,17 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
     JSON.stringify({ inflight: t.read().inflight, restartLost: t.read().restartLost }))
   t.done()
 }
+// A conversation told to be quiet is not told its turn was lost: the working message left behind is taken down, and the
+// marks still end, but nothing is said.
+{
+  const lost = { 'C_ALLOWED:t1': { channel: 'C_ALLOWED', threadTs: 't1', placeholder: 'ts-old', since: Date.now() - 5000, marked: ['1004.1'] } }
+  const t = boot({ state: { inflight: lost, muted: { 'C_ALLOWED:t1': Date.now() - 4000 } }, config: { fake: { marks: true, remove: true } } })
+  await sleep(300)
+  check('muted: after a restart the lost turn is not reported', t.transport.posted.length === 0 && t.logs.some((l) => /inflight C_ALLOWED:t1: muted/.test(l)), JSON.stringify(t.transport.posted.map((p) => p.text.slice(0, 30))))
+  check('muted: its working message is taken down and its marks end', t.transport.removed.some((r) => r.ts === 'ts-old') && t.transport.marks.some((m) => m.ts === '1004.1' && m.state.kind === 'failed'), `${JSON.stringify(t.transport.removed)} ${JSON.stringify(t.transport.marks)}`)
+  check('muted: and the record is cleared', Object.keys(t.read().restartLost ?? {}).length === 0, JSON.stringify(t.read().restartLost))
+  t.done()
+}
 // A message that arrives while the notices are still going out is a new turn, and is tracked as one.
 // Records were cleared one at a time between awaits: a new turn in a conversation not yet reached found
 // the old record, skipped writing its own, and then lost the old one to the loop — untracked.
@@ -464,6 +475,32 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   const gone = c5.transport.posted.some((p) => p.replace === upTs) || c5.transport.removed.some((r) => r.ts === upTs)
   check('thread: a working message whose message a stop withdrew does not stay up', up !== -1 && gone, `${JSON.stringify(c5.transport.posted.map((p) => [p.text.slice(0, 12), p.replace]))} removed ${JSON.stringify(c5.transport.removed)}`)
   c5.done()
+  // (c6) A quiet word stops what runs and withdraws what waits, as a stop word does, but says nothing: the salute on its
+  // message is the whole answer, and a working message put up meanwhile is taken down rather than turned into a report.
+  for (const shape of ['running', 'waiting'] as const) {
+    const q = boot({ agent: 'slow', state: { sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } }, config: { replyMode: 'thread', fake: { marks: true, remove: true } } })
+    await sleep(60)
+    if (shape === 'running') {
+      q.transport.deliver(q.transport.message({ ts: '3000.1', text: '배포 로그 봐줘' }))
+      await sleep(250)
+      q.transport.deliver(q.transport.message({ ts: '3000.2', text: '이것도 봐줘' }))
+    } else {
+      // Only waiting: a quiet turn holds the conversation, and a mention waits behind it with its working message up.
+      q.transport.deliver(q.transport.message({ addressed: false, ts: '3000.1', text: '음' }))
+      await sleep(150)
+      q.transport.deliver(q.transport.message({ ts: '3000.2', text: '이것도 봐줘' }))
+    }
+    await sleep(150)
+    q.transport.deliver(q.transport.message({ ts: '3000.3', text: '조용히 해', user: 'U_OTHER' }))
+    await sleep(700)
+    const kinds = (ts: string) => q.transport.marks.filter((m) => m.ts === ts).map((m) => m.state.kind)
+    const working = q.transport.posted.map((p, i) => ({ ...p, ts: `ts-${i + 1}` })).filter((p) => /작업 중/.test(p.text) && p.replace === null)   // an edit of one is not another
+    const said = q.transport.posted.filter((p) => !/작업 중/.test(p.text)).map((p) => p.text)
+    check(`quiet (${shape}): it stops${shape === 'running' ? ' the running turn and' : ''} withdraws the waiting one`, (shape === 'waiting' || q.events.some((e) => e.kind === 'cancelled')) && q.logs.some((l) => /withdrew 1 waiting/.test(l)) && kinds('3000.2').at(-1) === 'stopped', `${JSON.stringify(q.events.map((e) => e.kind))} ${JSON.stringify(kinds('3000.2'))}`)
+    check(`quiet (${shape}): one salute on its message, nothing posted, no working message left`, JSON.stringify(kinds('3000.3')) === '["quiet"]' && said.length === 0 && working.every((w) => q.transport.removed.some((r) => r.ts === w.ts)), `${JSON.stringify(kinds('3000.3'))} said ${JSON.stringify(said)} working ${JSON.stringify(working.map((w) => w.ts))} removed ${JSON.stringify(q.transport.removed)}`)
+    check(`quiet (${shape}): muted`, q.read().muted?.['C_ALLOWED:t1'] !== undefined, JSON.stringify(q.read().muted))
+    q.done()
+  }
   // (f) Once only messages that did not mention it remain, the in-flight record says so: a restart then says nothing.
   // The turn for the mention times out at about 0.65 s, the quiet one after it at about 1.25 s: looked at between.
   const f = boot({ agent: 'slow', config: { replyMode: 'thread', runTimeoutMs: 500, fake: { typing: true } } })

@@ -387,7 +387,7 @@ function message(overrides = {}) {
   check('marks: eyes, a keycap digit, then a check, each added before the last comes off',
     JSON.stringify(a.calls) === JSON.stringify(['PUT 👀@C1/100', `PUT ${k(3)}@C1/100`, 'DELETE 👀@C1/100', 'PUT ✅@C1/100', `DELETE ${k(3)}@C1/100`]), JSON.stringify(a.calls))
 
-  for (const [kind, emoji] of [['failed', '❌'], ['stopped', '⏹\uFE0F']] as const) {
+  for (const [kind, emoji] of [['failed', '❌'], ['stopped', '⏹\uFE0F'], ['quiet', '🫡']] as const) {
     const b = reactionsOf(() => 204)
     const tb = await made(b)
     tb.mark(at, '101', { kind: 'seen' }); await pause()

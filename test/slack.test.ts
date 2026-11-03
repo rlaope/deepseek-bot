@@ -564,7 +564,7 @@ function transportFor(api) {
 // app_mention, so its message event is dropped and the turn is not taken twice.
 {
   const api = stubSlack()
-  const received: Record<string, Array<{ ts: string; addressed: boolean; target: { threadTs: string | null } }>> = {}
+  const received: Record<string, Array<{ ts: string; addressed: boolean; byMode?: boolean; target: { threadTs: string | null } }>> = {}
   for (const mode of ['thread', 'mention', 'all']) {
     const sockets = []
     class EventSocket {
@@ -597,6 +597,11 @@ function transportFor(api) {
     send('Ev9', { type: 'message', subtype: 'thread_broadcast', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.7', thread_ts: '5.0', text: '채널에도 보냄' })
     // In a DM, a file shared with words: a turn in every mode (it was dropped, the subtype read as not a person's).
     send('Ev10', { type: 'message', subtype: 'file_share', channel: 'D1', channel_type: 'im', user: 'U7', ts: '7.1', text: '이 파일 봐줘', files: [] })
+    // Aimed at someone else: opening with another person's mention. Not when the mention comes later, nor with the bot's.
+    send('Ev11', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.8', thread_ts: '5.0', text: '<@U9> 이거 봐줄래?' })
+    send('Ev12', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.9', thread_ts: '5.0', text: '이거 <@U9> 가 봐줄래?' })
+    send('Ev13', { type: 'app_mention', channel: 'C1', user: 'U7', ts: '5.10', thread_ts: '5.0', text: '<@U9> <@U1> 너도 봐줘' })
+    send('Ev14', { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '6.1', text: '<@U9|minsu> 점심 먹자' })
     await t.close()
     received[mode] = got
   }
@@ -610,6 +615,14 @@ function transportFor(api) {
   check('every mode: a file shared with words in a DM comes in, addressed', ['thread', 'mention', 'all'].every((mode) => (received[mode] ?? []).some((m) => m.ts === '7.1' && m.addressed === true)), JSON.stringify(Object.fromEntries(Object.entries(received).map(([k, v]) => [k, v.map((m) => m.ts)]))))
   const all = received.all ?? []
   check('all: a mention comes once too (the manifest now sends the channel\'s messages as well)', all.filter((m) => m.ts === '5.2').length === 1 && all.some((m) => m.ts === '5.1' && m.addressed === true), JSON.stringify(all.map((m) => [m.ts, m.addressed])))
+  // Under 'all', a mode-addressed message says so; a mention or a DM does not: a muted conversation tells them apart.
+  check('all: a message addressed only by the mode is marked byMode; a mention and a DM are not', all.find((m) => m.ts === '5.1')?.byMode === true && all.find((m) => m.ts === '5.2')?.byMode !== true && all.find((m) => m.ts === '7.1')?.byMode !== true, JSON.stringify(all.map((m) => [m.ts, m.byMode])))
+  check('thread: control — a mention-addressed message is not byMode', thread.every((m) => m.byMode !== true), JSON.stringify(thread.map((m) => [m.ts, m.byMode])))
+  for (const mode of ['thread', 'all']) {
+    const got = received[mode] ?? []
+    check(`${mode}: a message opening with another person's mention does not come in`, !got.some((m) => m.ts === '5.8' || m.ts === '6.1'), JSON.stringify(got.map((m) => m.ts)))
+    check(`${mode}: control — one naming them later does, and a mention of the bot after theirs is answered`, got.some((m) => m.ts === '5.9') && got.some((m) => m.ts === '5.10' && m.addressed === true && m.byMode !== true), JSON.stringify(got.map((m) => [m.ts, m.addressed])))
+  }
   check('mention: a message in a thread without a mention does not come in', !(received.mention ?? []).some((m) => m.ts === '5.1') && (received.mention ?? []).some((m) => m.ts === '5.2'), JSON.stringify((received.mention ?? []).map((m) => m.ts)))
 }
 
@@ -688,7 +701,7 @@ function transportFor(api) {
   api.restore()
   const calls = api.calls.filter((c) => c.method.startsWith('reactions.')).map((c) => `${c.method.split('.')[1]} ${c.body?.name}@${c.body?.timestamp}`)
   check('marks: eyes, then three, then a check, each swapped in, none repeated', JSON.stringify(calls) === JSON.stringify(['add eyes@5.1', 'add three@5.1', 'remove eyes@5.1', 'add white_check_mark@5.1', 'remove three@5.1']), JSON.stringify(calls))
-  for (const [state, name] of [[{ kind: 'failed' }, 'x'], [{ kind: 'stopped' }, 'black_square_for_stop']] as const) {
+  for (const [state, name] of [[{ kind: 'failed' }, 'x'], [{ kind: 'stopped' }, 'black_square_for_stop'], [{ kind: 'quiet' }, 'saluting_face']] as const) {
     const a2 = stubSlack()
     const t2 = transportFor(a2)
     await t2.authenticate()

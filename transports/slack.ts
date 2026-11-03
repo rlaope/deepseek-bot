@@ -375,6 +375,9 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
       // 'thread': a message in a thread comes in unaddressed, and the core takes it only in a thread the bot takes
       // part in; one at the top of a channel needs a mention.
       if (cfg.replyMode === 'thread' && (typeof event.thread_ts !== 'string' || event.thread_ts === event.ts)) return null
+      // One that opens with another person's mention (the bot's came as its app_mention) is said to them: not one for the
+      // bot to join, nor one the mode gives it.
+      if (/^\s*<@[A-Z0-9]+(?:\|[^>]*)?>/i.test(event.text ?? '')) return null
     }
     const text = botUserId === null
       ? event.text ?? ''
@@ -387,6 +390,7 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
       text,
       user: event.user,
       addressed: isDm || isMention || cfg.replyMode === 'all',
+      ...(!isDm && !isMention && cfg.replyMode === 'all' ? { byMode: true } : {}),
       files,
       raw: event,
     }
@@ -770,7 +774,7 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
 
   /**
    * Progress on the person's message as its reactions (`marks.ts`): eyes when taken, a digit (1 to 9, tenths of a
-   * guess) while it runs, a check, a cross or a stop sign at the end. reactions:write is the app's to have: refused for
+   * guess) while it runs, a check, a cross or a stop sign at the end, a salute when told to be quiet. reactions:write is the app's to have: refused for
    * it, the refusal is said once and nothing more is asked until the gateway restarts. A message too full for one more
    * reaction has ours taken off, freeing a slot; one that is gone is let go.
    */
@@ -783,7 +787,7 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
   const reaction = (method: string, channel: string, ts: string, name: string) =>
     settled(api.slackPost<{ ok: boolean; error?: string }>(requireToken(), method, { channel, timestamp: ts, name }))
   const mark = reactionMarks({
-    names: { seen: 'eyes', working: ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'], done: 'white_check_mark', failed: 'x', stopped: 'black_square_for_stop' },
+    names: { seen: 'eyes', working: ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'], done: 'white_check_mark', failed: 'x', stopped: 'black_square_for_stop', quiet: 'saluting_face' },
     add: (channel, ts, name) => reaction('reactions.add', channel, ts, name).then((r): MarkOutcome => {
       if (r.ok || r.error === 'already_reacted') return 'ok'
       // The first refusal is the one said.

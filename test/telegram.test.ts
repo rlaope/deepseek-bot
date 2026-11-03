@@ -440,7 +440,7 @@ function groupMessage(overrides = {}) {
   check('marks: eyes, writing once while it runs, then OK, each replacing the last', JSON.stringify(a.sets) === JSON.stringify(['👀@7/10', '✍@7/10', '👌@7/10']), JSON.stringify(a.sets))
   check('marks: the message id is sent as a number', a.idTypes.length === 3 && a.idTypes.every((x) => x === 'number'), JSON.stringify(a.idTypes))
 
-  for (const [kind, emoji] of [['failed', '😢'], ['stopped', '🫡']] as const) {
+  for (const [kind, emoji] of [['failed', '😢'], ['stopped', '🫡'], ['quiet', '🫡']] as const) {
     const b = reacting(() => ({ ok: true }))
     const tb = transportFor(b, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
     await tb.identity()
