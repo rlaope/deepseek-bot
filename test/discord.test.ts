@@ -202,6 +202,20 @@ function message(overrides = {}) {
   await t4.identity()
   await t4.post({ channel: 'C1', threadTs: null }, 'the answer', { replace: 'm1' })
   check('a refused edit falls back to a new message', api3.rest.filter((c) => c.method === 'POST').length === 1, JSON.stringify(api3.rest.map((c) => c.method)))
+
+  // What the model writes pings nobody: @everyone, @here and a role or user mention in an answer, an edit or an
+  // approval request are text. Discord parses mentions from the content unless the message says otherwise.
+  const api5 = fakeDiscord()
+  const t5 = transportFor(api5, mkdtempSync(join(tmpdir(), 'dc-')))
+  await t5.identity()
+  await t5.post({ channel: 'C1', threadTs: null }, '@everyone @here <@&77> <@5>')
+  await t5.post({ channel: 'C1', threadTs: null }, '@everyone edited', { replace: 'm1' })
+  await t5.post({ channel: 'C1', threadTs: null }, '@here approve?', { buttons: [{ id: 'a1', label: 'Allow' }] })
+  const sends = api5.rest.filter((c) => c.path.startsWith('/channels/C1/messages') && (c.method === 'POST' || c.method === 'PATCH'))
+  check('every send and edit parses no mention', sends.length === 3 && sends.every((c) => JSON.stringify(c.body?.allowed_mentions) === '{"parse":[]}'),
+    JSON.stringify(sends.map((c) => [c.method, c.body?.allowed_mentions])))
+  check('including the new message after a refused edit', api3.rest.filter((c) => c.method === 'POST').every((c) => JSON.stringify(c.body?.allowed_mentions) === '{"parse":[]}'),
+    JSON.stringify(api3.rest.filter((c) => c.method === 'POST').map((c) => c.body)))
 }
 
 // 5. History comes from the API, in reading order, with the question excluded.

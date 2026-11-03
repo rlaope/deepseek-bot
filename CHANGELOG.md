@@ -7,6 +7,15 @@ the caveat about version numbers is at the bottom.
 
 ### Security
 
+- **An answer could ping a whole channel.** Slack's text was sent with `&`, `<` and `>` as the model wrote them, so
+  `<!channel>`, `<!here>`, `<!everyone>`, `<!subteam^…>` or `<@U…>` in an answer notified everyone it named; on
+  Discord no send said which mentions to parse, so `@everyone`, `@here` and a role mention did the same. Slack's text
+  is escaped now (in code too, where Slack shows `&lt;` as `<`), keeping the links the conversion makes and a Slack
+  link the model pastes whole (the thread's own link is handed to it so) with its label escaped; nothing the bot
+  sends mentions anyone on purpose, so user mentions are escaped too. Every Discord send and edit carries
+  `allowed_mentions: { parse: [] }`; no reply reference is sent, so there is no replied user to name. Telegram has no
+  mention of a whole chat, and its HTML was already escaped. Checked in the Slack and Discord suites, red before.
+
 - **A command read `~/.npmrc`, and its npm token went to the model.** The sandbox refused `~/.ssh`, the cloud
   CLIs' and gh's tokens, netrc and git's credentials, but not the package registries' and other tools' token files.
   In a real-model QA the agent was asked to edit `~/.npmrc`; the write was refused, but it read the file first and
@@ -191,6 +200,10 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **Slack rewrote code.** Inside a code block or inline code, a `# comment` line came out bold, a `- ` line as
+  a bullet, and `**`, Markdown links and the rest were converted like text. Code is set aside before the rules now and
+  sent as written. Also `*italic*` came out as Slack's bold and `~~strike~~` was left as it was: they are `_italic_`
+  and `~strike~` now, and `**bold**` is still `*bold*`. Checked in the Slack suite, red before.
 - **`dsh gateway` alone, its `--help` and a mistyped command printed the harness's stack trace.** Only `gateway`
   followed by one of its commands was taken from the harness CLI, which booted a profile named gateway that does not
   exist: `Error: dsh: profile "gateway" does not exist` and a Node stack, exit 1. Where the harness has no such profile

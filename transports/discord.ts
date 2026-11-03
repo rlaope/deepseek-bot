@@ -278,6 +278,13 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     seenMessages.set(channel, ring)
   }
 
+  /**
+   * What the model writes pings nobody: Discord parses `@everyone`, `@here`, `<@&role>` and `<@user>` out of a message's
+   * content unless the message says not to, and nothing this transport sends mentions anyone on purpose. No reply
+   * reference is sent, so there is no replied user to name either. On an edit as well as a send.
+   */
+  const NO_MENTIONS = { parse: [] }
+
   /** Button styles as Discord numbers, so a caller can name the intent. */
   const BUTTON_STYLES: Record<string, number> = { primary: 1, secondary: 2, danger: 4 }
 
@@ -454,7 +461,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
         if (replace !== null) {
           try {
             sent = await rest<DiscordMessage>(`/channels/${target.channel}/messages/${replace}`, {
-              method: 'PATCH', body: JSON.stringify({ content: body }),
+              method: 'PATCH', body: JSON.stringify({ content: body, allowed_mentions: NO_MENTIONS }),
             })
           } catch (e) {
             log(`discord edit failed, sending a new message instead: ${String((e as Error)?.message ?? e)}`)
@@ -466,6 +473,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
             method: 'POST',
             body: JSON.stringify({
               content: body,
+              allowed_mentions: NO_MENTIONS,
               // An action row of buttons: the decision is made in place rather than by
               // typing a reply, which is what Discord is good at. On the last part, where the question ends.
               ...(buttons.length > 0 && i === chunks.length - 1

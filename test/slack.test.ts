@@ -474,6 +474,33 @@ function transportFor(api) {
   check('a local path is left as text, because it cannot be a link', body2.includes('/Users/x/note.docx'), body2.slice(-40))
 }
 
+// 8b. What the model writes is text: a mention in an answer pings nobody, and code is shown as it was written.
+{
+  const sent = async (markdown) => {
+    const api = stubSlack()
+    const t = transportFor(api)
+    await t.authenticate()
+    await t.post({ channel: 'C1', threadTs: null }, markdown)
+    api.restore()
+    return String(api.calls.find((c) => c.method === 'chat.postMessage')?.body?.text ?? '')
+  }
+  const pings = await sent('hi <!channel> <!here> <!everyone> <!subteam^S123> <@U123> & [<!here>](https://example.com/a)')
+  check('a mention in an answer is inert: no <! or <@ reaches Slack', !/<[!@]/.test(pings), pings)
+  check('and it reads as written, escaped', pings.startsWith('hi &lt;!channel&gt; &lt;!here&gt; &lt;!everyone&gt; &lt;!subteam^S123&gt; &lt;@U123&gt; &amp; '), pings)
+  check('a link\'s label is escaped too, and the link kept', pings.endsWith('<https://example.com/a|&lt;!here&gt;>'), pings)
+  // The thread's own link is handed to the model in Slack's form, to paste: it stays a link.
+  const linked = await sent('see <https://example.slack.com/archives/C1/p111222|this thread> and <https://example.com/b>')
+  check('a Slack link the model pastes stays a link', linked === 'see <https://example.slack.com/archives/C1/p111222|this thread> and <https://example.com/b>', linked)
+  const smuggled = await sent('<https://example.com/c|<!channel>>')
+  check('but not one whose label carries a mention', !/<!/.test(smuggled), smuggled)
+  const fenced = await sent('```\n# comment\n- item\n**not bold** *nor italic* ~~nor struck~~ [a](https://example.com/d)\n```')
+  check('a code block is sent as written', fenced === '```\n# comment\n- item\n**not bold** *nor italic* ~~nor struck~~ [a](https://example.com/d)\n```', JSON.stringify(fenced))
+  const inline = await sent('run `**x** ~~y~~` now')
+  check('inline code is sent as written', inline === 'run `**x** ~~y~~` now', JSON.stringify(inline))
+  const marks = await sent('*italic* and _also_ and **bold** and ~~struck~~\n* item')
+  check('italic, bold and strike in Slack\'s marks; a star list is still a list', marks === '_italic_ and _also_ and *bold* and ~struck~\n• item', JSON.stringify(marks))
+}
+
 // 9. A document is uploaded rather than named: a local path cannot be clicked, so the file travels.
 {
   const api = stubSlack()
