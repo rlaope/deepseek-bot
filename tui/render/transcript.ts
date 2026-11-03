@@ -5,6 +5,11 @@
  * Layout is cached per block and invalidated by a version number, so a streamed answer re-wraps
  * only itself — the hundred messages above it cost nothing per token. The viewport follows the
  * bottom until the user scrolls away, and says how much arrived while they were reading.
+ *
+ * A new width (a resize) or palette is laid out lazily: the blocks in view and a screen around them
+ * at once, every other one as an estimate of its lines (from its layout at the width before) until it
+ * comes near the view, so a resize of a long session costs a screen, not the whole scrollback. A
+ * block coming into view above the reader's place moves that place by what its estimate was off.
  */
 import { extract, type Line } from './text.js'
 import { themeGeneration } from './style.js'
@@ -20,14 +25,17 @@ export interface Block {
 
 interface Cached { version: number | string; width: number; theme: number; lines: Line[] }
 
+/** What stands for a line of a block not yet laid out at this width: never drawn, the view lays it out first. */
+const PENDING: Line = Object.freeze({ spans: [], soft: false }) as Line
+
 export interface Point { line: number; col: number }
 
 export class Transcript {
   private blocks: Block[] = []
   private cache = new Map<string, Cached>()
   private flat: Line[] = []
-  /** Where each block's lines are in `flat`, in order. */
-  private spans: Array<{ block: Block; from: number; to: number }> = []
+  /** Where each block's lines are in `flat`, in order; `exact` false while they are an estimate. */
+  private spans: Array<{ block: Block; from: number; to: number; exact: boolean }> = []
   private flatWidth = -1
   /** The palette the layout was made in: a light terminal's answer draws every block again. */
   private flatTheme = -1
@@ -82,8 +90,9 @@ export class Transcript {
 
   private dropOldest(count: number): void {
     let lines = 0
+    const at = new Map(this.spans.map((s) => [s.block, s.to - s.from]))
     for (const block of this.blocks.splice(0, count)) {
-      lines += this.cache.get(block.id)?.lines.length ?? 0
+      lines += at.get(block) ?? this.cache.get(block.id)?.lines.length ?? 0
       this.cache.delete(block.id)
     }
     // Keep a reader's place: the lines above them went away, not the lines they were reading.
@@ -101,56 +110,109 @@ export class Transcript {
    * after the change, so lines that arrived before it still count, and ones that arrive after it do too.
    */
   refold(width: number, change: () => void): void {
-    this.layout(width)
+    this.build(width)
     change()
     this.dirty = true
     this.quiet = true
-    this.layout(width)
+    this.build(width)
   }
 
-  /** All lines at this width. Cheap when nothing changed. */
+  /** All lines at this width, every block laid out. Cheap when nothing changed. */
   layout(width: number): Line[] {
+    this.build(width)
+    this.ensure(0, Infinity)
+    return this.flat
+  }
+
+  /** How many lines there are at this width, those of blocks not yet laid out at it estimated. */
+  count(width: number): number {
+    this.build(width)
+    return this.flat.length
+  }
+
+  /**
+   * The lines at this width: a block whose content changed (or is new) laid out, one only of another width or
+   * palette estimated (`ensure` lays it out).
+   */
+  private build(width: number): void {
     const theme = themeGeneration()
-    if (!this.dirty && width === this.flatWidth && theme === this.flatTheme) return this.flat
+    if (!this.dirty && width === this.flatWidth && theme === this.flatTheme) return
     const before = this.flat.length
+    this.assemble(width, theme)
+    const grew = this.flat.length - before
+    this.dirty = false
+    if (!this.follow && grew > 0 && width === this.lastWidth && !this.quiet) this.unseen += grew
+    this.quiet = false
+    this.lastWidth = width
+  }
+
+  /** `flat` and `spans` from the cache, what is new or changed laid out. */
+  private assemble(width: number, theme: number): void {
     const out: Line[] = []
-    const spans: Array<{ block: Block; from: number; to: number }> = []
+    const spans: Array<{ block: Block; from: number; to: number; exact: boolean }> = []
     for (const block of this.blocks) {
       let hit = this.cache.get(block.id)
-      if (hit === undefined || hit.version !== block.version || hit.width !== width || hit.theme !== theme) {
+      const exact = hit !== undefined && hit.version === block.version && hit.width === width && hit.theme === theme
+      const from = out.length
+      if (hit === undefined || hit.version !== block.version) {
         hit = { version: block.version, width, theme, lines: block.lines(width) }
         this.cache.set(block.id, hit)
+      } else if (!exact) {
+        // Laid out at another width: about as many lines as there it took, fewer on a wider pane.
+        const guess = Math.max(1, Math.round((hit!.lines.length * hit!.width) / Math.max(1, width)))
+        for (let k = 0; k < guess; k++) out.push(PENDING)
+        spans.push({ block, from, to: out.length, exact: false })
+        continue
       }
-      const from = out.length
-      for (const line of hit.lines) out.push(line)
-      spans.push({ block, from, to: out.length })
+      for (const line of hit!.lines) out.push(line)
+      spans.push({ block, from, to: out.length, exact: true })
     }
     this.spans = spans
     if (this.cache.size > this.blocks.length * 2) {
       const live = new Set(this.blocks.map((b) => b.id))
       for (const id of this.cache.keys()) if (!live.has(id)) this.cache.delete(id)
     }
-    const grew = out.length - before
     this.flat = out
     this.flatWidth = width
     this.flatTheme = theme
-    this.dirty = false
-    if (!this.follow && grew > 0 && width === this.lastWidth && !this.quiet) this.unseen += grew
-    this.quiet = false
-    this.lastWidth = width
-    return out
+  }
+
+  /**
+   * Lay out the estimated blocks with a line in [from, to). One above the reader's place moves it by what its
+   * estimate was off, so the lines in view stay. Returns whether any was laid out.
+   */
+  private ensure(from: number, to: number): boolean {
+    const width = this.flatWidth
+    const theme = this.flatTheme
+    let any = false
+    for (;;) {
+      const due = this.spans.filter((s) => !s.exact && s.to > from && s.from < to)
+      if (due.length === 0) return any
+      any = true
+      for (const s of due) {
+        const lines = s.block.lines(width)
+        this.cache.set(s.block.id, { version: s.block.version, width, theme, lines })
+        if (s.to <= this.top) this.top = Math.max(0, this.top + lines.length - (s.to - s.from))
+      }
+      this.assemble(width, theme)
+    }
   }
 
   /** The visible slice for a viewport of `height` rows, adjusting `top` for follow mode. */
   visible(width: number, height: number): Line[] {
-    const lines = this.layout(width)
+    this.build(width)
     this.lastHeight = height
-    const maxTop = Math.max(0, lines.length - height)
-    if (this.follow) this.top = maxTop
-    this.top = Math.max(0, Math.min(this.top, maxTop))
+    // The rows in view laid out, and a screen above and below them, so a scroll finds them ready.
+    for (;;) {
+      const maxTop = Math.max(0, this.flat.length - height)
+      if (this.follow) this.top = maxTop
+      this.top = Math.max(0, Math.min(this.top, maxTop))
+      if (!this.ensure(this.top - height, this.top + 2 * height)) break
+    }
+    const maxTop = Math.max(0, this.flat.length - height)
     // At the bottom again — the viewport grew, or what was hidden fits — is following again: nothing is unseen.
     if (this.top >= maxTop) { this.follow = true; this.unseen = 0 }
-    return lines.slice(this.top, this.top + height)
+    return this.flat.slice(this.top, this.top + height)
   }
 
   /** Scroll by `delta` lines (negative is up). Reaching the bottom resumes following. */
@@ -178,7 +240,7 @@ export class Transcript {
    * result unfolded at the bottom shows its head, not its tail.
    */
   keepInPlace(block: Block, width: number, change: () => void): void {
-    this.layout(width)
+    this.build(width)
     const before = this.spans.find((s) => s.block === block)
     this.refold(width, change)
     const after = this.spans.find((s) => s.block === block)
@@ -238,6 +300,7 @@ export class Transcript {
     if (this.selection === null) return ''
     const { anchor, head } = this.selection
     if (anchor.line === head.line && anchor.col === head.col) return ''
+    this.ensure(Math.min(anchor.line, head.line), Math.max(anchor.line, head.line) + 1)
     return extract(this.flat, anchor, head)
   }
 

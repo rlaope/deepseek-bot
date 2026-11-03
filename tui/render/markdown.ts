@@ -342,11 +342,21 @@ function tableAsList(cells: string[], rows: string[][], s: MarkdownStyles): Span
 /** Tab stops in an answer, as CommonMark reads tabs. */
 const TAB_STOP = 4
 
+/** A fence open where a layout stops: its mark, how many of it, its language. */
+type Fence = { mark: string; size: number; lang: string } | null
+
 /**
- * Lay out a Markdown answer under a prefix (e.g. two spaces), as transcript lines.
+ * Lines of Markdown laid out, from inside `fence` when one is open, before the blank ends are trimmed. Of `raws`
+ * (tabs expanded), the first `complete` are whole; the rest is a streamed line still arriving. `cut` is how far the
+ * layout stays as it is whatever comes after: how many raws, the lines they made, and the fence open there. A line
+ * is such a place when nothing after it can change it or what is before it: a fence's line, or one that is no
+ * table's row or rule (no pipe, not a run of dashes). A table is laid out with all of its rows, never cut.
  */
-export function markdown(text: string, width: number, s: MarkdownStyles, prefix: Span): Line[] {
+interface Piece { lines: Line[]; cut: { raws: number; lines: number; fence: Fence } }
+
+function piece(raws: string[], complete: number, width: number, s: MarkdownStyles, prefix: Span, from: Fence): Piece {
   const lines: Line[] = []
+  let cut = { raws: 0, lines: 0, fence: from }
   const lead = (extra: Span[] = []): Span[] => [{ ...prefix, decor: true }, ...extra.map((e) => ({ ...e, decor: true }))]
   const widthOfDecor = (decor: Span[]) => [prefix, ...decor].reduce((n, d) => n + stringWidth(d.text), 0)
   const emit = (spans: Span[], decor: Span[], anywhere = false, hang = decor) => {
@@ -357,13 +367,13 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
   }
   // A list item's mark is drawn once; its wrapped lines hang under its text.
   const item = (spans: Span[], mark: string) => emit(spans, [{ text: mark, style: s.dim }], false, [{ text: ' '.repeat(stringWidth(mark)), style: s.dim }])
-  // Tabs to stops of 4 columns, CommonMark's, from the start of each line: a code block keeps its
-  // indentation, a list its nesting, and tab-separated text its columns.
-  const raws = text.split('\n').map((raw) => expandTabs(raw, TAB_STOP))
   // A fence as CommonMark has it: three or more backticks or tildes, then an info string whose first
   // word is the language (none with a backtick, after backticks). It is closed by a run of the same
   // mark at least as long, alone on its line, so a ```` fence can show a ``` one.
-  let fence: { mark: string; size: number; lang: string } | null = null
+  let fence = from
+  const keep = (i: number) => { if (i < complete) cut = { raws: i + 1, lines: lines.length, fence } }
+  // A line that is no table's row or rule: nothing after it joins it in a table.
+  const kept = (i: number, raw: string) => { if (!raw.includes('|') && !isSeparator(raw)) keep(i) }
   for (let i = 0; i < raws.length; i++) {
     const raw = raws[i]
     const run = /^\s*(`{3,}|~{3,})(.*)$/.exec(raw)
@@ -371,10 +381,11 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
       const lang = run[2].trim().split(/\s+/)[0]
       fence = { mark: run[1][0], size: run[1].length, lang }
       if (lang !== '') lines.push({ spans: lead([{ text: lang, style: s.dim }]), soft: false })
+      keep(i)
       continue
     }
-    if (run !== null && fence !== null && run[1][0] === fence.mark && run[1].length >= fence.size && run[2].trim() === '') { fence = null; continue }
-    if (fence !== null) { emit(highlight(raw, fence.lang, s), [{ text: '│ ', style: s.dim }], true); continue }
+    if (run !== null && fence !== null && run[1][0] === fence.mark && run[1].length >= fence.size && run[2].trim() === '') { fence = null; keep(i); continue }
+    if (fence !== null) { emit(highlight(raw, fence.lang, s), [{ text: '│ ', style: s.dim }], true); keep(i); continue }
     // A table needs a separator row with as many cells as its header (so "a | b" over a rule is not one).
     if (isRow(raw) && i + 1 < raws.length && isSeparator(raws[i + 1]) && cellsOf(raws[i + 1]).length === cellsOf(raw).length) {
       const header = cellsOf(raw)
@@ -393,21 +404,69 @@ export function markdown(text: string, width: number, s: MarkdownStyles, prefix:
       continue
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(raw)
-    if (heading !== null) { emit(inline(heading[2], s.heading, s), []); continue }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(raw)) { lines.push({ spans: lead([{ text: '─'.repeat(Math.max(1, Math.min(width - 2, 40))), style: s.dim }]), soft: false }); continue }
+    if (heading !== null) { emit(inline(heading[2], s.heading, s), []); kept(i, raw); continue }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(raw)) { lines.push({ spans: lead([{ text: '─'.repeat(Math.max(1, Math.min(width - 2, 40))), style: s.dim }]), soft: false }); kept(i, raw); continue }
     const quote = /^>\s?(.*)$/.exec(raw)
-    if (quote !== null) { emit(inline(quote[1], s.quote, s), [{ text: '│ ', style: s.dim }]); continue }
+    if (quote !== null) { emit(inline(quote[1], s.quote, s), [{ text: '│ ', style: s.dim }]); kept(i, raw); continue }
     const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(raw)
-    if (bullet !== null) { item(inline(bullet[2], s.text, s), `${bullet[1]}• `); continue }
+    if (bullet !== null) { item(inline(bullet[2], s.text, s), `${bullet[1]}• `); kept(i, raw); continue }
     const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(raw)
-    if (numbered !== null) { item(inline(numbered[3], s.text, s), `${numbered[1]}${numbered[2]}. `); continue }
-    if (raw.trim() === '') { lines.push({ spans: lead(), soft: false }); continue }
+    if (numbered !== null) { item(inline(numbered[3], s.text, s), `${numbered[1]}${numbered[2]}. `); kept(i, raw); continue }
+    if (raw.trim() === '') { lines.push({ spans: lead(), soft: false }); keep(i); continue }
     emit(inline(raw, s.text, s), [])
+    kept(i, raw)
   }
-  // An answer never starts or ends with blank lines of its own (a line of just the prefix) — while
-  // a code block's language, also all decoration, stays even when the answer opens with the block.
+  return { lines, cut }
+}
+
+/**
+ * An answer never starts or ends with blank lines of its own (a line of just the prefix) — while a code block's
+ * language, also all decoration, stays even when the answer opens with the block.
+ */
+function trimmed(lines: Line[]): Line[] {
   const blank = (line: Line) => line.spans.length === 1 && line.spans[0].decor === true
-  while (lines.length > 0 && blank(lines[lines.length - 1])) lines.pop()
-  while (lines.length > 0 && blank(lines[0])) lines.shift()
-  return lines
+  let from = 0
+  let to = lines.length
+  while (to > 0 && blank(lines[to - 1])) to--
+  while (from < to && blank(lines[from])) from++
+  return from === 0 && to === lines.length ? lines : lines.slice(from, to)
+}
+
+/** Tabs to stops of 4 columns, CommonMark's, from the start of each line: a code block keeps its indentation, a
+ * list its nesting, and tab-separated text its columns. */
+const rawsOf = (text: string) => text.split('\n').map((raw) => expandTabs(raw, TAB_STOP))
+
+/**
+ * Lay out a Markdown answer under a prefix (e.g. two spaces), as transcript lines.
+ */
+export function markdown(text: string, width: number, s: MarkdownStyles, prefix: Span): Line[] {
+  const raws = rawsOf(text)
+  return trimmed(piece(raws, raws.length, width, s, prefix, null).lines)
+}
+
+/**
+ * `markdown` for a text that grows at its end, a streamed answer: what was laid out up to the last place nothing
+ * after it can change is kept (for this width, prefix and styles), and only the rest is laid out again, so a frame
+ * costs the answer's last lines rather than all of them. The same lines as `markdown` of the whole text. A text that
+ * is not the last one with more at its end (a retry, the committed reply) is laid out from its start. `work`, for a
+ * test, hears how many lines each layout took.
+ */
+export function markdownStream(work?: (lines: number) => void): (text: string, width: number, s: MarkdownStyles, prefix: Span) => Line[] {
+  let key = ''
+  let done = ''
+  let kept: Line[] = []
+  let fence: Fence = null
+  return (text, width, s, prefix) => {
+    const now = `${width}\n${prefix.text}\n${prefix.style}\n${JSON.stringify(s)}`
+    if (now !== key || !text.startsWith(done)) { key = now; done = ''; kept = []; fence = null }
+    const rest = text.slice(done.length).split('\n')
+    work?.(rest.length)
+    const out = piece(rest.map((raw) => expandTabs(raw, TAB_STOP)), rest.length - 1, width, s, prefix, fence)
+    if (out.cut.raws > 0) {
+      for (let i = 0; i < out.cut.lines; i++) kept.push(out.lines[i])
+      done += `${rest.slice(0, out.cut.raws).join('\n')}\n`
+      fence = out.cut.fence
+    }
+    return trimmed([...kept, ...out.lines.slice(out.cut.lines)])
+  }
 }

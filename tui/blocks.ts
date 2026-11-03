@@ -11,7 +11,7 @@ import { palette, sgr, theme, type ColorMode } from './render/style.js'
 import { blink, currentFrame, shimmer } from './render/motion.js'
 import { expandTabs, fit, stringWidth, stripControls } from './render/width.js'
 import { layout, type Line, type Span } from './render/text.js'
-import { markdown, type MarkdownStyles } from './render/markdown.js'
+import { markdownStream, type MarkdownStyles } from './render/markdown.js'
 import { lineDiff } from './render/linediff.js'
 import { stripState } from './interview.js'
 
@@ -69,6 +69,8 @@ export interface AnswerBlock extends Block {
 }
 
 export function answerBlock(mode: ColorMode): AnswerBlock {
+  // While it streams, only its last lines are laid out again each frame.
+  const laid = markdownStream()
   const block: AnswerBlock = {
     id: nextId('answer'),
     version: 0,
@@ -83,12 +85,12 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
       const shown = stripControls(stripState(block.text))
       if (shown === '' && !block.streaming) return []
       const mark = sgr(theme.answerMark, mode)
-      const lines = markdown(shown, width, markdownStyles(mode), pad('  '))
-      if (lines.length === 0) lines.push({ spans: [pad('  ')], soft: false })
-      // A dot where the answer starts, in the indent it would have had.
+      const lines = laid(shown, width, markdownStyles(mode), pad('  '))
+      if (lines.length === 0) return [{ spans: [pad('● ', mark)], soft: false }]
+      // A dot where the answer starts, in the indent it would have had: on a copy of the line, which the stream keeps.
       const lead = lines[0].spans[0]
-      if (lead?.decor === true && lead.text === '  ') lines[0].spans[0] = pad('● ', mark)
-      return lines
+      if (lead?.decor !== true || lead.text !== '  ') return lines
+      return [{ ...lines[0], spans: [pad('● ', mark), ...lines[0].spans.slice(1)] }, ...lines.slice(1)]
     },
   }
   return block
