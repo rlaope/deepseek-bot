@@ -25,7 +25,12 @@ function check(name, ok, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** A websocket that behaves like Discord's gateway, and a REST API behind it. */
-function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; historyFails?: boolean; history?: unknown[]; dispatches?: Array<{ t: string; d: unknown }>; channels?: Record<string, unknown>; hang?: string[] } = {}) {
+/**
+ * `store`: a channel's messages, served as Discord documents GET /channels/{id}/messages: newest first, at most `limit`
+ * (default 50); `before` the newest page under an id, `after` the page right after one (its oldest). What the bot posts
+ * joins it, under the next id.
+ */
+function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; historyFails?: boolean; history?: unknown[]; store?: Array<{ id: string; channel_id: string; content: string; author: { id: string; username: string; bot?: boolean } }>; dispatches?: Array<{ t: string; d: unknown }>; channels?: Record<string, unknown>; hang?: string[] } = {}) {
   const sent = []
   const rest = []
   const handlers: Record<string, Array<(event: unknown) => void>> = {}
@@ -69,11 +74,29 @@ function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; histor
       return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted'))))
     }
     if (path.startsWith('/channels/') && path.includes('/messages') && !path.includes('?')) {
+      if ((init.method ?? 'POST') === 'POST' && options.store !== undefined) {
+        const id = String(options.store.reduce((max, m) => (BigInt(m.id) > max ? BigInt(m.id) : max), 0n) + 1n)
+        const channelId = path.split('/')[2]
+        options.store.push({ id, channel_id: channelId, content: String(JSON.parse(String(init.body)).content ?? ''), author: { id: '9', username: 'testbot', bot: true } })
+        return json({ id, channel_id: channelId })
+      }
       if ((init.method ?? 'POST') === 'POST') return json({ id: `m${rest.length}`, channel_id: 'C1' })
       return json({ id: options.editTarget ?? 'm1', channel_id: 'C1' })
     }
     if (path.includes('/messages?')) {
       if (options.historyFails) return json({ message: 'Missing Access' }, false, 403)
+      if (options.store !== undefined) {
+        const query = new URL(String(url)).searchParams
+        const channelId = path.split('/')[2]
+        const limit = Number(query.get('limit') ?? 50)
+        const before = query.get('before')
+        const after = query.get('after')
+        const asc = options.store.filter((m) => m.channel_id === channelId).sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+        const page = after !== null
+          ? asc.filter((m) => BigInt(m.id) > BigInt(after)).slice(0, limit)
+          : asc.filter((m) => before === null || BigInt(m.id) < BigInt(before)).slice(-limit)
+        return json([...page].reverse())
+      }
       return json(options.history ?? [])
     }
     if (String(url).startsWith('https://cdn')) {
@@ -259,10 +282,11 @@ function message(overrides = {}) {
   await t.identity()
   const history = await t.fetchHistory({ channel: 'C1', threadTs: null }, { currentTs: '103', sinceTs: null, limit: 20, maxChars: 1000 })
   check('history is read in order', /a: first[\s\S]*b: second/.test(history.text), JSON.stringify(history.text.slice(0, 80)))
-  check('the newest id is reported back', history.lastTs === '102', String(history.lastTs))
+  // The pointer passes the question, which its turn delivers.
+  check('the question\'s id is reported back', history.lastTs === '103', String(history.lastTs))
   const delta = await t.fetchHistory({ channel: 'C1', threadTs: null }, { currentTs: '103', sinceTs: '102', limit: 20, maxChars: 1000 })
-  check('a delta asks for what is after the last seen message', api.rest.some((c) => c.path.includes('after=102')), JSON.stringify(api.rest.map((c) => c.path).slice(-2)))
-  check('and returns nothing new', delta.text === '' || delta.lastTs === '102')
+  check('a delta asks for what is before the question', api.rest.some((c) => c.path.includes('before=103')) && !api.rest.some((c) => c.path.includes('after=')), JSON.stringify(api.rest.map((c) => c.path).slice(-2)))
+  check('and returns nothing new', delta.text === '' && delta.lastTs === '103', JSON.stringify(delta))
 }
 
 // 6. A history failure degrades to what the process has seen rather than failing the turn.
@@ -642,6 +666,62 @@ function message(overrides = {}) {
   check('lookup: one request for the channel, said in the log', api.rest.filter((c) => c.path === '/channels/H1').length === 1 && t.logs.some((l) => /could not tell whether channel H1/.test(l)),
     JSON.stringify(api.rest.filter((c) => c.method === 'GET').map((c) => c.path)))
   check('lookup: a known channel and a DM are not marked', received.filter((m) => m.target.channel !== 'H1').length === 2 && received.filter((m) => m.target.channel !== 'H1').every((m) => m.parentUnknown === undefined))
+}
+
+// 16. A busy channel: of what is new since the pointer, the newest page, not its oldest. `after` the pointer gave the
+// `limit` messages right after it, so a channel that moved on more than a page was read from its oldest.
+{
+  const store = Array.from({ length: 150 }, (_, i) => ({ id: String(1001 + i), channel_id: 'C5', content: `line ${1001 + i}`, author: { id: '5', username: 'alice' } }))
+  const api = fakeDiscord({ store })
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')))
+  await t.identity()
+  const history = await t.fetchHistory({ channel: 'C5', threadTs: null }, { currentTs: '1151', sinceTs: '1000', limit: 20, maxChars: 100000 })
+  const shown = [...history.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
+  check('paging: a busy channel gives its newest page under the question', shown.length === 20 && shown[0] === 1131 && shown.at(-1) === 1150, `${shown.length} line(s), ${shown[0]}..${shown.at(-1)}`)
+  // The control: the fake serves `after` as Discord does, the oldest page past it.
+  const oldest = await (api.fetchImpl as any)('https://discord.com/api/v10/channels/C5/messages?limit=20&after=1000').then((r) => r.json())
+  check('paging: (control) `after` gives the oldest page past the pointer', oldest.length === 20 && oldest.at(-1).id === '1001' && oldest[0].id === '1020', `${oldest.at(-1)?.id}..${oldest[0]?.id}`)
+}
+
+// 17. Turns in one channel, through the core. A message that waited behind another is not in the earlier turn's
+// history (it was quoted there, and then the pointer passed it), and its own turn is given what was said between the
+// two. A later turn is not given the bot's own answers, which the session holds, nor what it was given already.
+{
+  const home = mkdtempSync(join(tmpdir(), 'dc-home-'))
+  const store = [
+    { id: '2000', channel_id: 'C6', content: 'ROOT-ONE the budget', author: { id: '5', username: 'alice' } },
+    { id: '2001', channel_id: 'C6', content: '<@9> QUESTION-A how much?', author: { id: '5', username: 'alice' } },
+    { id: '2002', channel_id: 'C6', content: 'CHATTER-C ask finance', author: { id: '6', username: 'bob' } },
+    { id: '2003', channel_id: 'C6', content: '<@9> QUESTION-B and by when?', author: { id: '5', username: 'alice' } },
+  ]
+  const api = fakeDiscord({ store, updates: store.slice(1).map((m) => ({ ...m, guild_id: 'G1' })) })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home, {}, { answer: 'ANSWER-FROM-BOT next quarter' })
+  await sleep(700)
+  const historyOf = (marker: string) => {
+    const turn = core.texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
+    return turn.split('[user message]').slice(0, -1).join('[user message]')
+  }
+  const later = (content: string, author = { id: '6', username: 'bob' }) => {
+    const id = String(store.reduce((max, m) => (BigInt(m.id) > max ? BigInt(m.id) : max), 0n) + 1n)
+    const message = { id, channel_id: 'C6', guild_id: 'G1', content, author }
+    store.push(message)
+    return message
+  }
+  later('ASIDE-ONE I can drive')
+  api.dispatch({ op: 0, t: 'MESSAGE_CREATE', d: later('<@9> QUESTION-THREE where?', { id: '5', username: 'alice' }) })
+  await sleep(500)
+  await t.close()
+  const a = historyOf('QUESTION-A')
+  const b = historyOf('QUESTION-B')
+  const third = historyOf('QUESTION-THREE')
+  check('waiting: the earlier turn is not given the message that waited, nor what came after it', /ROOT-ONE/.test(a) && !/QUESTION-B|CHATTER-C/.test(a), JSON.stringify(a.slice(-200)))
+  check('waiting: the waiting message\'s own turn is given what was said between the two', /CHATTER-C/.test(b) && !/QUESTION-A|ROOT-ONE/.test(b), JSON.stringify(b.slice(-200)))
+  check('delta: the bot answered in the channel', store.filter((m) => m.author.id === '9' && /ANSWER-FROM-BOT/.test(m.content)).length >= 2)
+  check('delta: a later turn is given what was said since (the control)', /ASIDE-ONE/.test(third), JSON.stringify(third.slice(-200)))
+  check('delta: and not the bot\'s own answers, nor what it was given already', !/ANSWER-FROM-BOT|QUESTION-B|CHATTER-C/.test(third), JSON.stringify(third.slice(-200)))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

@@ -743,7 +743,8 @@ function transportFor(api) {
   check('history: a message shared with a file is kept; a join is not', h.text.includes('이 로그 봐줘') && !h.text.includes('joined'), JSON.stringify(h.text))
 }
 
-// A long thread: of what is new since the pointer, the newest `historyLimit` lines, not its oldest page.
+// A long thread: of what is new since the pointer, the newest `historyLimit` lines, not its oldest page. The pointer
+// passes the message being answered (6.31), which the turn delivers.
 {
   const realFetch = globalThis.fetch
   const asked = []
@@ -763,7 +764,7 @@ function transportFor(api) {
   const h = await t.fetchHistory({ channel: 'C1', threadTs: '6.00' }, { currentTs: '6.31', sinceTs: '6.00', limit: 5, maxChars: 4000 })
   globalThis.fetch = realFetch
   const shown = [...h.text.matchAll(/line (\d+)/g)].map((m) => Number(m[1]))
-  check('history: a long thread gives its newest lines', JSON.stringify(shown) === '[26,27,28,29,30]' && h.lastTs === '6.30' && /[?&]limit=200(&|$)/.test(asked[0] ?? ''), `${JSON.stringify(shown)} last ${h.lastTs} ${asked[0]}`)
+  check('history: a long thread gives its newest lines', JSON.stringify(shown) === '[26,27,28,29,30]' && h.lastTs === '6.31' && /[?&]limit=200(&|$)/.test(asked[0] ?? ''), `${JSON.stringify(shown)} last ${h.lastTs} ${asked[0]}`)
 }
 
 // Progress on the person's message, as reactions: eyes when taken, a digit while it runs, a check or a cross at the
@@ -1370,6 +1371,104 @@ function transportFor(api) {
     rmSync(home, { recursive: true, force: true })
   }
   api.restore()
+}
+
+// Two turns in one thread, through the core: what the second turn is given as the conversation so far. The pointer
+// stopped at the newest line before the question, and the bot's own messages were not left out, so the second turn
+// was handed the first question and the bot's own answer again, as other people's words. And a message that waited
+// behind another: not in the earlier turn's history, and its own turn given what was said between the two.
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const store: Array<{ ts: string; thread: string; user: string; bot_id?: string; text: string }> = []
+  const next = () => (Math.max(...store.map((m) => Number(m.ts))) + 0.00001).toFixed(6)
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (url, init = {}) => {
+    const u = new URL(String(url))
+    const method = u.pathname.split('/api/')[1] ?? ''
+    const body = typeof init.body === 'string' && init.body.startsWith('{') ? JSON.parse(init.body) : {}
+    const reply = (value) => ({ ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) })
+    if (method === 'auth.test') return reply({ ok: true, user: 'bot', user_id: 'U1', team: 'T1', team_id: 'T1ID', url: 'https://example.slack.com/' })
+    if (method === 'users.list') return reply({ ok: true, members: [{ id: 'U1', name: 'deepbot' }, { id: 'U7', name: 'asker' }, { id: 'U8', name: 'bystander' }] })
+    if (method === 'conversations.replies') {
+      const oldest = u.searchParams.get('oldest')
+      const messages = store.filter((m) => m.thread === u.searchParams.get('ts') && (oldest === null || Number(m.ts) > Number(oldest)))
+      return reply({ ok: true, messages: [...messages].sort((a, b) => Number(a.ts) - Number(b.ts)) })
+    }
+    if (method === 'chat.postMessage') {
+      const ts = next()
+      store.push({ ts, thread: body.thread_ts ?? ts, user: 'U1', bot_id: 'B1', text: String(body.text ?? '') })
+      return reply({ ok: true, ts, channel: body.channel })
+    }
+    if (method === 'chat.update') {
+      const found = store.find((m) => m.ts === body.ts)
+      if (found) found.text = String(body.text ?? '')
+      return reply({ ok: true, ts: body.ts, channel: body.channel })
+    }
+    return reply({ ok: true })
+  }) as typeof fetch
+  const home = mkdtempSync(join(tmpdir(), 'deepbot-slack-delta-'))
+  const sockets = []
+  class EventSocket {
+    handlers: Record<string, Array<(data: unknown) => void>>
+    constructor() { this.handlers = {}; sockets.push(this) }
+    addEventListener(type, fn) { (this.handlers[type] ??= []).push(fn) }
+    send() {}
+    close() {}
+    emit(type, data) { for (const fn of this.handlers[type] ?? []) fn(data) }
+  }
+  const t = createSlackTransport({
+    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, fetchHistory: true, historyLimit: 20, historyMaxChars: 4000 },
+    log: () => {}, sessionCwd: async () => home, credential: async () => 'token-for-test', onHealth: () => {},
+    WebSocketImpl: EventSocket,
+  })
+  const core = bootAround(t, home, {}, { answer: 'ANSWER-FROM-BOT the lake house' })
+  await sleep(300)
+  let events = 0
+  const say = (thread: string, user: string, text: string, ts = next()) => {
+    store.push({ ts, thread, user, text })
+    return ts
+  }
+  const ask = (thread: string, text: string) => {
+    const ts = say(thread, 'U7', `<@U1> ${text}`)
+    const id = `Ed${++events}`
+    sockets[0].emit('message', { data: JSON.stringify({ envelope_id: id, type: 'events_api', payload: { event_id: id, event: { type: 'app_mention', channel: 'C1', user: 'U7', ts, thread_ts: thread, text: `<@U1> ${text}` } } }) })
+  }
+  /** What a turn was handed as the conversation so far: everything before the person's own message. */
+  const historyOf = (marker: string) => {
+    const turn = core.texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
+    return turn.split('[user message]').slice(0, -1).join('[user message]')
+  }
+
+  // One after the other: the bot answered the first question, and someone else spoke, before the second.
+  say('7.000100', 'U7', 'ROOT-ONE planning the offsite', '7.000100')
+  ask('7.000100', 'QUESTION-ONE where should we go?')
+  await sleep(700)
+  say('7.000100', 'U8', 'ASIDE-ONE I can drive')
+  ask('7.000100', 'QUESTION-TWO and when?')
+  await sleep(700)
+  const first = historyOf('QUESTION-ONE')
+  const second = historyOf('QUESTION-TWO')
+  check('delta: the first turn is given the thread before it', /ROOT-ONE/.test(first) && !/QUESTION-ONE/.test(first), JSON.stringify(first.slice(-200)))
+  check('delta: the second turn is given what was said since (the control)', /ASIDE-ONE/.test(second), JSON.stringify(second.slice(-300)))
+  check('delta: the second turn is not given the first question again', !/QUESTION-ONE/.test(second), JSON.stringify(second.slice(-300)))
+  check('delta: the bot answered the first question in the thread', store.some((m) => m.user === 'U1' && /ANSWER-FROM-BOT/.test(m.text) && Number(m.ts) < Number(store.find((q) => /QUESTION-TWO/.test(q.text))?.ts)))
+  check('delta: nor the bot\'s own answer, as someone else\'s words', !/ANSWER-FROM-BOT/.test(second), JSON.stringify(second.slice(-300)))
+  check('delta: nor the thread it was already given', !/ROOT-ONE/.test(second), JSON.stringify(second.slice(-300)))
+
+  // A message that waited: both questions, and a line between them, are in the thread before the first turn reads it.
+  say('8.000100', 'U7', 'ROOT-TWO the budget', '8.000100')
+  ask('8.000100', 'QUESTION-A how much?')
+  say('8.000100', 'U8', 'CHATTER-C ask finance')
+  ask('8.000100', 'QUESTION-B and by when?')
+  await sleep(900)
+  await t.close()
+  const a = historyOf('QUESTION-A')
+  const b = historyOf('QUESTION-B')
+  check('waiting: the earlier turn is not given the message that waited, nor what came after it', /ROOT-TWO/.test(a) && !/QUESTION-B|CHATTER-C/.test(a), JSON.stringify(a.slice(-300)))
+  check('waiting: the waiting message\'s own turn is given what was said between the two', /CHATTER-C/.test(b) && !/QUESTION-A|ROOT-TWO/.test(b), JSON.stringify(b.slice(-300)))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+  globalThis.fetch = realFetch
 }
 
 const failed = results.filter((r) => !r.ok)

@@ -250,7 +250,8 @@ function groupMessage(overrides = {}) {
   await t.close()
   check('the conversation so far is available', /first thing/.test(all.text), JSON.stringify(all.text.slice(0, 60)))
   check('the question itself is excluded', !/second thing/.test(all.text))
-  check('a delta returns only what is new', delta.text === '' && delta.lastTs === null, JSON.stringify(delta))
+  // Nothing new, and the pointer passes the question, which its turn delivers.
+  check('a delta returns only what is new', delta.text === '' && delta.lastTs === '11', JSON.stringify(delta))
 }
 
 // 10. Closing stops the poll loop.
@@ -783,6 +784,51 @@ function groupMessage(overrides = {}) {
   check('command: a bare /help in a group is not addressed', by(73)?.addressed === false)
   check('command: the bot\'s name in any case, with words after it', by(74)?.addressed === true && by(74)?.text === '/status now', JSON.stringify(by(74)?.text))
   check('command: a bare /help replying to the bot is addressed', by(75)?.addressed === true)
+}
+
+// 21. Turns in one forum topic, through the core. A message that waited behind another is not in the earlier turn's
+// history (it was quoted there, and then the pointer passed it), and its own turn is given what was said between the
+// two; what was said in another topic meanwhile is that topic's. And an album's caption on its second item is the
+// album's own words, not the next turn's history.
+{
+  const home = mkdtempSync(join(tmpdir(), 'tg-home-'))
+  const forum = { id: -1010, type: 'supergroup', is_forum: true }
+  const inTopic = (id: number, topic: number, text: string, extra: Record<string, unknown> = {}) => ({ update_id: id, message: { message_id: id, from: { id: 5, username: 'alice' }, chat: forum, message_thread_id: topic, is_topic_message: true, text, ...extra } })
+  const asked = (id: number, text: string) => inTopic(id, 77, `@deepbot_test ${text}`, { entities: [{ type: 'mention', offset: 0, length: 13 }] })
+  const batches = [
+    [inTopic(80, 77, 'ROOT-ONE the budget')],
+    // Taken together, as one poll: all four are in before the first turn reads its history.
+    [asked(81, 'QUESTION-A how much?'), inTopic(82, 78, 'OTHER-TOPIC lunch?'), inTopic(83, 77, 'CHATTER-C ask finance'), asked(84, 'QUESTION-B and by when?')],
+  ]
+  const base = fakeApi()
+  const api = { ...base, fetchImpl: async (url, init) => {
+    if (String(url).split('/').pop() === 'getUpdates' && batches.length > 0) return { ok: true, status: 200, json: async () => ({ ok: true, result: batches.shift() }) }
+    return base.fetchImpl(url, init)
+  } }
+  const t = transportFor(api, home)
+  const core = bootAround(t, home, {}, { answer: 'ANSWER-FROM-BOT next quarter' })
+  await sleep(900)
+  const album = (id: number, extra: Record<string, unknown> = {}) => inTopic(id, 77, undefined as unknown as string, { media_group_id: 'G9', photo: [{ file_id: `large-PIC${id}`, file_size: 12 }], ...extra })
+  batches.push([album(90), album(91, { caption: '@deepbot_test ALBUM-CAPTION what are these?', caption_entities: [{ type: 'mention', offset: 0, length: 13 }] })])
+  await sleep(2000)
+  batches.push([asked(95, 'QUESTION-THREE and then?')])
+  await sleep(700)
+  await t.close()
+  const historyOf = (marker: string) => {
+    const turn = core.texts().find((text) => (text.split('[user message]').at(-1) ?? '').includes(marker)) ?? ''
+    return turn.split('[user message]').slice(0, -1).join('[user message]')
+  }
+  const a = historyOf('QUESTION-A')
+  const b = historyOf('QUESTION-B')
+  const pictures = historyOf('ALBUM-CAPTION')
+  const third = historyOf('QUESTION-THREE')
+  check('waiting: the earlier turn is not given the message that waited, nor what came after it', /ROOT-ONE/.test(a) && !/QUESTION-B|CHATTER-C/.test(a), JSON.stringify(a.slice(-200)))
+  check('waiting: the waiting message\'s own turn is given what was said between the two', /CHATTER-C/.test(b) && !/QUESTION-A|ROOT-ONE/.test(b), JSON.stringify(b.slice(-200)))
+  check('waiting: and not what was said in another topic', !/OTHER-TOPIC/.test(a + b), JSON.stringify(b.slice(-200)))
+  check('album: its turn ran (the control)', core.texts().some((text) => /ALBUM-CAPTION/.test(text)) && !/ALBUM-CAPTION/.test(pictures), JSON.stringify(pictures.slice(-200)))
+  check('album: its caption is not the next turn\'s history', core.texts().some((text) => /QUESTION-THREE/.test(text)) && !/ALBUM-CAPTION/.test(third), JSON.stringify(third.slice(-200)))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

@@ -245,8 +245,10 @@ export interface Transport {
   post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[]; answer?: boolean; replyTo?: string }): Promise<PostedMessage | null>
 
   /**
-   * Messages newer than `sinceTs`, so the adapter can send a delta instead of the
-   * whole thread every turn. Returns the newest timestamp it included.
+   * Messages newer than `sinceTs` and older than `currentTs`, so the adapter can send a delta instead of the
+   * whole thread every turn; never the bot's own, which the session holds as its answers. Returns the pointer for
+   * the next turn: `currentTs`, which the turn itself delivers, or the newest it included when some were left out
+   * for length.
    */
   fetchHistory(target: Target, options: { currentTs: string; sinceTs: string | null; limit: number; maxChars: number }): Promise<{ text: string; lastTs: string | null }>
 
