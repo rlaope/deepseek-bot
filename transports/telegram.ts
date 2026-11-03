@@ -23,7 +23,7 @@ import { writeAttachments, type AttachmentSource } from './attachments.js'
 import { tablesAsLists } from './tables.js'
 import { numberedParts } from './parts.js'
 import { reactionMarks, type MarkOutcome } from './marks.js'
-import { EARLIER_NOT_SHOWN, newestThatFit } from './history.js'
+import { EARLIER_NOT_SHOWN, newestThatFit, personName } from './history.js'
 import type { AttachmentManifest, AttachmentRef, InboundMessage, PostedMessage, Target, Transport, ActionButton, ActionEvent } from '../types/transport.js'
 
 interface TelegramHost {
@@ -322,7 +322,7 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     const ring = seenMessages.get(chat) ?? []
     ring.push({
       ts: String(message.message_id),
-      who: message.from?.username ?? message.from?.first_name ?? String(message.from?.id ?? 'unknown'),
+      who: personName(message.from?.username ?? message.from?.first_name ?? String(message.from?.id ?? 'unknown'), String(message.from?.id ?? 'unknown')),
       text: text.replace(/\n+/g, ' ').slice(0, 500),
     })
     while (ring.length > HISTORY_PER_CHAT) ring.shift()

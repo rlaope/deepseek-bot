@@ -45,9 +45,13 @@ is built before the thing it stands on. The detailed history of each milestone i
 - **Other bots' messages in history differ by platform.** Slack's history drops another bot's `bot_message`
   subtype; Discord's REST path keeps other bots' messages, and its fallback ring (what the process saw) drops them.
   Not fixed.
-- **A Slack thread more than 1000 messages past the pointer is read only to its 1000th.** History pages the thread
-  (5 pages of 200) up to the message answered; past that bound the newest are not read, the log says so and the
-  history ends "(later messages not shown)". Not fixed.
+- **A Slack thread far past the pointer is read in at most 6 calls.** History pages a thread up to the message
+  answered; after two pages it reads on from halfway between what it read and the question, each call, and what it
+  skipped is said ("(earlier messages not shown)"). A thread so dense that 6 calls do not reach the question ends
+  "(later messages not shown)", and the log says so. Not fixed.
+- **A watch's alert posted into a conversation already going is left out of its next delta.** With a pointer the
+  bot's own messages are left out, as its answers are in the session; an alert the watch runner posted into that
+  conversation meanwhile is the bot's too, and is not in the session. Not fixed.
 
 - **A wordless turn opens even when no attachment is usable.** A message of files alone is a turn whether or not
   anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
@@ -150,9 +154,11 @@ Decided against:
 
 - History deltas (the bot's own messages left out with a pointer and given, as its own, to a new session; nothing
   newer than the message answered; the pointer past it; a gap past one page and a cut for length dropping the oldest,
-  said so), checked against fake APIs only (`test/slack.test.ts` delta, waiting, own, gap and cut,
-  `test/discord.test.ts` 16-18, `test/telegram.test.ts` 21-22). Not seen live: that Slack's `conversations.replies`
-  pages oldest first with `latest`, `oldest` and a cursor as the fake does. Not seen live: that Discord's `before` gives the newest page under an id and `after`
+  said so; a person named as the bot's label quoted, with their id), checked against fake APIs only
+  (`test/slack.test.ts` delta, waiting, own, gap, bound, cut and label, `test/discord.test.ts` 16-19,
+  `test/telegram.test.ts` 23-25). Not seen live: that Slack's `conversations.replies` pages oldest first with
+  `latest`, `oldest`, `inclusive` and a cursor as the fake does, nor how its rate limits take up to 6 calls in one
+  turn. The label check is by text: a name in lookalike letters (a Cyrillic о) is not caught. Not seen live: that Discord's `before` gives the newest page under an id and `after`
   the page right after one (the fake models it so; Discord's reference says only that the three are exclusive), and
   that the bot's own Slack messages carry its user id in `conversations.replies` (they carry `bot_id` too). What the bot
   posts outside a turn, a watch's alert, is given to a new session but left out of a delta, so a turn in a conversation
