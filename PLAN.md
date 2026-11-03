@@ -170,8 +170,13 @@ Decided against:
   Discord and Telegram the conversation *is* the channel or chat, Discord's `<#channel>` mention is
   already a link, and a private Telegram chat has none. A link to where the person already is would
   be a knob that does nothing.
+- **`docs/demo.gif` and `docs/banner.svg` are no longer shown in the README.** The CHANGELOG names `demo.gif` and
+  `tui/render/banner.ts` says `banner.svg` is for the README, so both stay until one of them is changed on purpose.
 
 ## Unverified
+
+- The README as GitHub renders it (centred images, the caption, the sponsor quote) was not seen on github.com: its
+  image paths and HTML were checked locally. The demo GIF (800 px) reads at 100%, not at phone width.
 
 - The `marks` setting and the model's reactions, checked against the fake transport and mocked platform APIs only:
   not seen that Slack takes `+1`, `-1`, `heart`, `thinking_face` and the rest, that Discord takes ❤️ with its VS16
