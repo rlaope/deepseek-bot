@@ -636,6 +636,33 @@ function groupMessage(overrides = {}) {
   rmSync(home, { recursive: true, force: true })
 }
 
+// 22. An entry that cannot be read does not stop its chat: an album item the transport throws on (a photo with no file
+// id) is logged and skipped, and what the chat said after it is still taken. Thrown in the album's timer, it was an
+// uncaught exception, which ends the gateway.
+{
+  const thrown: unknown[] = []
+  const catcher = (e: unknown) => { thrown.push(e) }
+  process.on('uncaughtException', catcher)
+  process.on('unhandledRejection', catcher)
+  const home = mkdtempSync(join(tmpdir(), 'tg-throw-'))
+  const api = fakeApi({ updates: [
+    { update_id: 70, message: { message_id: 70, media_group_id: 'G3', from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, photo: [{ file_size: 4 }] } },
+    { update_id: 71, message: { message_id: 71, from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, text: 'after it' } },
+  ] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(2000)
+  await t.close()
+  process.off('uncaughtException', catcher)
+  process.off('unhandledRejection', catcher)
+  const asked = core.texts().map((said) => said.split('[user message]\n').at(-1))
+  check('unreadable: nothing is thrown out of the transport', thrown.length === 0, thrown.map(String).join(' | '))
+  check('unreadable: it is logged', t.logs.some((l) => /telegram: could not read update 70/.test(l)), t.logs.join(' | ').slice(0, 300))
+  check('unreadable: and the chat\'s next message is still taken', JSON.stringify(asked) === JSON.stringify(['after it']), JSON.stringify(asked))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

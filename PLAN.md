@@ -42,6 +42,12 @@ is built before the thing it stands on. The detailed history of each milestone i
   anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
   no download URL, a Telegram voice note or animation, a Discord voice message. It costs a model call that can only say
   it cannot open the file. Not fixed.
+- **The state file is written at once per new inbound event, by a plain write.** `sessions.json` is written without a
+  temporary file and a rename, as every immediate save is; with one write per event that passes the allowlist, a full
+  disk (`ENOSPC`) mid-write can truncate it more often than before. Not fixed.
+- **A Telegram button press sent again after a crash is not deduplicated.** An unconfirmed `callback_query` comes again
+  to the next process and is handed over again; it most likely finds no pending request for its id and is answered as
+  stale. Not fixed.
 - **An album can be cut in two by getUpdates' page.** While an album is gathered, getUpdates is sent its first update
   as the offset and returns at most 100 updates from there; with more than 100 arriving after its first item inside
   the 1.2 s window, a later item is not seen until the album is taken, and becomes a message of its own. Not fixed.

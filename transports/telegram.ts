@@ -340,8 +340,14 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     const queue = waiting.get(chat) ?? []
     while (queue.length > 0 && queue[0].ready) {
       const entry = queue.shift()
-      const parsed = parseMessages(entry.items.sort((a, b) => a.message_id - b.message_id))
-      if (parsed !== null && onMessage !== null) onMessage(parsed)
+      // One that cannot be read is skipped, said in the log: thrown here, in an album's timer it ended the process, and
+      // in a poll it left the chat's queue stuck behind it.
+      try {
+        const parsed = parseMessages(entry.items.sort((a, b) => a.message_id - b.message_id))
+        if (parsed !== null && onMessage !== null) onMessage(parsed)
+      } catch (e) {
+        log(`telegram: could not read update ${entry.first}, skipped: ${String((e as Error)?.message ?? e)}`)
+      }
     }
     if (queue.length === 0) waiting.delete(chat)
   }
