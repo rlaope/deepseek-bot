@@ -226,6 +226,18 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **A turn was handed what it had already been given, and what was not yet its own.** The history pointer stopped at
+  the newest line before the message being answered, and the bot's own messages were not left out, so in a Slack
+  thread (and a Discord channel) each turn was given the previous question and the bot's own answer again, quoted as
+  other people's words. On Discord and Telegram the history also held messages newer than the one being answered: one
+  that arrived while this turn waited was quoted here, then had its own turn, and the pointer passed whatever was said
+  between the two. Discord's delta was read `after` the pointer, which gives the page right after it, so a channel
+  that had moved on more than a page was read from its oldest. Now, on every platform, history is what came after the
+  pointer and before the message being answered, never the bot's own, and the pointer passes the message being
+  answered (not past lines left out for length, which the next turn gets). Discord reads `before` the message, its
+  newest page; Telegram's ring is per topic already, and an album is remembered under its own id, so its caption is
+  no longer the next turn's history. Checked against fake APIs only, two turns through the real transports and the
+  core (`test/slack.test.ts`, `test/discord.test.ts` 16-17, `test/telegram.test.ts` 21), each red before.
 - **Threads, topics and group DMs went to the wrong place, or nowhere.**
   - Discord: a thread or forum post is a channel of its own, so a `targetChannels` entry naming its channel did not
     cover it, and the tenant map sent it to the default workspace. The transport now learns each thread's channel from
