@@ -5,8 +5,10 @@
  * shape differs from the other two transports in ways that matter here:
  *
  * - Discord has threads, but a thread is just a channel, so the channel id is the
- *   conversation and `threadTs` stays null — the same rule Telegram follows, for a
- *   different reason.
+ *   conversation and `threadTs` stays null. A thread's message says nothing of the
+ *   channel it is in, so the transport learns each thread's parent (from the gateway's
+ *   thread events, else by asking once) and puts it on the message: an allowlist that
+ *   names a channel covers its threads and forum posts.
  * - The websocket must be identified with an intents bitmask, and `MESSAGE_CONTENT`
  *   is a privileged intent: without it a message arrives with empty content. That is
  *   detected and logged rather than answered as if the user said nothing.
@@ -45,6 +47,8 @@ interface DiscordMessage {
   attachments?: DiscordAttachment[]
   referenced_message?: { author?: DiscordUser }
 }
+/** What a channel object says of where it is. A thread's parent is its channel; a channel's is its category. */
+interface DiscordChannel { id?: string; type?: number; parent_id?: string | null }
 interface DiscordInteraction {
   id: string
   token?: string
@@ -66,6 +70,8 @@ const GATEWAY_URL = 'wss://gateway.discord.gg/?v=10&encoding=json'
 const INTENTS = 1 | 512 | 4096 | 32768
 const MESSAGE_LIMIT = 2000
 const HISTORY_PER_CHANNEL = 50
+// ANNOUNCEMENT_THREAD, PUBLIC_THREAD, PRIVATE_THREAD: a forum post is a public thread of the forum.
+const THREAD_TYPES = new Set([10, 11, 12])
 
 export interface DiscordTransport extends Transport {
   authenticate(): Promise<void>
@@ -309,6 +315,57 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     if (onAction !== null) onAction({ id: customId, target, user })
   }
 
+  /**
+   * Each channel's parent when it is a thread, null when it is not (a category is not a parent here: allowing one
+   * would not have allowed its channels before either). The gateway tells most of it — every active thread and channel
+   * of a guild as it comes up, then each thread made, changed or listed — and a channel it has not told of is asked for
+   * once, with the messages behind it waiting so they stay in order. A refused lookup is taken as no parent and not
+   * kept, so a thread under an allowed channel is ignored rather than one under another let in.
+   */
+  const parents = new Map<string, string | null>()
+  const asking = new Map<string, Promise<string | null>>()
+  function learn(channel: DiscordChannel | undefined): void {
+    if (typeof channel?.id !== 'string') return
+    parents.set(channel.id, THREAD_TYPES.has(Number(channel.type)) && typeof channel.parent_id === 'string' ? channel.parent_id : null)
+  }
+  function learnFrom(name: string, data: Record<string, any>): void {
+    if (name === 'GUILD_CREATE') for (const channel of [...(data.channels ?? []), ...(data.threads ?? [])]) learn(channel)
+    else if (name === 'THREAD_LIST_SYNC') for (const channel of data.threads ?? []) learn(channel)
+    else if (name === 'THREAD_CREATE' || name === 'THREAD_UPDATE' || name === 'CHANNEL_CREATE' || name === 'CHANNEL_UPDATE') learn(data as DiscordChannel)
+    else if ((name === 'THREAD_DELETE' || name === 'CHANNEL_DELETE') && typeof data.id === 'string') parents.delete(data.id)
+  }
+  function parentOf(channel: string): Promise<string | null> {
+    const known = parents.get(channel)
+    if (known !== undefined) return Promise.resolve(known)
+    let ask = asking.get(channel)
+    if (ask === undefined) {
+      ask = rest<DiscordChannel>(`/channels/${channel}`)
+        .then((found) => { learn({ ...found, id: channel }); return parents.get(channel) ?? null })
+        .catch((e) => { log(`discord: could not tell whether channel ${channel} is a thread, taken as not one: ${String((e as Error)?.message ?? e)}`); return null })
+        .finally(() => asking.delete(channel))
+      asking.set(channel, ask)
+    }
+    return ask
+  }
+  /** Hand a message over with its parent: at once when it is known and nothing waits ahead, else after what does. */
+  let delivering: Promise<void> | null = null
+  function deliver(message: InboundMessage): void {
+    const channel = message.target.channel
+    const inGuild = (message.raw as DiscordMessage).guild_id !== undefined
+    const hand = (parent: string | null) => {
+      if (onMessage === null) return
+      attempts++
+      onHealth({ connectAttempts: attempts, lastEventAt: Date.now() })
+      onMessage(parent === null ? message : { ...message, parent })
+    }
+    if (delivering === null && (!inGuild || parents.has(channel))) { hand(inGuild ? parents.get(channel) ?? null : null); return }
+    const run = (delivering ?? Promise.resolve())
+      .then(async () => hand(inGuild ? await parentOf(channel) : null))
+      .catch((e) => log('discord message handling failed', String((e as Error)?.message ?? e)))
+    delivering = run
+    void run.finally(() => { if (delivering === run) delivering = null })
+  }
+
   function parseDispatch(name: string, data: Record<string, any>): InboundMessage | null {
     if (name !== 'MESSAGE_CREATE') return null
     const message = data as unknown as DiscordMessage
@@ -383,12 +440,9 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
         return
       }
       if (frame.op === 0 && frame.t !== undefined) {
+        learnFrom(frame.t, frame.d ?? {})
         const message = parseDispatch(frame.t, frame.d ?? {})
-        if (message !== null && onMessage !== null) {
-          attempts++
-          onHealth({ connectAttempts: attempts, lastEventAt: Date.now() })
-          onMessage(message)
-        }
+        if (message !== null && onMessage !== null) deliver(message)
         if (frame.t === 'READY') {
           connected = true
           backoff = 2000

@@ -39,9 +39,9 @@ Never say just "home".
 
 ## A conversation
 
-- **target** — where a message goes: a channel and, on Slack, a thread.
-- **conversation** — one target's exchange over time: a Slack thread, a Telegram chat, a Discord
-  channel. Its **conversation key** is `<channel>` or `<channel>:<thread>`.
+- **target** — where a message goes: a channel and, on Slack, a thread (in a Telegram forum, a topic).
+- **conversation** — one target's exchange over time: a Slack thread, a Telegram chat or forum
+  topic, a Discord channel or thread (a channel of its own, whose **parent** is the channel it is in). Its **conversation key** is `<channel>` or `<channel>:<thread>`.
 - **session** — the harness's durable log of one conversation. The adapter keeps the mapping from
   conversation key to session id; that mapping is the authority on which channel a session is in.
 - **turn** — one message taken, worked on and answered. One turn runs at a time per conversation;
