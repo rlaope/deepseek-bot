@@ -175,6 +175,12 @@ Decided against:
 
 ## Unverified
 
+- The terminal's short-pane panels, the frame diff over a character of several code points, and the escapes now
+  stripped: checked against the fake terminal (with an emulator that draws VS16 emoji one column wide), a recording
+  through pyte of the real client against a fake gateway (before the fix a stray 👍 stayed on two rows; after, none),
+  and tmux at 100×30, 60×24, 40×10 and 40×7. Not seen in Terminal.app, iTerm2, kitty or Windows Terminal, nor
+  against a real gateway's approvals and shells.
+
 - The terminal's input fixes (characters typed a code point at a time joined, a message over the frame limit refused
   and kept, a 100 ms wait for a split sequence, the hello timeout, the reconnect countdown, the paste cut, its final
   newline and chip by size, word movement, ctrl+z, Enter on an optional argument), checked against a fake terminal, the

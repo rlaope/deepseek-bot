@@ -98,8 +98,9 @@ export function expandTabs(text: string, stop: number): string {
 
 // Escape sequences, as a terminal reads them: CSI (ESC [ or C1 0x9b) up to its final byte; a string (OSC,
 // DCS, SOS, PM, APC) up to BEL or ST — or the line's end, so one left open hides no more than its line;
-// any other ESC with what it takes. An unfinished one at the end (a streamed answer cut mid-sequence) too.
-const ESCAPES = /(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]?|(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)?|\x1b[ -/]*[0-~]?/g
+// SS2 and SS3 (ESC N, ESC O, or C1 0x8e, 0x8f) with the one character they shift; any other ESC with what it
+// takes. An unfinished one at the end (a streamed answer cut mid-sequence) too.
+const ESCAPES = /(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]?|(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)?|(?:\x1b[NO]|[\x8e\x8f])(?:[\ud800-\udbff][\udc00-\udfff]|[^\n])?|\x1b[ -/]*[0-~]?/g
 // The C0 and C1 controls left once those are gone, but for tab and newline.
 const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
 

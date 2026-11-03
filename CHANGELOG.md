@@ -242,6 +242,39 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The terminal's panels on a short or narrow pane, a stray character after an emoji, and text drawn with its
+  escapes.** Found filming the terminal and reviewing its render pass; each checked by a test that failed first.
+  - A question longer than three lines was cut at the third with nothing saying so. It wraps whole now: three lines,
+    the last ending in "…", and ctrl+o shows it all (and folds it again). An option row or the hint too wide for the
+    pane ends in "…" instead of mid-word.
+  - On a short pane a question's options and the hint went off the bottom (40×10: no hint; 40×7: no option, while
+    the keys still picked one unseen). The panel now takes what is left after a row of transcript: its words give way
+    first, then the options away from the highlight, which stays with the hint; the head says which option of how
+    many is highlighted. An approval does the same: its title goes first (the request is the message above), then
+    the options away from the highlight. A click picks the option under it in a shortened list.
+  - On a narrow pane a picker's title took the row, and what was typed and "no match" were cut off. The title gives
+    way now, then the query; "no match" stays.
+  - After an approval message rewrapped, a ")" stayed at the right edge of two rows until the end (100×30). A
+    character of several code points (⚠️, a flag, a ZWJ emoji) is drawn two columns wide by some terminals and one
+    by others (xterm's, pyte's), and the frame diff wrote each changed run in one go: after a narrower one the rest
+    of the run landed a column to the left and the run's old last cell stayed. Such a character is now drawn over
+    blanked cells with the cursor put where the next cell is, however wide the terminal drew it.
+  - A shell's output (the job view) was drawn as Markdown answers, one per read: tabs at stops of 4, a `#` line as a
+    heading, a line that went on in the next read broken in two, and an escape sequence split between two reads left
+    as "1m". It is one block now, laid out as tool output is (tabs at stops of 8, no Markdown) and stripped whole. A
+    first read cut to its last 200,000 characters starts at its first whole line, so the cut cannot fall inside an
+    escape sequence.
+  - Escape sequences and tabs reached the screen raw on surfaces that did not strip them: a prompt (a subagent's
+    task included), a diff's file name, a question's words, header and options, an approval's title and options, a
+    picker's title and rows (a session's title), the panel's labels, the status line (the model, the running tool,
+    the link), the welcome box, the interview's topic, the held and the queued prompts. They are stripped now and
+    tabs expanded where those are laid out.
+  - Markdown: `~~a ~~` closed the strike after the space; a strike closes only after a character that is not a space
+    now. A `<br>` inside a code span in a table cell split the cell; it is split only outside code spans.
+  - A tab in a diff row was counted from the `+ ` in front of it, so it stood two columns off; the line's own tabs
+    are expanded first now.
+  - SS2 and SS3 (ESC N, ESC O) left the character they shift on screen; it is removed with them.
+
 - **The terminal's input box split characters, lost a message too large to send, and took a split arrow for Esc.**
   Found in a QA pass over the input path; each checked by a test that failed first.
   - A character of several code points (a ZWJ family 👨‍👩‍👧, a flag, a skin tone, ❤️ with VS16, a keycap, e and a

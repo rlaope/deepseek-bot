@@ -13,7 +13,7 @@
  * question's options, an approval) takes the box's place while nothing is typed; the completion list
  * opens just above the box.
  */
-import { answerBlock, interruptedBlock, welcomeBlock, noticeBlock, spacerBlock, thinkingBlock, toolBlock, toolCallBlock, userBlock, type AnswerBlock, type Detail, type NoticeKind, type ThinkingBlock, type ToolCallBlock, type ToolStep } from './blocks.js'
+import { answerBlock, interruptedBlock, welcomeBlock, noticeBlock, outputBlock, spacerBlock, thinkingBlock, toolBlock, toolCallBlock, userBlock, type AnswerBlock, type Detail, type NoticeKind, type ThinkingBlock, type ToolCallBlock, type ToolStep } from './blocks.js'
 import { complete, type CommandInfo, type Completion } from './complete.js'
 import type { AgentItem, JobItem, ViewLine } from './bridge.js'
 import { formatTokens, panelCounts, panelRows, panelWindow, rowStatus, type PanelRow } from './panel.js'
@@ -31,7 +31,7 @@ import { backgroundOf, detectColorMode, palette, sgr, theme, useBackground, type
 import { currentFrame, setFrame, shimmer } from './render/motion.js'
 import { Terminal, type TerminalIO } from './render/terminal.js'
 import { Transcript, type Block } from './render/transcript.js'
-import { fit, graphemes, stringWidth } from './render/width.js'
+import { expandTabs, fit, graphemes, stringWidth, stripControls } from './render/width.js'
 
 export interface Backend {
   /** A message, with the id this terminal gave it (so ↑ can take it back while it waits); false when it was not sent. */
@@ -136,6 +136,13 @@ const characters = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 const PANEL_MAX_ROWS = 6
 const COMPLETION_MAX_ROWS = 6
 const PICKER_MAX_ROWS = 8
+/** A question's own lines while folded: the rest behind an ellipsis, and ctrl+o. */
+const QUESTION_TEXT_ROWS = 3
+
+/** Words from a model, a tool or a session, drawn on the terminal's own rows: no escapes, tabs as spaces. */
+function drawable(text: string): string {
+  return expandTabs(stripControls(text), 8)
+}
 
 /** A choice's "no": the option drawn as dangerous, or one whose id says deny. -1 when it has none. */
 function noOption(c: Choice): number {
@@ -195,6 +202,11 @@ export class App {
   view: View = { kind: 'main' }
   /** The lines of the subagent or job being looked at. */
   private readonly side = new Transcript()
+  /** The job looked at: its output so far, one block that each read adds to. */
+  private jobBlock: (Block & { append(text: string): void }) | null = null
+  /** The question shown whole (ctrl+o), by its batch and place in it; and whether the one on screen has more to show. */
+  private questionWhole = ''
+  private questionFolded = false
   /** Questions the turn is waiting on, answered in the input box's place. */
   question: QuestionFlow | null = null
   /** A list a /command opened (/model, /sessions), in the input box's place until a row is picked or it closes. */
@@ -274,8 +286,10 @@ export class App {
   private editorScroll = 0
   /** Rows of the last frame, for mapping mouse coordinates. */
   private geometry = {
-    transcriptTop: 1, transcriptHeight: 0, dividerRow: 0, editorTop: 0, choiceRow: -1, choiceSpans: [] as Array<{ from: number; to: number }>,
-    panelTop: -1, panelFirst: 0, panelShown: 0, questionTop: -1, questionRowsAt: -1,
+    transcriptTop: 1, transcriptHeight: 0, dividerRow: 0, editorTop: 0, choiceRow: -1, choiceFirst: 0, choiceSpans: [] as Array<{ from: number; to: number }>,
+    panelTop: -1, panelFirst: 0, panelShown: 0,
+    /** What each question line is: an option's index, or -1. */
+    questionTop: -1, questionMap: [] as number[],
     /** What each picker line is: a row's index, -2 its effort, -1 anything else. */
     pickerTop: -1, pickerMap: [] as number[],
     completionTop: -1, completionFirst: 0, completionShown: 0,
@@ -666,6 +680,7 @@ export class App {
     this.picker = null   // the turn's question comes first; the /command can be run again
     this.shortcuts = false
     this.question = new QuestionFlow(id, items)
+    this.questionWhole = ''
     this.transcript.toBottom()
     this.terminal.requestRender(true)
   }
@@ -846,10 +861,16 @@ export class App {
   /** A job's output: the first read, then what was added. */
   jobOutput(id: string, text: string, append: boolean, status: string): void {
     if (this.view.kind !== 'job' || this.view.id !== id) return
-    if (!append) { this.side.clear(); this.side.push(noticeBlock(`shell · ${this.view.id} · ${this.view.label}`, 'info', this.mode)) }
-    if (text !== '') { const block = answerBlock(this.mode); block.finish(text.replace(/\n$/, '')); this.side.push(block) }
+    if (!append) { this.side.clear(); this.jobBlock = null; this.side.push(noticeBlock(`shell · ${this.view.id} · ${this.view.label}`, 'info', this.mode)) }
+    // Each read goes on the text before it: a line, or an escape sequence, may go on from one read to the next.
+    if (text !== '') {
+      if (this.jobBlock === null) { this.jobBlock = outputBlock(this.mode); this.side.push(this.jobBlock) }
+      this.jobBlock.append(text)
+    }
+    const ended = status !== 'running' && status !== 'stopping'
+    if (ended) this.jobBlock = null
     if (status === 'removed') this.side.push(noticeBlock(t().jobRemoved, 'warn', this.mode))
-    else if (status !== 'running' && status !== 'stopping') this.side.push(noticeBlock(t().jobEnded(status), status === 'completed' ? 'ok' : 'warn', this.mode))
+    else if (ended) this.side.push(noticeBlock(t().jobEnded(status), status === 'completed' ? 'ok' : 'warn', this.mode))
     this.terminal.requestRender()
   }
 
@@ -1129,6 +1150,13 @@ export class App {
       if (key.name === 'escape') { q.typing = false; this.terminal.requestRender(true); return true }
       return false
     }
+    // A question longer than its rows: ctrl+o shows it whole, and again folds it.
+    if (key.ctrl && key.name === 'char' && key.ch === 'o' && this.questionFolded) {
+      const at = `${q.id}:${q.index}`
+      this.questionWhole = this.questionWhole === at ? '' : at
+      this.terminal.requestRender(true)
+      return true
+    }
     if (key.ctrl) return false
     switch (key.name) {
       case 'up': q.move(-1); break
@@ -1337,10 +1365,11 @@ export class App {
         this.terminal.requestRender(true)
         return
       }
-      const { questionRowsAt } = this.geometry
-      if (this.question !== null && questionRowsAt >= 0 && m.y >= questionRowsAt && m.y < questionRowsAt + this.question.rows().length) {
+      const { questionTop, questionMap } = this.geometry
+      const option = questionTop >= 0 ? questionMap[m.y - questionTop] ?? -1 : -1
+      if (this.question !== null && option >= 0) {
         const q = this.question
-        q.cursor = m.y - questionRowsAt
+        q.cursor = option
         const row = q.rows()[q.cursor]
         if (row.kind === 'custom') q.typing = true
         else if (q.current?.multiSelect) q.toggle()
@@ -1361,7 +1390,7 @@ export class App {
       }
       if (this.geometry.choiceRow >= 0 && m.y >= this.geometry.choiceRow && m.y < this.geometry.choiceRow + this.geometry.choiceSpans.length) {
         const span = this.geometry.choiceSpans[m.y - this.geometry.choiceRow]
-        if (m.x >= span.from && m.x < span.to) { this.pick(m.y - this.geometry.choiceRow); this.terminal.requestRender(true) }
+        if (m.x >= span.from && m.x < span.to) { this.pick(this.geometry.choiceFirst + m.y - this.geometry.choiceRow); this.terminal.requestRender(true) }
         return
       }
       // Anywhere else a press does nothing, a drag selects what the screen shows. The held prompt's row is one such
@@ -1510,8 +1539,7 @@ export class App {
     const editor = this.editor.layout(this.editorWidth())
     const editorRows = Math.min(EDITOR_MAX_ROWS, editor.rows.length)
     // An approval as Claude Code asks one: the request's first line, then its options numbered, one a row.
-    const choiceRows = this.choice === null || this.question !== null ? 0 : 1 + this.choice.options.length
-    const questionLines = this.question === null ? [] : this.questionLines(cols)
+    let choiceRows = this.choice === null || this.question !== null ? 0 : 1 + this.choice.options.length
     const stripRows = this.interview !== null && this.view.kind === 'main' ? 3 : 0
     const allRows = this.rows()
     const panel = panelWindow(allRows, this.panelIndex, PANEL_MAX_ROWS)
@@ -1532,7 +1560,18 @@ export class App {
     const boxHidden = this.editor.text === '' && this.search === null
       && ((this.picker !== null && this.question === null) || (this.question !== null && !this.question.typing) || (this.choice !== null && this.question === null) || this.shortcuts)
     const boxRows = boxHidden ? 0 : editorRows + 2
-    const fixed = pendingRows + 1 /* divider */ + 1 /* status */ + panelShown + choiceRows + questionLines.length + completionLines.length + shortcutLines.length + boxRows + 1 /* hint */
+    let fixedBelow = pendingRows + 1 /* divider */ + 1 /* status */ + panelShown + choiceRows + completionLines.length + shortcutLines.length + boxRows + 1 /* hint */
+    // An approval on a short pane, within what is left after a row of transcript: its title gives way first (the
+    // request is the message above), then the options away from the highlight; the hint stays.
+    if (choiceRows > 0) {
+      const fits = Math.max(1, Math.min(choiceRows, rows - (headerRows + stripRows) - 1 - (fixedBelow - choiceRows)))
+      fixedBelow -= choiceRows - fits
+      choiceRows = fits
+    }
+    // A question gets what is left after a row of transcript, as the picker does: its words give way first, then
+    // the options away from the highlight. The highlighted one and the hint stay.
+    const questionLines = this.question === null ? [] : this.questionLines(cols, rows - (headerRows + stripRows) - 1 - fixedBelow)
+    const fixed = fixedBelow + questionLines.length
     // The picker gets what is left after a row of transcript: on a small screen it shrinks; the hint line stays.
     const pickerLines = this.question === null && this.picker !== null ? this.pickerLines(cols, rows - (headerRows + stripRows) - 1 - fixed) : []
     const bottom = fixed + pickerLines.length
@@ -1558,21 +1597,26 @@ export class App {
       const x = screen.put(1, completionTop + i, line.label, line.selected ? s({ ...theme.accent, bold: true }) : s(theme.text))
       if (line.hint !== '') screen.put(x + 2, completionTop + i, line.hint, s(theme.muted))
     })
-    let questionRowsAt = -1
-    questionLines.forEach((line, i) => {
-      if (line.optionRow && questionRowsAt === -1) questionRowsAt = questionTop + i
-      screen.put(1, questionTop + i, line.text, line.style)
-    })
+    questionLines.forEach((line, i) => screen.put(1, questionTop + i, line.text, line.style))
     const choiceSpans: Array<{ from: number; to: number }> = []
+    let choiceTop = -1, choiceFirst = 0
     if (choiceRows > 0 && this.choice !== null) {
       // The message's first line with words, without the warning sign the adapter's own request starts with.
-      const title = (this.posted.get(this.choice.ts)?.text ?? '').split('\n').map((line) => line.trim().replace(/^⚠\uFE0F?\s*/u, '')).find((line) => line !== '') ?? t().choiceTitle
-      const x = screen.put(1, choiceRow, '⚠ ', s(theme.warn))
-      screen.put(x, choiceRow, fit(title, cols - 1 - x), s({ ...theme.text, bold: true }), cols - 1)
-      this.choice.options.forEach((option, i) => {
-        const selected = i === this.choice!.index
+      const title = stripControls(this.posted.get(this.choice.ts)?.text ?? '').split('\n').map((line) => expandTabs(line.trim().replace(/^⚠\uFE0F?\s*/u, ''), 8)).find((line) => line !== '') ?? t().choiceTitle
+      const { options, index } = this.choice
+      const titled = choiceRows > options.length
+      if (titled) {
+        const x = screen.put(1, choiceRow, '⚠ ', s(theme.warn))
+        screen.put(x, choiceRow, fit(title, cols - 1 - x), s({ ...theme.text, bold: true }), cols - 1)
+      }
+      const count = choiceRows - (titled ? 1 : 0)
+      choiceFirst = Math.max(0, Math.min(index - count + 1, options.length - count))
+      choiceTop = choiceRow + (titled ? 1 : 0)
+      options.slice(choiceFirst, choiceFirst + count).forEach((option, k) => {
+        const i = choiceFirst + k
+        const selected = i === index
         const style = selected ? s({ ...(option.style === 'danger' ? theme.danger : theme.accent), bold: true }) : s(theme.muted)
-        const to = screen.put(1, choiceRow + 1 + i, `${selected ? '❯' : ' '} ${i + 1}. ${option.label}`, style)
+        const to = screen.put(1, choiceTop + k, fit(`${selected ? '❯' : ' '} ${i + 1}. ${drawable(option.label)}`, cols - 2), style)
         choiceSpans.push({ from: 1, to })
       })
     }
@@ -1582,7 +1626,7 @@ export class App {
     else if (editor.cursor.y >= editorFirst + editorRows) editorFirst = editor.cursor.y - editorRows + 1
     this.editorScroll = editorFirst
     this.geometry = {
-      transcriptTop, transcriptHeight, dividerRow, editorTop, choiceRow: choiceRow === -1 ? -1 : choiceRow + 1, choiceSpans, panelTop, panelFirst: panel.first, panelShown, questionTop, questionRowsAt,
+      transcriptTop, transcriptHeight, dividerRow, editorTop, choiceRow: choiceTop, choiceFirst, choiceSpans, panelTop, panelFirst: panel.first, panelShown, questionTop, questionMap: questionLines.map((line) => line.option),
       pickerTop, pickerMap: pickerLines.map((line) => line.row),
       completionTop: completionLines.length === 0 ? -1 : completionTop, completionFirst: completion.first, completionShown: completionLines.length,
       editorRows: boxHidden ? 0 : editorRows, editorFirst, statusRow, effortSpan: null, heldRow: -1,
@@ -1592,7 +1636,7 @@ export class App {
     // Header, in a side view only: where the pane is looking.
     if (this.view.kind !== 'main') {
       let hx = screen.put(1, 0, 'deepseek-bot', s(theme.brand))
-      hx = screen.put(hx, 0, ` · main › ${this.view.kind === 'agent' ? this.view.label : this.view.id}`, s(theme.accent))
+      hx = screen.put(hx, 0, ` · main › ${this.view.kind === 'agent' ? drawable(this.view.label) : this.view.id}`, s(theme.accent))
       const right = [this.status.session && `${this.status.session.slice(0, 12)}…`, this.shownWorkspace()].filter(Boolean).join(' · ')
       if (right !== '') screen.put(Math.max(hx + 2, cols - 1 - stringWidth(right)), 0, right, s(theme.muted))
     }
@@ -1615,7 +1659,7 @@ export class App {
     this.geometry.heldRow = held !== null ? transcriptTop : -1
     if (held !== null) {
       screen.put(0, transcriptTop, ' '.repeat(cols), '')
-      screen.put(0, transcriptTop, fit(`› ${held.replace(/\s+/g, ' ').trim()}`, cols - 1), s(theme.dim))
+      screen.put(0, transcriptTop, fit(`› ${stripControls(held).replace(/\s+/g, ' ').trim()}`, cols - 1), s(theme.dim))
     }
 
     // What waits behind the running turn, over the divider (as Claude Code queues it), each on the band it will
@@ -1628,7 +1672,7 @@ export class App {
         const y = pendingTop + i
         if (banded) screen.put(0, y, ' '.repeat(cols), body)
         const x = screen.put(0, y, '› ', s(banded ? theme.userMark : theme.user))
-        screen.put(x, y, text.replace(/\s+/g, ' '), body, Math.max(x, cols - stringWidth(tag) - 1))
+        screen.put(x, y, stripControls(text).replace(/\s+/g, ' '), body, Math.max(x, cols - stringWidth(tag) - 1))
         screen.put(cols - stringWidth(tag) - 1, y, tag, s(banded ? { ...theme.userBand, fg: palette.muted, italic: true } : theme.muted))
       })
       if (waiting.length > 3) screen.put(2, pendingTop + 3, t().queuedCount(waiting.length), s(theme.muted))
@@ -1685,18 +1729,19 @@ export class App {
       : this.picker !== null && this.question === null && this.editor.text === '' ? t().hints.picker(this.picker.hasEfforts)
       : this.choice !== null && this.question === null && this.editor.text === '' ? t().hints.choice(this.choice.options.length, noOption(this.choice) !== -1)
       : this.question?.typing ? t().hints.typing
-      : this.question !== null ? t().hints.question(this.question.current?.multiSelect === true)
+      : this.question !== null ? t().hints.question(this.question.current?.multiSelect === true, this.questionFolded ? this.questionWhole === `${this.question.id}:${this.question.index}` ? 'less' : 'more' : null)
       : this.focus === 'panel' ? t().hints.panel
-      : this.view.kind === 'agent' ? t().hints.agent(this.view.label)
+      : this.view.kind === 'agent' ? t().hints.agent(drawable(this.view.label))
         : this.view.kind === 'job' ? t().hints.job
           : this.status.running && this.pending.length > 0 && this.editor.text === '' ? t().hints.queued
           : this.status.running ? t().hints.running
             : t().hints.idle(allRows.length > 0)
-    screen.put(1, editorTop + boxRows, hint, s(theme.dim))
+    // Cut at the edge with an ellipsis, so a hint never ends mid-word as if that were all.
+    screen.put(1, editorTop + boxRows, fit(hint, cols - 2), s(theme.dim))
     // At its right, as pi's footer has it: where the agent works (and on which branch), and the conversation.
     // Only in the conversation's own view: a subagent's or a shell's has a header that says where it looks.
     if (this.status.workspace !== '' && this.view.kind === 'main') {
-      const where = `${this.shownWorkspace()}${this.branch !== null ? ` (${this.branch})` : ''}${this.status.session ? ` · ${this.status.session.slice(0, 8)}…` : ''}`
+      const where = `${this.shownWorkspace()}${this.branch !== null ? ` (${drawable(this.branch)})` : ''}${this.status.session ? ` · ${this.status.session.slice(0, 8)}…` : ''}`
       const x = cols - 1 - stringWidth(where)
       if (x >= 1 + stringWidth(hint) + 2) screen.put(x, editorTop + boxRows, where, s(theme.muted))
     }
@@ -1766,10 +1811,23 @@ export class App {
     const win = p.window(Math.max(1, Math.min(PICKER_MAX_ROWS, room - title - effortLine)))
     // The title says where the highlight is when the list is longer than its window or filtered, and what was typed.
     const where = p.query !== '' || win.above + win.below > 0 ? (p.shown.length === 0 ? '' : ` (${p.position}/${p.shown.length})`) : ''
-    const typed = p.query === '' ? '' : ` · "${p.query}"${p.shown.length === 0 ? ` · ${t().noMatch}` : ''}`
-    const out: Array<{ text: string; style: string; row: number }> = title === 1 ? [{ text: fit(`${p.spec.title}${where}${typed}`, Math.max(1, cols - 2)), style: s({ ...theme.accent, bold: true }), row: -1 }] : []
+    const noMatch = p.shown.length === 0 ? ` · ${t().noMatch}` : ''
+    const typed = (query: string) => (p.query === '' ? '' : ` · "${query}"${noMatch}`)
+    // Too wide for the pane: the title gives way first, then what was typed; "no match" stays.
+    const usable = Math.max(1, cols - 2)
+    const name = drawable(p.spec.title)
+    let head = `${name}${where}${typed(p.query)}`
+    if (stringWidth(head) > usable) {
+      const room = usable - stringWidth(`${where}${typed(p.query)}`)
+      const bare = (query: string) => `${where}${typed(query)}`.replace(/^ · /, '')
+      head = room >= 4 ? `${fit(name, room)}${where}${typed(p.query)}`
+        : p.query === '' ? fit(`${name}${where}`, usable)
+          : fit(bare(fit(p.query, Math.max(1, usable - stringWidth(bare(''))))), usable)
+    }
+    const out: Array<{ text: string; style: string; row: number }> = title === 1 ? [{ text: head, style: s({ ...theme.accent, bold: true }), row: -1 }] : []
     const indices = p.shown.slice(win.first, win.first + win.count)
-    const shown = indices.map((i) => p.rows[i])
+    // A session's title, a model's name: drawn without the escapes they may carry.
+    const shown = indices.map((i) => ({ ...p.rows[i], label: drawable(p.rows[i].label), detail: p.rows[i].detail === undefined ? undefined : drawable(p.rows[i].detail!) }))
     const labelWidth = Math.min(Math.max(0, ...shown.map((r) => stringWidth(r.label))), Math.floor(cols / 2))
     const numberWidth = String(p.rows.length).length
     if (win.above > 0) out.push({ text: `  ↑ ${win.above}`, style: s(theme.muted), row: -1 })
@@ -1777,7 +1835,7 @@ export class App {
       const i = indices[k]
       const at = i === p.cursor
       const label = `${row.label}${' '.repeat(Math.max(0, labelWidth - stringWidth(row.label)))}`
-      const text = `${at ? '❯' : ' '} ${String(i + 1).padStart(numberWidth)}. ${label}${row.detail ? `  ${row.detail}` : ''}${row.current ? '  ✓' : ''}`
+      const text = fit(`${at ? '❯' : ' '} ${String(i + 1).padStart(numberWidth)}. ${label}${row.detail ? `  ${row.detail}` : ''}${row.current ? '  ✓' : ''}`, usable)
       out.push({ text, style: at ? s({ ...theme.accent, bold: true }) : s(theme.text), row: i })
     })
     if (win.below > 0) out.push({ text: `  ↓ ${win.below}`, style: s(theme.muted), row: -1 })
@@ -1790,24 +1848,62 @@ export class App {
     return out
   }
 
-  /** The question panel: what is asked, then one row per option and "type your own…". */
-  private questionLines(cols: number): Array<{ text: string; style: string; optionRow: boolean }> {
+  /**
+   * The question panel in at most `room` rows: what is asked, then a row per option and "type your own…". Its words
+   * wrap, three lines of them unless shown whole (ctrl+o), the last line cut with an ellipsis when there is more.
+   * On a short pane the words give way first, then the options away from the highlight: the highlighted option
+   * stays. A row too wide ends in an ellipsis.
+   */
+  private questionLines(cols: number, room: number): Array<{ text: string; style: string; option: number }> {
     const q = this.question
     const current = q?.current
+    this.questionFolded = false
     if (q === null || current === undefined) return []
     const s = (style) => sgr(style, this.mode)
-    const out: Array<{ text: string; style: string; optionRow: boolean }> = []
-    const where = q.items.length > 1 ? ` (${q.index + 1}/${q.items.length})` : ''
-    const kind = current.intent?.kind === 'plan-review' ? t().planReview : current.header ?? t().question
-    out.push({ text: `? ${kind}${where}`, style: s({ ...theme.warn, bold: true }), optionRow: false })
-    for (const line of wrapPlain(current.question, Math.max(10, cols - 6)).slice(0, 3)) out.push({ text: `  ${line}`, style: s(theme.text), optionRow: false })
-    q.rows().forEach((row, i) => {
+    const usable = Math.max(1, cols - 2)
+    const options = q.rows().map((row, i) => {
       const at = i === q.cursor
       const box = current.multiSelect && row.kind === 'option' ? (row.checked ? '[x] ' : '[ ] ') : ''
-      const desc = row.description ? ` — ${row.description}` : ''
-      const text = `${at ? '❯' : ' '} ${box}${row.label}${desc}`
-      out.push({ text, style: at ? s({ ...theme.accent, bold: true }) : row.kind === 'custom' ? s(theme.muted) : s(theme.text), optionRow: true })
+      const desc = row.description ? ` — ${drawable(row.description)}` : ''
+      const style = at ? s({ ...theme.accent, bold: true }) : row.kind === 'custom' ? s(theme.muted) : s(theme.text)
+      return { text: fit(`${at ? '❯' : ' '} ${box}${drawable(row.label)}${desc}`, usable), style, option: i }
     })
+    const words = stripControls(current.question).split('\n').flatMap((line) => wrapPlain(expandTabs(line, 8), Math.max(1, usable - 2)))
+    const whole = this.questionWhole === `${q.id}:${q.index}`
+    const wanted = whole ? words.length : Math.min(words.length, QUESTION_TEXT_ROWS)
+    // Typing an answer, the box is below: with no room left the panel gives way to it.
+    let left = Math.max(q.typing ? 0 : 1, room)
+    if (left === 0) return []
+    // The highlighted option, the head, a line of the words, the other options, the rest of the words; shown
+    // whole, the words come before the other options.
+    let count = 1
+    left--
+    const head = left > 0 ? 1 : 0
+    left -= head
+    let said = words.length > 0 && left > 0 ? 1 : 0
+    left -= said
+    const sayMore = () => { const more = Math.max(0, Math.min(wanted - said, left)); said += more; left -= more }
+    if (whole) sayMore()
+    const more = Math.min(options.length - 1, left)
+    count += more
+    left -= more
+    sayMore()
+    // ctrl+o has something to do: words out of sight, or shown whole and folded back by it.
+    this.questionFolded = whole || said < words.length
+    const first = Math.max(0, Math.min(q.cursor - count + 1, options.length - count))
+    const out: Array<{ text: string; style: string; option: number }> = []
+    if (head === 1) {
+      const where = q.items.length > 1 ? ` (${q.index + 1}/${q.items.length})` : ''
+      const kind = current.intent?.kind === 'plan-review' ? t().planReview : drawable(current.header ?? t().question)
+      // Options out of sight: where the highlight is among them.
+      const among = count < options.length ? ` · ${q.cursor + 1}/${options.length}` : ''
+      out.push({ text: fit(`? ${kind}${where}${among}`, usable), style: s({ ...theme.warn, bold: true }), option: -1 })
+    }
+    words.slice(0, said).forEach((line, i) => {
+      const cut = i === said - 1 && said < words.length
+      out.push({ text: `  ${cut ? fit(`${line}…`, usable - 2) : line}`, style: s(theme.text), option: -1 })
+    })
+    out.push(...options.slice(first, first + count))
     return out
   }
 
@@ -1816,10 +1912,10 @@ export class App {
     const s = (style) => sgr(style, this.mode)
     const iv = this.interview!
     const st = iv.state
-    let x = screen.put(1, y, `${t().interview} · ${iv.topic}`, s({ ...theme.accent, bold: true }))
+    let x = screen.put(1, y, `${t().interview} · ${drawable(iv.topic)}`, s({ ...theme.accent, bold: true }))
     if (st !== null && st.round > 0) x = screen.put(x, y, ` · round ${st.round}`, s(theme.muted))
     const right = st === null ? t().interviewPreparing
-      : st.done ? `${t().interviewDone}${st.spec ? ` · spec: ${st.spec}` : ''}`
+      : st.done ? `${t().interviewDone}${st.spec ? ` · spec: ${drawable(st.spec)}` : ''}`
         : t().interviewAmbiguity(st.ambiguity, AMBIGUITY_TARGET)
     screen.put(Math.max(x + 2, cols - 1 - stringWidth(right)), y, right, st?.done ? s(theme.ok) : s(theme.muted))
     let gx = 1
@@ -1845,8 +1941,8 @@ export class App {
         || (row.kind === 'job' && this.view.kind === 'job' && this.view.id === row.job.id)
       const lead = focused ? '❯ ' : row.kind === 'more' ? '' : current ? '● ' : row.kind === 'job' ? '◆ ' : '○ '
       const label = row.kind === 'main' ? 'main'
-        : row.kind === 'agent' ? row.agent.label
-          : row.kind === 'job' ? `${row.job.id}  ${row.job.label}`
+        : row.kind === 'agent' ? drawable(row.agent.label)
+          : row.kind === 'job' ? drawable(`${row.job.id}  ${row.job.label}`)
             : row.kind === 'idle' ? `${row.count} idle agents`
               : `↓ ${row.count} more`
       const labelStyle = focused ? s({ ...theme.accent, bold: true }) : current ? s({ bold: true }) : row.kind === 'agent' && row.agent.status === 'running' ? s(theme.text) : s(theme.muted)
@@ -1865,7 +1961,7 @@ export class App {
     // Between parts, once something is on the line.
     const sep = (text: string) => `${x > 1 ? ' · ' : ''}${text}`
     if (!this.status.connected) {
-      x = screen.put(x, y, `○ ${this.status.link}`, s(theme.warn))
+      x = screen.put(x, y, `○ ${drawable(this.status.link)}`, s(theme.warn))
     } else {
       // The effort, where Claude Code shows its mode, with the key that steps it; while a turn runs the line
       // is the turn's.
@@ -1879,7 +1975,7 @@ export class App {
         // One indicator, as Claude Code has it: what it is doing, for how long, how to stop it. Thinking in
         // the sky blue it has in the transcript; anything else in the brand's light blue.
         const thinking = this.thought !== null && this.thought.streaming
-        const label = thinking ? t().thinking : this.runningTool !== null ? t().runningTool(this.runningTool) : t().working
+        const label = thinking ? t().thinking : this.runningTool !== null ? t().runningTool(drawable(this.runningTool)) : t().working
         x = screen.put(x, y, '✻ ', s(thinking ? theme.thinking : theme.accent))
         for (const span of shimmer(label, thinking ? palette.sky : palette.light, palette.glint, currentFrame(), this.mode)) x = screen.put(x, y, span.text, span.style)
         x = screen.put(x, y, t().runningFor(Math.floor((now - this.status.startedAt) / 1000), this.escStops()), s(theme.dim))
@@ -1905,7 +2001,7 @@ export class App {
     } else if (this.status.tokens > 0) parts.push(`${formatTokens(this.status.tokens)} tok`)
     // The model last, at the edge: what /model changed, next to where it was asked. On a narrow line the
     // parts go whole from the right, the model first: never half a figure.
-    const all = [...parts, ...(this.status.connected && this.status.model !== '' ? [this.status.model] : [])]
+    const all = [...parts, ...(this.status.connected && this.status.model !== '' ? [drawable(this.status.model)] : [])]
     let right = ''
     for (let n = all.length; n > 0; n--) {
       const text = all.slice(0, n).join(' · ')
@@ -1924,7 +2020,7 @@ export class App {
   private shownWorkspace(): string {
     const home = (this.o.env.HOME ?? '').replace(/\/+$/, '')
     const w = this.status.workspace
-    return home !== '' && (w === home || w.startsWith(`${home}/`)) ? `~${w.slice(home.length)}` : w
+    return drawable(home !== '' && (w === home || w.startsWith(`${home}/`)) ? `~${w.slice(home.length)}` : w)
   }
 
   /** Whether esc, now, stops the running turn: not while something on screen takes it (a choice with a "no", a list, the shortcuts, a view). */

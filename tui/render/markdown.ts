@@ -76,7 +76,7 @@ export function inline(text: string, base: string, s: MarkdownStyles): Span[] {
   // printable ASCII (it ends where Korean begins), bounded, without the brackets around it, and it
   // stops before ")(http": the next bracketed URL is a URL of its own. A backslash before ASCII
   // punctuation shows that character as it is, as in CommonMark.
-  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|((?<![\w*])\*[^*\s][^*\n]*?\*(?![\w*]))|((?<![\w_])_[^_\s][^_\n]*?_(?![\w_]))|(\[[^\]\n]{1,200}\]\((?:[^()\s]|\([^()\s]{0,2100}\)){1,2100}\))|(:[a-z0-9_+]+:)|(https?:\/\/(?:(?!\)\(https?:\/\/)[\x21-\x3b\x3d\x3f-\x5a\x5c\x5e-\x7e]){1,2001})|(\\[!-\/:-@[-`{-~])|((?<![\w*])\*\*\*[^*\s][^*\n]*?\*\*\*(?![\w*]))|(~~[^~\s][^~\n]*?~~)/g
+  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|((?<![\w*])\*[^*\s][^*\n]*?\*(?![\w*]))|((?<![\w_])_[^_\s][^_\n]*?_(?![\w_]))|(\[[^\]\n]{1,200}\]\((?:[^()\s]|\([^()\s]{0,2100}\)){1,2100}\))|(:[a-z0-9_+]+:)|(https?:\/\/(?:(?!\)\(https?:\/\/)[\x21-\x3b\x3d\x3f-\x5a\x5c\x5e-\x7e]){1,2001})|(\\[!-\/:-@[-`{-~])|((?<![\w*])\*\*\*[^*\s][^*\n]*?\*\*\*(?![\w*]))|(~~[^~\s](?:[^~\n]*?[^~\s])?~~)/g
   let last = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
@@ -244,8 +244,21 @@ function highlight(line: string, lang: string, s: MarkdownStyles): Span[] {
 const isRow = (raw: string) => /^\s*\|.*\|\s*$/.test(raw) || (raw.includes('|') && !/^\s*$/.test(raw))
 // By cells, not by one pattern over the line: nested optional spaces backtrack quadratically on a long blank run.
 const isSeparator = (raw: string) => raw.includes('-') && cellsOf(raw).every((cell) => /^:?-+:?$/.test(cell))
-// A line break written into a cell as HTML, the one way a GFM cell holds two lines.
-const BREAK = /<br\s*\/?>/gi
+/**
+ * A cell's text split at its line breaks written as HTML (<br>), the one way a GFM cell holds two lines; not at
+ * one inside a code span (`a<br>b`), which shows it as written.
+ */
+const splitBreaks = (text: string): string[] => {
+  const parts: string[] = []
+  let last = 0
+  for (const m of text.matchAll(/`[^`\n]+`|<br\s*\/?>/gi)) {
+    if (m[0][0] === '`') continue
+    parts.push(text.slice(last, m.index))
+    last = m.index + m[0].length
+  }
+  parts.push(text.slice(last))
+  return parts
+}
 const cellsOf = (raw: string) => raw.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'))
 
 /** A column is not narrowed below this many cells, or below what it needs when that is less. */
@@ -272,7 +285,7 @@ function fitColumns(natural: number[], room: number): number[] | null {
 function table(header: string[], aligns: Array<'left' | 'right' | 'center'>, body: string[][], room: number, s: MarkdownStyles): Span[][] | null {
   const columns = header.length
   // A cell is its lines: one, or more where it says <br>.
-  const cell = (row: string[], c: number, base: string) => (row[c] ?? '').split(BREAK).map((part) => inline(part.trim(), base, s))
+  const cell = (row: string[], c: number, base: string) => splitBreaks(row[c] ?? '').map((part) => inline(part.trim(), base, s))
   const rows = [header.map((_, c) => cell(header, c, s.bold)), ...body.map((row) => header.map((_, c) => cell(row, c, s.text)))]
   const widthOf = (spans: Span[]) => stringWidth(spans.map((sp) => sp.text).join(''))
   const widths = fitColumns(header.map((_, c) => Math.max(1, ...rows.flatMap((row) => row[c].map(widthOf)))), room - 1 - 3 * columns)
@@ -307,8 +320,8 @@ function table(header: string[], aligns: Array<'left' | 'right' | 'center'>, bod
  */
 function tableAsList(cells: string[], rows: string[][], s: MarkdownStyles): Span[][] {
   // A list item is one line of text: a <br> in a cell is a space in it.
-  const header = cells.map((cell) => cell.replace(BREAK, ' '))
-  const body = rows.map((row) => row.map((cell) => cell.replace(BREAK, ' ')))
+  const header = cells.map((cell) => splitBreaks(cell).join(' '))
+  const body = rows.map((row) => row.map((cell) => splitBreaks(cell).join(' ')))
   const joined = (parts: Span[][], between: string) => parts.flatMap((part, k) => (k > 0 ? [{ text: between, style: s.dim }, ...part] : part))
   // As in the drawn table, cells past the header are not part of it.
   const filled = body.map((row) => row.slice(0, header.length)).filter((row) => row.some((cell) => cell !== ''))

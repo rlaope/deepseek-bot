@@ -9,7 +9,7 @@ import { banner, BANNER_WIDTHS } from './render/banner.js'
 import { t } from './strings.js'
 import { palette, sgr, theme, type ColorMode } from './render/style.js'
 import { blink, currentFrame, shimmer } from './render/motion.js'
-import { fit, stringWidth, stripControls } from './render/width.js'
+import { expandTabs, fit, stringWidth, stripControls } from './render/width.js'
 import { layout, type Line, type Span } from './render/text.js'
 import { markdown, type MarkdownStyles } from './render/markdown.js'
 import { lineDiff } from './render/linediff.js'
@@ -49,7 +49,8 @@ export function userBlock(text: string, mode: ColorMode): Block {
       // Styles as the palette is now: a light terminal's answer draws this again.
       const mark = sgr(banded ? theme.userMark : theme.user, mode)
       const body = sgr(banded ? theme.userBand : theme.text, mode)
-      const lines = layout(text, width, body, { first: pad('› ', mark), rest: pad('  ', body) })
+      // A subagent's task is a model's words, and a paste may carry a terminal's colours: neither is drawn as "[31m".
+      const lines = layout(stripControls(text), width, body, { first: pad('› ', mark), rest: pad('  ', body) })
       // The band runs to the edge; without colour there is no band, and no trailing spaces.
       if (banded) for (const line of lines) line.spans.push(pad(' '.repeat(Math.max(0, width - widthOf(line))), body))
       return [blank(), ...lines]
@@ -89,6 +90,21 @@ export function answerBlock(mode: ColorMode): AnswerBlock {
       if (lead?.decor === true && lead.text === '  ') lines[0].spans[0] = pad('● ', mark)
       return lines
     },
+  }
+  return block
+}
+
+/**
+ * A shell's output as it arrives, in reads: one text, laid out as its terminal showed it (no Markdown, tabs at
+ * stops of 8) and stripped whole, so an escape sequence split between two reads goes whole.
+ */
+export function outputBlock(mode: ColorMode): Block & { append(text: string): void } {
+  let text = ''
+  const block = {
+    id: nextId('output'),
+    version: 0,
+    append(more: string) { text += more; block.version++ },
+    lines: (width: number) => layout(stripControls(text).replace(/\n$/, ''), width, sgr(theme.tool, mode), { first: pad('  '), rest: pad('  ') }),
   }
   return block
 }
@@ -258,13 +274,15 @@ export function toolCallBlock(step: ToolStep, detail: Detail, mode: ColorMode): 
         if (f.sure.length === 0) return []
         const plus = f.sure.filter((d) => d.op === '+').length
         // "Updated" once the edit answered that it did; until then, and when it failed, the file alone.
-        const said = outcome?.ok === true ? t().updated(f.path, plus, f.sure.length - plus) : f.path
+        const path = stripControls(f.path)
+        const said = outcome?.ok === true ? t().updated(path, plus, f.sure.length - plus) : path
         const head = layout(said, width, style, { first: at, rest: pad('     ') })
         // The colour runs behind the whole row, as far as the text is wide; the padding is decor, so a copy
         // of the row does not carry it.
         const rows = f.sure.flatMap((d) => {
           const rowStyle = d.op === '-' ? removedRow : addedRow
-          const laid = layout(stripControls(`${d.op} ${d.text === '' ? ' ' : d.text}`), width, rowStyle, { first: pad('      '), rest: pad('      ') })
+          // Tabs to the file's own stops, from the line's start: the mark in front of it is not part of the file.
+          const laid = layout(`${d.op} ${d.text === '' ? ' ' : expandTabs(stripControls(d.text), 8)}`, width, rowStyle, { first: pad('      '), rest: pad('      ') })
           for (const row of laid) { const used = widthOf(row); if (used < width) row.spans.push(pad(' '.repeat(width - used), rowStyle)) }
           return laid
         })
@@ -354,8 +372,9 @@ export function welcomeBlock(info: () => Welcome, mode: ColorMode): Block & { re
       const i = info()
       const words: Array<{ text: string; style: string }> = [
         { text: `deepseek-bot${i.version !== '' ? ` v${i.version}` : ''}`, style: sgr(theme.brand, mode) },
-        { text: i.model, style: sgr(theme.text, mode) },
-        { text: [i.workspace, i.session !== '' ? `session ${i.session.slice(0, 8)}…` : ''].filter(Boolean).join(' · '), style: sgr(theme.muted, mode) },
+        // The gateway's words for the model and the workspace, drawn without escapes they may carry.
+        { text: stripControls(i.model), style: sgr(theme.text, mode) },
+        { text: stripControls([i.workspace, i.session !== '' ? `session ${i.session.slice(0, 8)}…` : ''].filter(Boolean).join(' · ')), style: sgr(theme.muted, mode) },
         { text: '', style: '' },
         { text: t().welcomeKeys, style: sgr(theme.muted, mode) },
       ]

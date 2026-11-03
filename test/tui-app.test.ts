@@ -2696,6 +2696,113 @@ for (const [cols, rows] of [[40, 14], [24, 9], [12, 6]]) {
   check('refused batch: once sent, each answer shown once', shown.split('? which env? → staging').length === 2 && shown.split('? which checks? → unit, "ok"').length === 2 && shown.split('? what name? → "short"').length === 2, shown.split('\n').filter((l) => l.includes('? ')).join(' | '))
 }
 
+// Small and narrow panes: a long question, its options and the hint; the picker's filter; and text drawn without its escapes.
+{
+  const long = 'Which of these deployment targets should the release go to first, given that staging was reset this morning, production has a freeze until Friday and the canary pool is half drained? END-OF-QUESTION'
+  const options = [{ label: 'staging', description: 'reset this morning, safe to break, nobody uses it until the afternoon review' }, { label: 'production' }, { label: 'canary' }, { label: 'none of them' }]
+  const lines = (t) => t.term.screen.text().split('\n')
+  {
+    const t = setup({ cols: 60, rows: 24 })
+    t.app.ask('q-long', [{ id: 'd', question: long, options, multiSelect: false }])
+    t.clock.advance(20)
+    const shown = lines(t)
+    // The question's last line shown, right above its options: its end, or an ellipsis that says there is more.
+    const above = shown[shown.findIndex((l) => /❯ staging/.test(l)) - 1] ?? ''
+    check('question: a long question is never cut without saying so', above.includes('END-OF-QUESTION') || above.trimEnd().endsWith('…'), shown.join(' | '))
+    t.key('\x0f'); t.clock.advance(20)
+    check('question: ctrl+o shows the whole question', lines(t).some((l) => l.includes('END-OF-QUESTION')), lines(t).join(' | '))
+    check('question: an option row too wide for the pane ends in an ellipsis', lines(t).some((l) => l.includes('staging') && l.trimEnd().endsWith('…')), lines(t).filter((l) => l.includes('staging')).join(' | '))
+    t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
+    t.app.ask('q-long', [{ id: 'd', question: long, options, multiSelect: false }])
+    t.clock.advance(20)
+    // Below the status line: the transcript above it says the first was skipped, in full.
+    const panel = lines(t).slice(lines(t).findIndex((l) => l.includes('▸▸')))
+    check('question: a new batch opens folded, even under the same id', panel.length > 1 && !panel.some((l) => l.includes('END-OF-QUESTION')), panel.join(' | '))
+  }
+  {
+    const t = setup({ cols: 40, rows: 24 })
+    t.app.ask('q-hint', [{ id: 'd', question: 'short?', options, multiSelect: false }])
+    t.clock.advance(20)
+    const last = lines(t).at(-1) ?? ''
+    check('question: the hint cut at the edge ends in an ellipsis', last.trimEnd().endsWith('…') && last.trimStart().startsWith('↑↓'), JSON.stringify(last))
+  }
+  for (const [cols, rows] of [[40, 10], [40, 7]]) {
+    const t = setup({ cols, rows })
+    t.app.ask('q-small', [{ id: 'd', question: long, options, multiSelect: false }])
+    t.clock.advance(20)
+    const first = lines(t)
+    check(`question: ${cols}×${rows} keeps the hint and the highlighted option on screen`, (first.at(-1) ?? '').trimStart().startsWith('↑↓') && first.some((l) => /❯ staging/.test(l)), first.join(' | '))
+    t.key('\x1b[B'); t.key('\x1b[B'); t.key('\x1b[B'); t.clock.advance(20)
+    const moved = lines(t)
+    check(`question: ${cols}×${rows} follows the highlight to the last option`, (moved.at(-1) ?? '').trimStart().startsWith('↑↓') && moved.some((l) => /❯ none of them/.test(l)), moved.join(' | '))
+  }
+  {
+    // An approval on a pane too short for its title and every option.
+    const t = setup({ cols: 40, rows: 7 })
+    t.app.message('ts-short', '⚠️ need permission: rm -rf build', null, false)
+    t.app.offer('ts-short', [{ id: 'approval:allow:s', label: 'Allow', style: 'primary' }, { id: 'approval:always:s', label: 'Always' }, { id: 'approval:deny:s', label: 'Deny', style: 'danger' }])
+    t.clock.advance(20)
+    const first = lines(t)
+    check('approval: 40×7 keeps the hint and the highlighted option on screen', (first.at(-1) ?? '').includes('choose') && first.some((l) => /❯ 1\. Allow/.test(l)), first.join(' | '))
+    t.key('\x1b[B'); t.key('\x1b[B'); t.clock.advance(20)
+    const moved = lines(t)
+    check('approval: 40×7 follows the highlight to the last option', (moved.at(-1) ?? '').includes('choose') && moved.some((l) => /❯ 3\. Deny/.test(l)), moved.join(' | '))
+    const row = t.term.screen.find('3. Deny')
+    t.key(SGR(0, row.col, row.row)); t.key(SGR(0, row.col, row.row, true))
+    check('approval: a click on an option of the shortened list picks that one', t.actions.at(-1) === 'approval:deny:s', JSON.stringify(t.actions))
+  }
+  {
+    const t = setup({ cols: 40, rows: 24 })
+    t.app.openPicker({ title: 'Switch the model this conversation is using', rows: [{ label: 'og/m1' }, { label: 'og/m2' }], onPick: () => {} })
+    t.clock.advance(20)
+    t.key('zzq'); t.clock.advance(20)
+    const text = t.term.screen.text()
+    check('picker: on a narrow pane what was typed and "no match" still show', text.includes('"zzq"') && text.includes('no match'), text.split('\n').filter((l) => l.trim() !== '').slice(-6).join(' | '))
+  }
+  {
+    // Escapes a model, a tool or a session's title can carry, on every surface that draws them.
+    const t = setup({ cols: 100, rows: 40 })
+    t.app.setStatus({ connected: true, effort: 'medium', session: 'tui-3f2a9c1e-aaaa', workspace: '~/dsh-agent', model: 'deep\x1b[35mseek' })
+    t.app.setPanel([{ id: 'a', label: 'res\x1b[33mearch\tlinks', mode: 'one-shot', status: 'running', since: t.clock.now(), settledMs: 0, tokens: 0 }], [{ id: 'bash-1', owner: 'r', label: 'npm\x1b[31m test', status: 'running', kind: 'shell', startedAt: t.clock.now(), progress: '' }])
+    t.app.message('ts-esc', '\x1b[31m⚠️ need\tpermission\x1b[0m', null, false)
+    t.app.offer('ts-esc', [{ id: 'approval:allow:e', label: '\x1b[1mAllow', style: 'primary' }, { id: 'approval:deny:e', label: 'Deny', style: 'danger' }])
+    t.clock.advance(20)
+    const approval = t.term.screen.text()
+    check('escapes: the approval\'s title and options, the panel\'s labels and the status line show none', !/\[\d+m/.test(approval) && approval.includes('need    permission') && approval.includes('1. Allow') && /research {2,}links/.test(approval) && approval.includes('npm test') && approval.includes('deepseek'), approval.split('\n').filter((l) => /\[\d+m|need|Allow|research|npm|deep/.test(l)).join(' | '))
+    t.key('2')
+    t.app.ask('q-esc', [{ id: 'd', question: 'pick\x1b[31m one\tnow', header: 'H\x1b[2mdr', options: [{ label: 'o\x1b[4mne', description: 'd\x1b[7mesc' }], multiSelect: false }])
+    t.clock.advance(20)
+    const asked = t.term.screen.text()
+    check('escapes: a question\'s text, header and options show none', !/\[\d+m/.test(asked) && asked.includes('pick one') && asked.includes('one — desc'), asked.split('\n').filter((l) => /\[\d+m|pick|one/.test(l)).join(' | '))
+    t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
+    t.app.openPicker({ title: 'Sess\x1b[31mions', rows: [{ label: 'a \x1b[32mtitle', detail: 'd\x1b[0metail' }], onPick: () => {} })
+    t.clock.advance(20)
+    const picked = t.term.screen.text()
+    check('escapes: a picker\'s title and rows show none', !/\[\d+m/.test(picked) && picked.includes('Sessions') && picked.includes('a title') && picked.includes('detail'), picked.split('\n').filter((l) => /\[\d+m|Sess|title/.test(l)).join(' | '))
+    t.key('\x1b'); t.clock.advance(ESCAPE_MS + 10)
+    t.app.startInterview('top\x1b[31mic')
+    t.clock.advance(20)
+    const strip = t.term.screen.text()
+    check('escapes: the interview\'s topic shows none', !/\[\d+m/.test(strip) && strip.includes('topic'), strip.split('\n').slice(0, 2).join(' | '))
+  }
+  {
+    // A shell's output, polled in pieces: an escape split across two reads, tabs at a terminal's stops, a line that goes on.
+    const t = setup({ cols: 80, rows: 30 })
+    t.app.setPanel([], [{ id: 'bash-9', owner: 'r', label: 'make', status: 'running', kind: 'shell', startedAt: t.clock.now(), progress: '' }])
+    t.clock.advance(20)
+    const row = t.term.screen.find('bash-9')
+    t.key(SGR(0, row.col, row.row)); t.key(SGR(0, row.col, row.row, true))
+    t.app.jobOutput('bash-9', 'col\tnext\nred: \x1b[3', false, 'running')
+    t.app.jobOutput('bash-9', '1mhot\x1b[0m and on\n', true, 'running')
+    t.app.jobOutput('bash-9', '# not a heading\n', true, 'running')
+    t.clock.advance(20)
+    const out = t.term.screen.text()
+    check('job view: an escape split across two reads leaves nothing behind', !out.includes('1m') && out.includes('red: hot and on'), out.split('\n').filter((l) => l.includes('red')).join(' | '))
+    check('job view: tabs at stops of 8, as the shell wrote them', out.includes('col     next'), out.split('\n').filter((l) => l.includes('col')).join(' | '))
+    check('job view: output is laid out as output, not read as Markdown', out.includes('# not a heading'), out.split('\n').filter((l) => l.includes('heading')).join(' | '))
+  }
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)
