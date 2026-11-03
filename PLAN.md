@@ -73,6 +73,11 @@ is built before the thing it stands on. The detailed history of each milestone i
     On Slack too.
   - Discord's message DELETE, like its sends and edits, has no 429 handling: a rate-limited delete is refused and
     leaves the working message.
+- **What the part cutter leaves** (`transports/parts.ts`). Not fixed:
+  - a `~~~` fence across a cut is not closed and reopened on Discord and Telegram: `shapeOf` knows backtick fences
+    only (Slack converts `~~~` to backticks before it cuts);
+  - a Slack answer whose last part is over 2 900 characters goes without its buttons' Block Kit, as before: the
+    person answers by typing.
 - **A background job outlives its turn, within limits.** An agent that owns a running job is kept after
   its turn (up to `backgroundKeepMs` from its first keeping, at most `maxKeptAgents`), the harness's wake turn
   answers when the job settles, and the agent is released after it. Checked with fakes, and against a real
@@ -147,8 +152,9 @@ Decided against:
 
 - A long answer's parts (`transports/parts.ts`, every platform), checked against fake APIs only: not seen live how
   Slack, Discord and Telegram show a code block closed at the end of one part and reopened, with its language, at the
-  start of the next. Known and left: a `<…>` token, an `&…;` entity or a fence's info string longer than a part is
-  still cut where the room ends; inline code, bold and other marks across a cut are not closed and reopened; an emoji
+  start of the next, or reopened without its info string when that would take more than a quarter of a part, or not
+  at all (the code goes on as text) when the bare mark would. Known and left: a `<…>` token, an `&…;` entity or a
+  fence line longer than a part is still cut where the room ends; inline code, bold and other marks across a cut are not closed and reopened; an emoji
   of several code points can still fall across one; and a part can end up to half its room early, so a long answer
   can take more parts than before.
 
