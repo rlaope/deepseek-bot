@@ -493,6 +493,46 @@ function groupMessage(overrides = {}) {
   te.mark(at, '16', { kind: 'seen' }); await pause()
   te.mark(at, '16', { kind: 'done' }); await sleep(80)
   check('marks: an end that was rate limited is tried again', JSON.stringify(e.sets) === JSON.stringify(['👀@7/16', '👌@7/16', '👌@7/16']), JSON.stringify(e.sets))
+
+  // The marks setting. simple: eyes, then the end, no writing hand; off: none, but the salute for a quiet word.
+  const slow = async (t, ts) => { for (const state of [{ kind: 'seen' }, { kind: 'working', tenths: 3 }, { kind: 'working', tenths: 6 }, { kind: 'done' }] as const) { t.mark(at, ts, state); await pause() } }
+  const ms = reacting(() => ({ ok: true }))
+  const tms = transportFor(ms, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5, marks: 'simple' })
+  await tms.identity()
+  await slow(tms, '20')
+  check('marks simple: eyes, then OK, no writing hand', JSON.stringify(ms.sets) === JSON.stringify(['👀@7/20', '👌@7/20']), JSON.stringify(ms.sets))
+  const mo = reacting(() => ({ ok: true }))
+  const tmo = transportFor(mo, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5, marks: 'off' })
+  await tmo.identity()
+  await slow(tmo, '21')
+  tmo.mark(at, '22', { kind: 'quiet' }); await pause()
+  check('marks off: no mark through a whole turn, and a quiet word still saluted', JSON.stringify(mo.sets) === JSON.stringify(['🫡@7/22']), JSON.stringify(mo.sets))
+
+  // The model's reaction, from Telegram's own list only: no ✅, ❌ or 😂 there, and its heart has no VS16. A bot shows one
+  // reaction on a message, so the model's takes the place of OK; a cross still replaces it.
+  const rx = reacting(() => ({ ok: true }))
+  const trx = transportFor(rx, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await trx.identity()
+  check('react: Telegram takes only what its list has', JSON.stringify(trx.reactions) === JSON.stringify(['👍', '👎', '👀', '🙏', '🔥', '🎉', '❤️', '🤔', '🫡']), JSON.stringify(trx.reactions))
+  trx.mark(at, '23', { kind: 'seen' }); await pause()
+  trx.mark(at, '23', { kind: 'working', tenths: 3 }); await pause()
+  trx.react(at, '23', '👍'); await pause()
+  trx.mark(at, '23', { kind: 'done' }); await pause()
+  check('react: the model\'s 👍 replaces the writing hand, and stays: no OK over it', JSON.stringify(rx.sets.filter((x) => x.endsWith('/23'))) === JSON.stringify(['👀@7/23', '✍@7/23', '👍@7/23']), JSON.stringify(rx.sets))
+  trx.mark(at, '24', { kind: 'seen' }); await pause()
+  trx.react(at, '24', '❤️'); await pause()
+  trx.mark(at, '24', { kind: 'failed' }); await pause()
+  check('react: ❤️ goes as Telegram\'s ❤, and a failure after it still shows', JSON.stringify(rx.sets.filter((x) => x.endsWith('/24'))) === JSON.stringify(['👀@7/24', '❤@7/24', '😢@7/24']), JSON.stringify(rx.sets))
+  trx.react(at, '25', '✅'); await pause()
+  check('react: ✅ is not put on Telegram, nor anything in its place', !rx.sets.some((x) => x.endsWith('/25')), JSON.stringify(rx.sets))
+  // A chat that does not take that reaction: OK goes on after all — also when the end came while the eyes were going on.
+  const rl = reacting((emoji) => (emoji === '🔥' ? { ok: false, description: 'Bad Request: REACTION_INVALID' } : { ok: true }))
+  const trl = transportFor(rl, mkdtempSync(join(tmpdir(), 'tg-')), { markRetryMs: 5 })
+  await trl.identity()
+  trl.mark(at, '26', { kind: 'seen' })
+  trl.react(at, '26', '🔥')
+  trl.mark(at, '26', { kind: 'done' }); await pause()
+  check('react: a reaction the chat refuses is said, and OK shows instead', JSON.stringify(rl.sets) === JSON.stringify(['👀@7/26', '🔥@7/26', '👌@7/26']) && trl.logs.some((l) => /reaction 🔥 not put/.test(l)), JSON.stringify([rl.sets, trl.logs]))
 }
 
 // 17. Deleting the bot's own message: the core posts a slow turn's answer as a new message, which notifies, and
