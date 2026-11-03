@@ -1498,9 +1498,11 @@ for (const remove of [false, true]) {
 // Slack, and the answer still goes out exactly once.
 {
   /** The platform's calls, recorded as `METHOD path` (Discord) or the Bot API method (Telegram), with their bodies. */
-  const fakeDiscordRest = (refuseDelete: boolean) => {
+  // `failPost`: that message POST (1 the working message) answers HTTP 500, as a part of an answer can.
+  const fakeDiscordRest = (refuseDelete: boolean, failPost = 0) => {
     const calls: Array<{ call: string; body: any }> = []
     let n = 0
+    let tries = 0
     const fetchImpl = async (url, init: RequestInit = {}) => {
       const path = String(url).replace('https://discord.com/api/v10', '')
       const method = init.method ?? 'GET'
@@ -1508,22 +1510,23 @@ for (const remove of [false, true]) {
       const reply = (value, status = 200) => ({ ok: status < 300, status, json: async () => value, text: async () => JSON.stringify(value) })
       if (path === '/users/@me') return reply({ id: '9', username: 'testbot', bot: true })
       if (method === 'DELETE' && /^\/channels\/[^/]+\/messages\/[^/]+$/.test(path)) return refuseDelete ? reply({ message: 'Missing Permissions', code: 50013 }, 403) : reply(undefined, 204)
-      if (method === 'POST' && /^\/channels\/[^/]+\/messages$/.test(path)) return reply({ id: `m${++n}`, channel_id: 'C_ALLOWED' })
+      if (method === 'POST' && /^\/channels\/[^/]+\/messages$/.test(path)) return ++tries === failPost ? reply({ message: 'Internal Server Error' }, 500) : reply({ id: `m${++n}`, channel_id: 'C_ALLOWED' })
       if (method === 'PATCH') return reply({ id: path.split('/').pop(), channel_id: 'C_ALLOWED' })
       return reply(undefined, 204)
     }
     return { calls, fetchImpl }
   }
-  const fakeTelegramApi = (refuseDelete: boolean) => {
+  const fakeTelegramApi = (refuseDelete: boolean, failPost = 0) => {
     const calls: Array<{ call: string; body: any }> = []
     let n = 0
+    let tries = 0
     const fetchImpl = async (url, init: RequestInit = {}) => {
       const method = String(url).split('/').pop()
       const body = init.body ? JSON.parse(String(init.body)) : {}
       calls.push({ call: method, body })
       const reply = (value) => ({ ok: value.ok, status: value.ok ? 200 : 400, json: async () => value })
       if (method === 'getMe') return reply({ ok: true, result: { id: 42, username: 'deepbot_test', is_bot: true } })
-      if (method === 'sendMessage') return reply({ ok: true, result: { message_id: 500 + ++n, chat: { id: 7 } } })
+      if (method === 'sendMessage') return reply(++tries === failPost ? { ok: false, error_code: 500, description: 'Internal Server Error' } : { ok: true, result: { message_id: 500 + ++n, chat: { id: 7 } } })
       if (method === 'editMessageText') return reply({ ok: true, result: { message_id: body.message_id, chat: { id: 7 } } })
       if (method === 'deleteMessage') return reply(refuseDelete ? { ok: false, error_code: 400, description: "Bad Request: message can't be deleted" } : { ok: true, result: true })
       return reply({ ok: true, result: true })
@@ -1531,8 +1534,8 @@ for (const remove of [false, true]) {
     return { calls, fetchImpl }
   }
   /** The core on a real transport whose inbound side is a function: everything it sends goes through the fake API. */
-  const onPlatform = (platform: 'discord' | 'telegram', text: string, refuseDelete = false) => {
-    const api = platform === 'discord' ? fakeDiscordRest(refuseDelete) : fakeTelegramApi(refuseDelete)
+  const onPlatform = (platform: 'discord' | 'telegram', text: string, refuseDelete = false, failPost = 0) => {
+    const api = platform === 'discord' ? fakeDiscordRest(refuseDelete, failPost) : fakeTelegramApi(refuseDelete, failPost)
     let deliver: ((m: unknown) => void) | null = null
     const t = boot({
       agent: 'answer', answer: { text, delayMs: 300 }, home: mkdtempSync(join(tmpdir(), `deepbot-${platform}-`)),
@@ -1600,6 +1603,23 @@ for (const remove of [false, true]) {
       removed.length === 1 && deletedId(removed[0], platform) === firstId(platform) && p.api.calls.indexOf(removed[0]) > p.api.calls.indexOf(parts[2]),
       JSON.stringify(p.api.calls.map((c) => c.call)))
     p.t.done()
+
+    // A part after the first refused (HTTP 500): the turn reports its failure as a new message, once, and the working
+    // message is deleted all the same. It was left saying "작업 중" for good: the answer's post threw before the delete.
+    const f = onPlatform(platform, long, false, 3)
+    await sleep(80)
+    f.send()
+    await sleep(900)
+    const out = posts(f.api, platform)
+    const failure = out.filter((c) => /실행에 실패했어/.test(textOf(c, platform)))
+    const firstParts = out.filter((c) => textOf(c, platform).startsWith('(1/3)'))
+    const dropped = deletes(f.api, platform)
+    check(`${platform}: a part that fails: the failure is said once, and no part is sent twice`,
+      failure.length === 1 && firstParts.length === 1 && out.filter((c) => textOf(c, platform).startsWith('(2/3)')).length === 1 && edits(f.api, platform).length === 0,
+      JSON.stringify(out.map((c) => textOf(c, platform).slice(0, 24))))
+    check(`${platform}: and the working message is deleted`, dropped.length === 1 && deletedId(dropped[0], platform) === firstId(platform),
+      JSON.stringify(f.api.calls.map((c) => c.call)))
+    f.t.done()
   }
 }
 

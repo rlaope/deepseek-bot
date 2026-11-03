@@ -219,8 +219,10 @@ the caveat about version numbers is at the bottom.
   part. A refused delete (Telegram deletes only messages under 48 hours old) leaves the working message, said in the
   log; the answer goes out once either way. The same holds for every reply that takes the working message's place (a
   stop, a failure, a restart's notice); a stop already reported deletes it where it was edited into a second report,
-  and a quiet turn that ends with one deletes it where it was left. Checked through the real transports against fake
-  APIs, red before; not seen live.
+  and a quiet turn that ends with one deletes it where it was left. An answer whose later part fails to post (an HTTP
+  500 on its second of three) deletes the working message too, and the failure is reported once as a new message:
+  edited in place before, the first part had taken the working message's place. Checked through the real transports
+  against fake APIs, red before; not seen live.
 - **Slack rewrote code.** Inside a code block or inline code, a `# comment` line came out bold, a `- ` line as
   a bullet, and `**`, Markdown links and the rest were converted like text. Code is set aside before the rules now and
   sent as written; a fence ends at a run of its own mark and length, so one showing a shorter fence holds it, and a
