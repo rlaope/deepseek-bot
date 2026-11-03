@@ -18,7 +18,8 @@ export interface FakeTransportOptions {
   typing?: boolean
   typingRefusedAfterMs?: number
   upload?: boolean | 'fail'
-  remove?: boolean
+  /** `'refused'`: the platform refuses each delete (Slack's chat.delete failing, Telegram's after 48 hours). */
+  remove?: boolean | 'refused'
   /** Reactions on the person's message, as Slack has them: every mark is recorded. */
   marks?: boolean
   /** The platform refuses the turn's answer (`answer: true`): its post returns null. */
@@ -134,8 +135,8 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
       streamUnavailable: options.stream === 'refused',
     } : {}),
     // Deleting a message, only when asked for, like Slack's chat.delete.
-    ...(options.remove === true ? {
-      async remove(target, ts) { removed.push({ target, ts }); return true },
+    ...(options.remove === true || options.remove === 'refused' ? {
+      async remove(target, ts) { removed.push({ target, ts }); return options.remove === true },
     } : {}),
     /** Press a button, as a platform would. */
     press(id, user = 'U_USER') {

@@ -368,11 +368,18 @@ const NOT_ADDRESSED = [
 // The marker alone, or in brackets on the answer's first or last line (an explanation with it is not for the thread
 // either). Any script's letters around it are words, not punctuation: "아직 no reply야" is an answer.
 const NO_REPLY = /^[\s\p{P}\p{S}]*(\[no[\s_-]?reply\]|no[\s_-]?reply[\s\p{P}\p{S}]*$)|(^|\n)[ \t]*\[no[\s_-]?reply\][\s\p{P}\p{S}]*$/iu
-/** The same, in the words other models are taught: the whole answer only. In code, any of them is text. */
+/** The same, in the words other models are taught: the whole answer only. */
 const SILENT = /^(\[silent\]|no_reply)$/i
-const saysNothing = (text: string) => !text.includes('`') && (NO_REPLY.test(text) || SILENT.test(text))
-/** The whole answer of a turn told to stay out of the conversation: nothing is posted, and the conversation is muted. */
-const QUIET_ANSWER = /^\[quiet\]$/i
+/** Silence, read outside the answer's code: a marker only inside code is text, and code elsewhere hides no marker. */
+function saysNothing(text: string): boolean {
+  const outside = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, '').trim()
+  return outside !== '' && (NO_REPLY.test(outside) || SILENT.test(outside))
+}
+/**
+ * The whole answer of a turn told to stay out of the conversation: nothing is posted, and the conversation is muted. As
+ * models write it, one full stop after it and one pair of backticks around it are let pass; any other text is not.
+ */
+const isQuietAnswer = (text: string) => /^\[quiet\]$/i.test(text.trim().replace(/\.$/, '').replace(/^`([^`]*)`$/, '$1'))
 /** A whole message, in any language, that tells it to stay out of the conversation until it is named again. */
 const QUIET_WORDS = defaultWords('quiet')
 /** The approval buttons' own words, in every language: the only ones a requester's answer without a mention may be. */
@@ -1579,6 +1586,8 @@ export function apply(ctx, config) {
     prepared: boolean
     /** The stop was reported for it by the stop request, so it reports nothing when it returns. */
     reported?: boolean
+    /** The stop came from a quiet word, whose only answer is a salute: not even its working message says it stopped. */
+    silent?: boolean
     /** Its agent owned a background job and was released all the same, stopping it: what to tell the conversation. */
     jobsStopped?: string
   }
@@ -2386,13 +2395,13 @@ export function apply(ctx, config) {
         const history = await onGone()
         if (turnState.cause !== null) {
           const cancelled: TurnOutcome = { text: '', reason: { kind: 'cancelled', cause: turnState.cause }, toolsUsed: [], sessionId: '' }
-          return turnState.reported === true ? { ...cancelled, reported: true } : cancelled
+          return turnState.reported === true ? { ...cancelled, reported: true, ...(turnState.silent === true ? { silent: true } : {}) } : cancelled
         }
         const fresh = `${sessionPrefixFor(origin)}-${randomUUID()}`
         outcome = { ...(await runRegisteredTurn({ sessionId: fresh, turnKey, turnState }, prompt, undefined, origin, history, attachmentText, sessionKey, images)), sessionLost: true }
       }
       if (turnState.jobsStopped !== undefined) outcome = { ...outcome, jobsStopped: turnState.jobsStopped }
-      return turnState.reported === true ? { ...outcome, reported: true } : outcome
+      return turnState.reported === true ? { ...outcome, reported: true, ...(turnState.silent === true ? { silent: true } : {}) } : outcome
     } finally {
       if (runningTurns.get(turnKey) === turnState) runningTurns.delete(turnKey)
     }
@@ -3505,7 +3514,7 @@ export function apply(ctx, config) {
     if (!quiet && channel !== LOCAL_CHANNEL && wordIn(prompt, QUIET_WORDS)) {
       const withdrawn = withdrawWaiting(key, { channel, threadTs })
       const turn = runningTurns.get(key)
-      if (turn !== undefined) turn.reported = true
+      if (turn !== undefined) { turn.reported = true; turn.silent = true }
       const stopped = cancelRunning(key, 'user')
       state.muted = { ...(state.muted ?? {}), [key]: Date.now() }
       saveStateNow()
@@ -3647,7 +3656,7 @@ export function apply(ctx, config) {
         const answers = ok && r.text !== '' && r.text !== undefined && !(quiet && saysNothing(r.text.trim()))
         // Asked to stay out, the model answers "[quiet]" alone: nothing is posted, the conversation is muted, and the
         // message that asked gets the salute — a message that did not mention it too, as its only mark.
-        if (ok && channel !== LOCAL_CHANNEL && typeof r.text === 'string' && QUIET_ANSWER.test(r.text.trim())) {
+        if (ok && channel !== LOCAL_CHANNEL && typeof r.text === 'string' && isQuietAnswer(r.text)) {
           state.muted = { ...(state.muted ?? {}), [key]: Date.now() }
           saveStateNow()
           log(`quiet: the model asked to stay out of ${key} — muted`)
@@ -3682,11 +3691,12 @@ export function apply(ctx, config) {
           const marked = replyTarget.channel === LOCAL_CHANNEL && r.reason.cause === 'user'
           if (r.reported !== true && !marked) await replyInPlaceOf(replyTarget, why, placeholderTs)
           // Already reported: a working message put up since (the turn's own, when slow) is removed, not
-          // turned into a second report — edited only where the platform cannot delete.
+          // turned into a second report — edited only where the platform cannot delete, and never for a quiet word.
           else if (placeholderTs !== null) {
             const remover = via(replyTarget)
             const gone = typeof remover.remove === 'function' && await remover.remove(replyTarget, placeholderTs).catch(() => false)
-            if (gone !== true) await transport.post(replyTarget, why, { replace: placeholderTs })
+            if (gone !== true && r.silent === true) log(`working message ${placeholderTs} in ${channel} left as it is: the delete was refused, and a quiet word says nothing`)
+            else if (gone !== true) await transport.post(replyTarget, why, { replace: placeholderTs })
           }
         } else {
           log(`turn ended abnormally reason=${JSON.stringify(r.reason)}`)

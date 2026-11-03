@@ -452,8 +452,8 @@ the caveat about version numbers is at the bottom.
 - **A message opening with someone else's mention is theirs.** Under `thread` and `all`, `@minsu 이거 봐줄래?` opened a
   turn the bot might answer; now Slack drops it before the core sees it. A mention of the bot after theirs still counts.
 - **`[SILENT]` and `NO_REPLY` are silence answers too**, as `[no reply]` is in a thread the bot was not named in: the
-  whole answer only, any case. In code, any of the three is now text (a bare `NO_REPLY` in backticks used to be
-  silence).
+  whole answer only, any case. The markers are read outside the answer's code: one only inside code is now text (a
+  bare `NO_REPLY` in backticks used to be silence), and code elsewhere in the answer hides none.
 
   Checked in the core, failures, Slack, Discord, Telegram and i18n suites against the fake transport and mocked
   APIs, each new check red before the change or shown red by removing its line. Not seen live: Slack's
