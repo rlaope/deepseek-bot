@@ -409,7 +409,7 @@ function message(overrides = {}) {
   const at = { channel: 'C1', threadTs: null }
   const pause = () => sleep(30)
   const k = (d: number) => `${d}\uFE0F\u20E3`
-  const made = async (api) => { const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')), { markRetryMs: 5 }); await t.identity(); return t }
+  const made = async (api, extra = {}) => { const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')), { markRetryMs: 5, ...extra }); await t.identity(); return t }
 
   const a = reactionsOf(() => 204)
   const t = await made(a)
@@ -513,6 +513,32 @@ function message(overrides = {}) {
   tu.mark(at, '114', { kind: 'failed' }); await sleep(80)
   check('marks: after a restart, unread, eyes and every digit come off, and a missing one is not retried',
     u.calls[1] === 'PUT ❌@C1/114' && u.calls.filter((x) => x.startsWith('DELETE')).length === 10 && u.calls.length === 12, JSON.stringify(u.calls))
+
+  // The marks setting. simple: eyes, then the end, no digit; off: none, but the salute for a quiet word.
+  const slow = async (t, ts) => { for (const state of [{ kind: 'seen' }, { kind: 'working', tenths: 3 }, { kind: 'working', tenths: 6 }, { kind: 'done' }] as const) { t.mark(at, ts, state); await pause() } }
+  const ms = reactionsOf(() => 204)
+  await slow(await made(ms, { marks: 'simple' }), '120')
+  check('marks simple: eyes, then a check, no digit', JSON.stringify(ms.calls) === JSON.stringify(['PUT 👀@C1/120', 'PUT ✅@C1/120', 'DELETE 👀@C1/120']), JSON.stringify(ms.calls))
+  const mo = reactionsOf(() => 204, [])
+  const tmo = await made(mo, { marks: 'off' })
+  await slow(tmo, '121')
+  const offBefore = mo.calls.length
+  tmo.mark(at, '122', { kind: 'quiet' }); await pause()
+  check('marks off: no mark through a whole turn, and a quiet word still saluted', offBefore === 0 && JSON.stringify(mo.calls.filter((c) => c.startsWith('PUT'))) === '["PUT 🫡@C1/122"]', JSON.stringify(mo.calls))
+
+  // The model's reaction: kept apart from the marks, so the end's cleanup leaves a model 👀, and a model ✅ is the check.
+  const rx = reactionsOf(() => 204)
+  const trx = await made(rx)
+  check('react: Discord takes the whole list', JSON.stringify(trx.reactions) === JSON.stringify(['👍', '👎', '✅', '❌', '👀', '🙏', '🔥', '🎉', '😂', '❤️', '🤔', '🫡']), JSON.stringify(trx.reactions))
+  trx.mark(at, '123', { kind: 'seen' }); await pause()
+  trx.react(at, '123', '👀'); await pause()
+  trx.mark(at, '123', { kind: 'working', tenths: 3 }); await pause()
+  trx.mark(at, '123', { kind: 'done' }); await pause()
+  check('react: a model 👀 stays when the end takes the marks off', JSON.stringify(rx.present('123').sort()) === JSON.stringify(['✅', '👀'].sort()), JSON.stringify(rx.calls))
+  trx.mark(at, '124', { kind: 'seen' }); await pause()
+  trx.react(at, '124', '❤️'); await pause()
+  trx.mark(at, '124', { kind: 'done' }); await pause()
+  check('react: ❤️ is put as it is, beside the check', JSON.stringify(rx.present('124').sort()) === JSON.stringify(['✅', '❤️'].sort()), JSON.stringify(rx.calls.filter((c) => c.endsWith('/124'))))
 }
 
 // 12. Deleting the bot's own message: the core posts a slow turn's answer as a new message, which notifies, and

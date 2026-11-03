@@ -199,6 +199,15 @@ export interface Transport {
    */
   mark?(target: Target, ts: string, state: ProgressMark): void
 
+  /** The emoji the model may put on a message here (`[react:👍]`): those of the shared list this platform has. */
+  readonly reactions?: readonly string[]
+
+  /**
+   * The model's reaction on the person's message, one of `reactions`. Not a progress mark: the marks never take it
+   * off. A refusal is the transport's to say; nothing is posted in its place.
+   */
+  react?(target: Target, ts: string, emoji: string): void
+
   /**
    * Delete a message the bot posted, where the platform allows it. With it, the answer arrives as a
    * new message and the working message is removed; without it, the answer edits the working message.

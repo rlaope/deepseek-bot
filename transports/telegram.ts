@@ -255,6 +255,10 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     log,
     refusal: 'telegram refused setMessageReaction',
     retryMs: Number(cfg.markRetryMs) > 0 ? Number(cfg.markRetryMs) : 3000,
+    mode: cfg.marks,
+    // The model's reactions, those of the list that are in Telegram's own: no ✅, ❌ or 😂 there, and its heart is
+    // written without VS16.
+    reactions: { '👍': '👍', '👎': '👎', '👀': '👀', '🙏': '🙏', '🔥': '🔥', '🎉': '🎉', '❤️': '❤', '🤔': '🤔', '🫡': '🫡' },
   })
 
   async function identity() {
@@ -479,6 +483,8 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     startTyping,
     uploadFile,
     mark,
+    react: mark.react,
+    reactions: mark.reactions,
     remove,
 
     async connect(handlers: { onMessage: (message: InboundMessage) => void; onAction?: (action: ActionEvent) => void }) {

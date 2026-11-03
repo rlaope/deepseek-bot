@@ -819,6 +819,9 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     log,
     get refusal() { return `reactions.add refused (${refusedFor}) — the app needs reactions:write` },
     retryMs: Number(cfg.markRetryMs) > 0 ? Number(cfg.markRetryMs) : 3000,
+    mode: cfg.marks,
+    // The model's reactions, by Slack's names: every one of the list.
+    reactions: { '👍': '+1', '👎': '-1', '✅': 'white_check_mark', '❌': 'x', '👀': 'eyes', '🙏': 'pray', '🔥': 'fire', '🎉': 'tada', '😂': 'joy', '❤️': 'heart', '🤔': 'thinking_face', '🫡': 'saluting_face' },
   })
 
   /**
@@ -967,6 +970,8 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     remove,
     startTyping,
     mark,
+    react: mark.react,
+    reactions: mark.reactions,
     /** Diagnostic only: messages whose marks are still held. */
     get markedMessages() { return mark.messages },
     stream,

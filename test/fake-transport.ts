@@ -22,6 +22,8 @@ export interface FakeTransportOptions {
   remove?: boolean | 'refused'
   /** Reactions on the person's message, as Slack has them: every mark is recorded. */
   marks?: boolean
+  /** The emoji the model may put on a message here (`[react:👍]`): every reaction is recorded. */
+  reactions?: string[]
   /** The platform refuses the turn's answer (`answer: true`): its post returns null. */
   refuseAnswer?: boolean
   /** Streaming as Slack has it: every frame is recorded. `'refused'`: the platform refused it for good. */
@@ -39,6 +41,8 @@ export interface FakeTransport extends Transport {
   typing: Array<{ target: Target; stopped: boolean }>
   removed: Array<{ target: Target; ts: string }>
   marks: Array<{ target: Target; ts: string; state: ProgressMark }>
+  /** The model's reactions, in the order asked. */
+  reacted: Array<{ target: Target; ts: string; emoji: string }>
   /** Marks that came for a message after its end mark: none should. */
   lateMarks: Array<{ ts: string; state: ProgressMark }>
   frames: Array<{ target: Target; frame: StreamFrame }>
@@ -60,6 +64,7 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
   const typing: FakeTransport['typing'] = []
   const removed: FakeTransport['removed'] = []
   const marks: FakeTransport['marks'] = []
+  const reacted: FakeTransport['reacted'] = []
   const lateMarks: FakeTransport['lateMarks'] = []
   const frames: FakeTransport['frames'] = []
   const uploads: FakeTransport['uploads'] = []
@@ -80,6 +85,7 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
     typing,
     removed,
     marks,
+    reacted,
     lateMarks,
     frames,
     uploads,
@@ -129,6 +135,10 @@ export function createFakeTransport(options: FakeTransportOptions = {}): FakeTra
         if (marks.some((m) => m.ts === ts && !['seen', 'working'].includes(m.state.kind))) lateMarks.push({ ts, state })
         marks.push({ target, ts, state })
       },
+    } : {}),
+    ...(options.reactions !== undefined ? {
+      reactions: options.reactions,
+      react(target, ts, emoji) { reacted.push({ target, ts, emoji }) },
     } : {}),
     ...(options.stream !== undefined && options.stream !== false ? {
       stream(target, frame) { frames.push({ target, frame }) },
