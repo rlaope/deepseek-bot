@@ -80,6 +80,7 @@ const en = {
   planReview: 'plan review',
   question: 'question',
   questionClosed: 'question closed',
+  cannotSuspend: "can't suspend here (dsh leads its own session, with no shell to come back to)",
   typeOwn: 'type your own…',
   skipped: '(skipped)',
   earlier: (n: number) => `earlier in this conversation · last ${n} messages`,

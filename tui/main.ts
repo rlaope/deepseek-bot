@@ -80,7 +80,17 @@ function main(): void {
     // ctrl+z: stopped as a shell stops a job, and drawn again when it continues. The whole process group, as vim
     // does, so a wrapper it runs under (pnpm exec, npx) stops too and the shell gets its prompt back. No job
     // control on Windows.
-    suspend: process.platform === 'win32' ? undefined : (resumed) => { process.once('SIGCONT', resumed); process.kill(0, 'SIGTSTP') },
+    // When dsh leads its own session (tmux new-window dsh, ssh -t host dsh) its group is orphaned and the stop is
+    // discarded: kill returns at once. A stop of this process happens before kill returns, so one that came back in
+    // under 50 ms did not happen.
+    suspend: process.platform === 'win32' ? undefined : (resumed) => {
+      process.once('SIGCONT', resumed)
+      const at = Date.now()
+      process.kill(0, 'SIGTSTP')
+      if (Date.now() - at >= 50) return true
+      process.off('SIGCONT', resumed)
+      return false
+    },
     io: processIO(process.stdin, process.stdout),
     env: process.env,
     platform: process.platform,
