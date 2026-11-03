@@ -40,10 +40,12 @@ Or paste this into your AI agent:
 ```text
 Install deepseek-bot on this Mac without a terminal prompt, following
 https://github.com/rlaope/deepseek-bot/blob/master/docs/setup.md#installing-without-a-terminal
-If the harness has no DeepSeek API key yet, ask me for it and write it as DEEPSEEK_API_KEY= to
-~/.dsh/.env (mode 600) without printing it. Then run
+Check, by name only and without printing any value, whether ~/.dsh/.credentials.yaml (names under
+refs:) or ~/.dsh/.env already has a DeepSeek key. If neither does, ask me for it and add a
+DEEPSEEK_API_KEY= line to ~/.dsh/.env (create it with mode 600 and keep its other lines), without
+printing it. Then run
 curl -fsSL https://raw.githubusercontent.com/rlaope/deepseek-bot/master/install.sh | DEEPBOT_INSTALL_HARNESS=1 bash
-and show me the output of `dsh gateway status`.
+and show me the output of `~/.local/bin/dsh gateway status`.
 ```
 
 ## What you get
@@ -58,8 +60,8 @@ image (with a model that accepts one) and use the tools of an MCP server you add
 
 ### 02 · It remembers
 
-Every conversation is a durable session that survives restarts. Its persona (`SOUL.md`) and the dated notes it
-keeps for itself (`USER.md`, `MEMORY.md`) come into each turn, and passages from earlier conversations are
+Every conversation is a durable session that survives restarts. Its persona (`SOUL.md`) and what it records about
+you and the work (`USER.md`, `MEMORY.md`, `memory/`) come into each turn, and passages from earlier conversations are
 recalled from the same channel only, so a private conversation never surfaces in a public one. Not found is an
 answer: asked about something never said, it says so rather than guessing.
 
@@ -77,13 +79,15 @@ again. Slack is used live; Discord and Telegram are tested against mocked APIs o
 Its commands run under a Seatbelt sandbox that writes only its own workspace and cannot read the deployment's
 tokens or your credential files. A command that deletes or overwrites waits for the person who asked: Allow or
 Deny, in the terminal or as buttons in the thread. Text that tries to give it orders is flagged before the model
-sees it.
+sees it. On Telegram and Discord anyone who finds the bot can message it: list who may with
+`dsh gateway setup telegram --users <your id>`.
 
 <p align="center"><img src="docs/dsh-approval.png" width="720" alt="dsh: the agent wants to rm build/app.js.map; the prompt 'I need permission: destructive command matching rm' offers 1. Allow 2. Deny, with Deny selected"></p>
 
 ## What's verified
 
-The unit suites run in CI against fakes; scenarios against a real model run by hand or daily; Slack and the
+The unit suites run in CI against fakes; scenarios against a real model run by hand, or daily once
+`service/install-scenarios.sh` schedules them; Slack and the
 terminal are in live use. What is not verified is listed item by item in [PLAN.md](PLAN.md#unverified). In short:
 
 - macOS only: on Windows the terminal runs by hand, but the installer, services and sandbox are not ported.
