@@ -6,7 +6,7 @@
  * (soft wrap — copied without a newline), and spans marked as decoration (a prompt mark, an
  * indent) that a copy leaves out.
  */
-import { graphemes, graphemeWidth, stringWidth } from './width.js'
+import { expandTabs, graphemes, graphemeWidth, stringWidth } from './width.js'
 
 export interface Span {
   text: string
@@ -74,9 +74,12 @@ export function wrap(text: string, width: number): Array<{ text: string; gap: st
   return out
 }
 
+/** Tab stops in plain text, a terminal's: a tool's output was written for one. */
+const TAB_STOP = 8
+
 /**
  * Lay out a block of text under a first-line prefix and a hanging indent, e.g. `› ` then `  `.
- * Newlines in `text` are hard breaks.
+ * Newlines in `text` are hard breaks; tabs go to the next stop from the start of their line.
  */
 export function layout(
   text: string,
@@ -87,7 +90,7 @@ export function layout(
   const inner = Math.max(1, width - Math.max(stringWidth(prefix.first.text), stringWidth(prefix.rest.text)))
   const lines: Line[] = []
   for (const paragraph of text.split('\n')) {
-    wrap(paragraph, inner).forEach((piece, i) => {
+    wrap(expandTabs(paragraph, TAB_STOP), inner).forEach((piece, i) => {
       const lead = lines.length === 0 ? prefix.first : prefix.rest
       lines.push({ spans: [{ ...lead, decor: true }, { text: piece.text, style }], soft: i > 0, ...(i > 0 ? { gap: piece.gap } : {}) })
     })

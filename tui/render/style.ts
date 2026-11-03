@@ -19,6 +19,7 @@ export interface Style {
   italic?: boolean
   underline?: boolean
   inverse?: boolean
+  strike?: boolean
 }
 
 export function detectColorMode(env: Record<string, string | undefined>): ColorMode {
@@ -53,6 +54,7 @@ export function sgr(style: Style | undefined, mode: ColorMode): string {
   if (style.italic) codes.push('3')
   if (style.underline) codes.push('4')
   if (style.inverse) codes.push('7')
+  if (style.strike) codes.push('9')
   if (mode !== 'none') {
     if (style.fg) codes.push(mode === 'truecolor' ? `38;2;${style.fg.join(';')}` : `38;5;${rgbTo256(style.fg)}`)
     if (style.bg) codes.push(mode === 'truecolor' ? `48;2;${style.bg.join(';')}` : `48;5;${rgbTo256(style.bg)}`)

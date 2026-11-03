@@ -235,6 +235,38 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **The terminal drew what a model or a tool wrote wrongly in seven ways.** Found by a QA pass against a fake gateway:
+  - Tabs were never drawn: a tab is a control character, 0 columns, and the screen skips those, so a tab-indented Go
+    fence lost its indentation and `a\tb\tc` ran together. Tabs now go to the next tab stop from the start of their
+    line when a block is laid out: every 4 columns in an answer (CommonMark's stop, which keeps a deep fence or a
+    tab-indented list readable in a narrow pane), every 8 in a tool's output, a thinking block and a notice (a
+    terminal's, which the output was written for). A copy gives the spaces, not the tab.
+  - A fence with an info string (```` ```python title="x.py" ````, ```` ``` python ````) was not a fence, so its
+    closing line opened one and the rest of the answer showed as code. Fences are now CommonMark's: three or more
+    backticks or tildes (`~~~` too), any info string whose first word is the language (none with a backtick after
+    backticks), closed by a run of the same mark at least as long with nothing after it, so a fence of four backticks
+    shows one of three as its text.
+  - An escape sequence in an answer, a tool's result, title or diff, a thinking block or a notice (a shell's colours,
+    say) showed as `[31m`: its ESC was dropped as 0 columns and the rest drawn. Escape sequences (CSI, OSC and the
+    other strings, an unfinished one at the end of a streamed answer) and the other C0 and C1 controls but tab and
+    newline are now removed where that text enters its block; a CRLF is a newline. The terminal's own OSC 8 links
+    are written by the screen, not carried in text, and are kept.
+  - A flag (🇰🇷) and a keycap (1️⃣) counted one column and terminals draw two, so what followed was drawn over them.
+    Both, and any emoji made so by VS16, are two columns now; a lone regional indicator stays one.
+  - `***x***` showed a star on each side of bold text; it is bold and italic. A backslash before ASCII punctuation
+    (`\*x\*`) shows the character; `~~x~~` is struck through (SGR 9) without its tildes; `<br>` in a table cell is
+    a line break inside the cell (a space when the table is shown as a list).
+  - A link to `…/Foo_(bar)` was cut at its first `)`: a target may now hold one level of balanced brackets. A label
+    with brackets of its own (`[a (b)](url)`) took the label's bracket for the start of the target; it no longer does.
+  - A line with a `|` right after a table was taken as one more row. A row now has the header's shape: it starts
+    with a pipe when the header does. GFM would take any line up to a blank one; an answer often goes on with a
+    sentence right under its table, so this one is stricter.
+
+  Checked in `test/tui-render.test.ts` (section 13: 25 checks red before, with controls for the renderer's own link,
+  a fence closed only by its own mark, a backslash before a letter and a table without outer pipes), and the QA
+  pass's Markdown and ANSI scenarios laid out by the built blocks. Against fakes only: not yet looked at in a real
+  terminal emulator.
+
 - **An answer's markers were read one rewrite at a time, and a lost session or a mute broke them.** The reaction came
   off the answer, then the lost-session notice went before whatever was left, and only then was it matched. So after a
   session's log was gone, `[quiet]` was posted as "<notice>\n\n[quiet]" and nothing was muted; a reaction alone

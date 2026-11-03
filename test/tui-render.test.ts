@@ -20,7 +20,7 @@ import { wrapPlain, layout, extract } from '../dist/tui/render/text.js'
 import { Transcript } from '../dist/tui/render/transcript.js'
 import { Editor } from '../dist/tui/render/editor.js'
 import { banner, BANNER_WIDTHS } from '../dist/tui/render/banner.js'
-import { welcomeBlock } from '../dist/tui/blocks.js'
+import { welcomeBlock, answerBlock, toolCallBlock } from '../dist/tui/blocks.js'
 import { copy, osc52 } from '../dist/tui/render/clipboard.js'
 import { emulator, fakeTerminal, fakeClock } from './tui-fakes.ts'
 import { sgr, detectColorMode, rgbTo256, backgroundOf, useBackground, themeGeneration, theme, palette } from '../dist/tui/render/style.js'
@@ -495,6 +495,103 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   const lightText = theme.userBand.fg, lightBand = theme.userBand.bg
   useBackground('dark')
   check('background: a light palette has dark text on a light band, and dark comes back', lightText !== undefined && lightText[0] < 0x60 && lightBand[0] > 0xc0 && theme.userBand.fg[0] > 0xc0 && palette.band[0] < 0x60, JSON.stringify([lightText, lightBand, theme.userBand.fg]))
+}
+
+// 13. What reaches the screen as the model or a tool wrote it: tabs, escape sequences, emoji widths, fences,
+// and the inline Markdown and table edges seen in answers.
+{
+  const st = { text: 'T', bold: 'B', italic: 'I', boldItalic: 'BI', strike: 'S', code: 'C', heading: 'H', quote: 'Q', codeBlock: 'K', dim: 'D', link: 'L',
+    keyword: 'KW', string: 'ST', comment: 'CM', number: 'NU' }
+  const md = (text, width = 60) => markdown(text, width, st, { text: '  ', style: '' })
+  const plain = (line) => line.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join('')
+  const decor = (line) => line.spans.filter((sp) => sp.decor).map((sp) => sp.text).join('')
+  const styled = (line, style) => line.spans.filter((sp) => sp.style === style && !sp.decor).map((sp) => sp.text).join('|')
+  const drawn = (line) => line.spans.map((sp) => sp.text).join('')
+
+  // Width: a flag is two regional indicators and a keycap is a digit, VS16 and U+20E3; terminals draw both wide.
+  check('width: a flag is 2 columns', stringWidth('🇰🇷') === 2, String(stringWidth('🇰🇷')))
+  check('width: a keycap is 2 columns, with or without VS16', stringWidth('1️⃣') === 2 && stringWidth('#️⃣') === 2 && stringWidth('1\u20e3') === 2, String([stringWidth('1️⃣'), stringWidth('#️⃣'), stringWidth('1\u20e3')]))
+  check('width: a digit or a letter alone is still 1', stringWidth('1') === 1 && stringWidth('a') === 1 && stringWidth('#') === 1)
+  const flagRow = new Screen(10, 1)
+  flagRow.put(0, 0, '🇰🇷x')
+  check('screen: the cell after a flag is the third column', flagRow.at(2, 0).ch === 'x' && flagRow.at(1, 0).ch === '', JSON.stringify(flagRow.cells.slice(0, 4)))
+
+  // Tabs: expanded to tab stops from the start of the line, 4 in an answer (CommonMark's), 8 in a tool's output (a terminal's).
+  const go = md(['```go', 'func main() {', '\tif x {', '\t\tfmt.Println("x")', '\t}', '}', '```'].join('\n'))
+  check('tabs: a tab-indented Go fence keeps its indentation', plain(go[2]) === '    if x {' && plain(go[3]) === '        fmt.Println("x")' && plain(go[4]) === '    }', JSON.stringify(go.map(plain)))
+  const tsv = md('a\tb\tc\n1\t2\t3\nlong\tx')
+  check('tabs: tab-separated text in an answer lines up in columns', plain(tsv[0]) === 'a   b   c' && plain(tsv[1]) === '1   2   3' && plain(tsv[2]) === 'long    x', JSON.stringify(tsv.map(plain)))
+  check('tabs: a wide character before a tab counts two columns', plain(md('가\tb')[0]) === '가  b', JSON.stringify(plain(md('가\tb')[0])))
+  const nest = md(['1. first', '   - nested a', '\t- tab-indented nested', '2. second'].join('\n'))
+  check('tabs: a tab-indented nested item keeps its nesting', decor(nest[2]) === '      • ' && plain(nest[2]) === 'tab-indented nested' && decor(nest[1]).length < decor(nest[2]).length, JSON.stringify(nest.map(decor)))
+  const shell = toolCallBlock({ name: 'bash', callId: 'b1', title: 'ls -la' }, { expanded: true }, 'none')
+  shell.result(true, 'a\tb\tc\n1\t2\t3\nlonger\tz')
+  const out = shell.lines(80).map(plain).filter((l) => /^(a|1|longer) /.test(l))
+  check('tabs: a tool\'s tab-separated output lines up at 8-column stops', JSON.stringify(out) === JSON.stringify(['a       b       c', '1       2       3', 'longer  z']), JSON.stringify(shell.lines(80).map(plain)))
+  const read = toolCallBlock({ name: 'read', callId: 'r1', title: 'src/main.go' }, { expanded: true }, 'none')
+  read.result(true, 'func main() {\n\tif x {\n\t\treturn\n\t}\n}')
+  const readLines = read.lines(80).map(plain)
+  check('tabs: a tool\'s tab-indented file keeps its indentation', readLines.includes('        if x {') && readLines.includes('                return'), JSON.stringify(readLines))
+
+  // Escape sequences in an answer or a tool's output: removed, never drawn as "[31m".
+  const colored = answerBlock('none')
+  colored.finish('color: \x1b[31mRED\x1b[0m bell:\x07 hidden\x1b[?25l cursor, \x1b]8;;https://evil.example\x07click\x1b]8;;\x07 title\x1b]0;x\x1b\\ end\x1b[3')
+  const said = colored.lines(80).map(plain).join('\n')
+  check('escapes: an answer\'s CSI, OSC, BEL and an unfinished sequence are removed', said === 'color: RED bell: hidden cursor, click title end', JSON.stringify(said))
+  check('escapes: a link the answer wrote as an escape is not a link', !colored.lines(80).some((l) => l.spans.some((sp) => sp.link !== undefined)))
+  const toolColor = toolCallBlock({ name: 'bash', callId: 'b2', title: 'ls --color' }, { expanded: true }, 'none')
+  toolColor.result(true, '\x1b[1;34mdir\x1b[0m\r\n\x1b[32mfile\x1b[0m\tx\r\nback\bspace')
+  const toolSaid = toolColor.lines(80).map(plain)
+  check('escapes: a tool\'s colours, CRLF and backspace are removed, its tabs kept', toolSaid.includes('dir') && toolSaid.includes('file    x') && toolSaid.includes('backspace') && !toolSaid.some((l) => /\[|\x1b|\r|\x08/.test(l)), JSON.stringify(toolSaid))
+  // The control: the renderer's own hyperlink still reaches the terminal.
+  const own = answerBlock('none')
+  own.finish('[문서](https://ex.am/ple)')
+  const ownLine = own.lines(80)[0]
+  const ownScreen = new Screen(40, 1)
+  let x = 0
+  for (const sp of ownLine.spans) x = ownScreen.put(x, 0, sp.text, sp.style, 40, sp.link)
+  check('escapes: the renderer\'s own OSC 8 link is still written', diff(null, ownScreen).includes('\x1b]8;;https://ex.am/ple\x07'), JSON.stringify(ownLine.spans))
+
+  // Fences as CommonMark has them: an info string after the language, ~~~, and a longer fence around a shorter one.
+  const titled = md(['text', '```python title="x.py"', 'print(1)', '```', '', '**after** paragraph'].join('\n'))
+  const after = titled[titled.length - 1]
+  check('fences: an info string after the language still opens a fence, and the fence closes', plain(after) === 'after paragraph' && styled(after, 'B') === 'after' && decor(after) === '  '
+    && titled.some((l) => drawn(l).trim() === 'python') && !titled.some((l) => plain(l).includes('```')), JSON.stringify(titled.map(drawn)))
+  const spaced = md(['``` python', 'def f(): pass', '```'].join('\n'))
+  check('fences: a space before the language is still the language', styled(spaced[1], 'KW') === 'def|pass', JSON.stringify(spaced.map((l) => l.spans)))
+  const tilde = md(['~~~bash', '# install', 'npm i', '~~~', 'after'].join('\n'))
+  check('fences: ~~~ is a fence', styled(tilde[1], 'CM') === '# install' && decor(tilde[2]) === '  │ ' && plain(tilde[3]) === 'after' && decor(tilde[3]) === '  ', JSON.stringify(tilde.map(drawn)))
+  const nested = md(['````md', '```js', 'const x = 1', '```', '````', 'after'].join('\n'))
+  check('fences: a ```` fence holds a ``` fence as its text', JSON.stringify(nested.slice(1, 4).map(plain)) === JSON.stringify(['```js', 'const x = 1', '```']) && nested.slice(1, 4).every((l) => decor(l) === '  │ ')
+    && plain(nested[4]) === 'after' && decor(nested[4]) === '  ', JSON.stringify(nested.map(drawn)))
+  const mixed = md(['```', '~~~', 'x', '```', 'after'].join('\n'))
+  check('fences: a fence closes only with its own mark', plain(mixed[0]) === '~~~' && decor(mixed[0]) === '  │ ' && plain(mixed[2]) === 'after' && decor(mixed[2]) === '  ', JSON.stringify(mixed.map(drawn)))
+
+  // Inline: bold italics, backslash escapes, strikethrough.
+  const emph = md('***important*** and \\*not emphasis\\* and ~~old~~ new')[0]
+  check('inline: ***x*** is bold and italic', styled(emph, 'BI') === 'important', JSON.stringify(emph.spans))
+  check('inline: a backslash escape shows the character', plain(emph) === 'important and *not emphasis* and old new' && styled(emph, 'I') === '', JSON.stringify(plain(emph)))
+  check('inline: ~~x~~ is struck through, without its tildes', styled(emph, 'S') === 'old', JSON.stringify(emph.spans))
+  check('inline: a backslash before a letter stays', plain(md('C:\\Users\\x')[0]) === 'C:\\Users\\x')
+  const sgrStrike = sgr({ strike: true }, 'none')
+  check('style: strike is SGR 9, with or without colour', sgrStrike === '\x1b[0;9m', JSON.stringify(sgrStrike))
+
+  // Links: a URL's own parentheses are part of it; a label's parentheses are not the URL's.
+  const wikiLink = md('[wiki](https://en.wikipedia.org/wiki/Foo_(bar)) end', 200)[0]
+  check('links: a URL with parentheses is the whole target', wikiLink.spans.some((sp) => sp.text === 'wiki' && sp.link === 'https://en.wikipedia.org/wiki/Foo_(bar)') && plain(wikiLink) === 'wiki (https://en.wikipedia.org/wiki/Foo_(bar)) end', JSON.stringify(wikiLink.spans))
+  const labelled = md('[a (b)](https://x.y/z)', 200)[0]
+  check('links: parentheses in the label are not the target', labelled.spans.some((sp) => sp.link === 'https://x.y/z'), JSON.stringify(labelled.spans))
+
+  // Tables: <br> in a cell, and a paragraph with a pipe right after a table.
+  const br = md(['| 이름 | 설명 |', '|---|---|', '| 롤백 | 에러율 1% 초과 시<br>즉시 |'].join('\n'))
+  const brRows = br.map(drawn)
+  check('tables: <br> in a cell is a line break inside the cell', !brRows.some((l) => l.includes('<br>')) && brRows.some((l) => l.includes('에러율 1% 초과 시')) && brRows.some((l) => /│ +│ 즉시/.test(l)), JSON.stringify(brRows))
+  const brList = md(['| a | b | c | d | e | f |', '|---|---|---|---|---|---|', '| x<br>y | 1 | 2 | 3 | 4 | 5 |'].join('\n'), 20)
+  check('tables: <br> in a table shown as a list is a space', !brList.some((l) => drawn(l).includes('<br>')) && drawn(brList[0]).includes('x y'), JSON.stringify(brList.map(drawn)))
+  const ended = md(['| a | b |', '|---|---|', '| 1 | 2 |', 'following paragraph with a | pipe'].join('\n'))
+  check('tables: a line not starting with a pipe ends a table that has them', plain(ended[ended.length - 1]) === 'following paragraph with a | pipe' && ended.filter((l) => drawn(l).includes('│')).length === 2, JSON.stringify(ended.map(drawn)))
+  const bare = md(['a | b', '---|---', '1 | 2', '3 | 4'].join('\n'))
+  check('tables: a table without outer pipes still takes its rows', bare.filter((l) => drawn(l).includes('│')).length === 3 && bare.some((l) => drawn(l).includes('│ 3 │ 4 │')), JSON.stringify(bare.map(drawn)))
 }
 
 const failed = results.filter((r) => !r.ok)
