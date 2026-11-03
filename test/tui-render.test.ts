@@ -20,7 +20,7 @@ import { wrapPlain, layout, extract } from '../dist/tui/render/text.js'
 import { Transcript } from '../dist/tui/render/transcript.js'
 import { Editor } from '../dist/tui/render/editor.js'
 import { banner, BANNER_WIDTHS } from '../dist/tui/render/banner.js'
-import { welcomeBlock, answerBlock, toolCallBlock, userBlock } from '../dist/tui/blocks.js'
+import { welcomeBlock, answerBlock, toolCallBlock, userBlock, outputBlock } from '../dist/tui/blocks.js'
 import { copy, osc52 } from '../dist/tui/render/clipboard.js'
 import { emulator, fakeTerminal, fakeClock } from './tui-fakes.ts'
 import { sgr, detectColorMode, rgbTo256, backgroundOf, useBackground, themeGeneration, theme, palette } from '../dist/tui/render/style.js'
@@ -653,6 +653,26 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   check('diff rows: the file\'s name is drawn without its escapes', editRows.length > 0 && !editRows.some((r) => r.includes('[31m')) && editRows.some((r) => r.includes('a.go')), JSON.stringify(editRows))
   const user = userBlock('\x1b[31mred\tend', 'none').lines(60).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
   check('user block: what was typed or asked is drawn without escapes, its tabs at stops of 8', user.includes('red     end'), JSON.stringify(user))
+}
+
+// A shell's output, read after read: each read laid out once, and only its last 200,000 characters kept.
+{
+  let work = 0
+  const out = outputBlock('none', (n) => { work += n })
+  const line = (k) => `${String(k).padStart(6, '0')} ${'x'.repeat(52)}\n`   // 60 characters
+  let written = 0
+  for (let r = 0; r < 25; r++) {
+    out.append(Array.from({ length: 3000 }, () => line(written++)).join(''))
+    out.lines(80)
+  }
+  const shown = out.lines(80).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
+  check('job output: 25 reads of 180,000 characters lay out each line about once, not every line each read', work <= written + 2 * 26, `${work} lines laid out for ${written} written`)
+  check('job output: only the last 200,000 characters are kept, from a line\'s start, saying so', shown.length <= 200_000 / 60 + 2 && shown[0].startsWith('…') && /^\d{6} x+$/.test(shown[1]) && shown.at(-1) === line(written - 1).trimEnd(), `${shown.length} lines; ${JSON.stringify(shown.slice(0, 2))}`)
+  const split = outputBlock('none')
+  split.append('a\tb\nred: \x1b[3'); split.append('1mhot\x1b[0m and')
+  split.append(' on\n')
+  const text = split.lines(80).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
+  check('job output: (control) an escape split between reads still goes whole, tabs at stops of 8', JSON.stringify(text) === JSON.stringify(['a       b', 'red: hot and on']), JSON.stringify(text))
 }
 
 const failed = results.filter((r) => !r.ok)
