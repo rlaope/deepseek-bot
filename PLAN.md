@@ -183,8 +183,8 @@ Decided against:
 - The terminal's incremental layout (a streamed answer from its last boundary, a resize around the view): checked
   by counting tests, a frame-by-frame comparison with a whole layout over random streams, a probe (16 ms → 0.2 ms
   a frame; 250 ms → 2–6 ms a resize) and, in tmux, a fake gateway's long answers through resizes at 100×30, 60×24
-  and 40×10. A reader scrolled up keeps the line number across a resize, as before, so what is at the top moves
-  with the wrap; the total while estimated may be off by the estimate. Not measured in a real terminal or session.
+  and 40×10. A reader scrolled up stays on the block at the top across a resize (its line within the block kept as a
+  share of it); the total while estimated may be off by the estimates. Not measured in a real terminal or session.
 
 - The terminal's input fixes (characters typed a code point at a time joined, a message over the frame limit refused
   and kept, a 100 ms wait for a split sequence, the hello timeout, the reconnect countdown, the paste cut, its final
