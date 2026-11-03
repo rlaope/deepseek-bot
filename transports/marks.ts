@@ -24,6 +24,7 @@ export interface MarkNames {
   done: string
   failed: string
   stopped: string
+  quiet: string
 }
 
 export interface MarkHost {
@@ -53,7 +54,7 @@ export function reactionMarks(host: MarkHost): Marks {
   const { names, log, remove } = host
   // By the name without U+FE0F, which a platform may write either way (a keycap, ⏹️): the name this sends.
   const bare = (name: string) => name.replace(/\uFE0F/g, '')
-  const ours = new Map([names.seen, ...names.working, names.done, names.failed, names.stopped].map((n) => [bare(n), n]))
+  const ours = new Map([names.seen, ...names.working, names.done, names.failed, names.stopped, names.quiet].map((n) => [bare(n), n]))
   let refused = false
   type Marked = { shown: Set<string>; want: string; ended: boolean; dead: boolean; running: boolean; read: boolean }
   const marked = new Map<string, Marked>()

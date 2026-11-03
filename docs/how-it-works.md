@@ -11,6 +11,7 @@ its services are named `deepbot`.
 | `@deepbot …` in a channel, or anything in a DM | answers in the thread, as the persona in `SOUL.md` |
 | a follow-up while it is still working | waits, then answers it next — one turn at a time per thread |
 | `stop` / `그만` / `停止` | stops the running turn and withdraws what was waiting |
+| `be quiet` / `조용히 해` / `安静` | stops as `stop` does, then stays out of the thread until it is named again; answers with a 🫡 reaction only |
 | `usage` / `사용량` / `用量` | token totals for the thread, without starting a turn |
 | `allow` / `deny` (`허용` / `거부`, `允许` / `拒绝`), or the buttons | answers its request to run something destructive |
 | "what did we decide last time about …?" | recalls past threads **in this channel** and says what they imply |
@@ -725,6 +726,43 @@ timeout now cancels the work itself. The harness records a cancelled turn with n
 own, so the adapter — the party that asked for the stop — supplies it, and the user is told which
 happened: stopped on request, or stopped because it ran too long. `test/scenarios/interrupt.json`
 asserts the interrupted turn ends as `cancelled`.
+
+## Telling it to stay out
+
+With `replyMode: thread` or `all` the bot joins a Slack thread without being named. Telling it to stop doing
+that mutes the conversation — the thread on Slack, the chat on Telegram, the channel on Discord (its conversation
+key) — until someone names it again.
+
+- **Quiet words**, a whole message said to the bot (with a mention, in a DM, or under `all`), with trailing
+  punctuation ignored and nothing else in it: `quiet`, `be quiet`, `shut up`, `stay out`; `조용히`, `조용히 해`,
+  `조용히해`, `빠져`, `그만 끼어들어`; `安静`, `别说话`. Understood in every language whatever `language` is set to;
+  a sentence that contains one is an ordinary message. No model call: what is running stops and what waits is
+  withdrawn, as a stop word does, but nothing is said about it.
+- **`[quiet]`**: told in its standing block that it may, the model answers exactly `[quiet]` when someone asks it in
+  other words ("우리끼리 얘기할게, 넌 빠져 있어"). Nothing is posted and the conversation is muted. Only the whole
+  answer counts: `[quiet]` with other text is posted as it is.
+- **The acknowledgement** is a reaction on the message that asked, and nothing else: `saluting_face` on Slack, 🫡 on
+  Discord and Telegram (on Telegram the same 🫡 as a stopped turn's end mark; the message that asked gets no other
+  mark). Where the platform refuses the reaction it is logged, and no text is sent instead.
+- **While muted**: a thread follow-up without a mention opens no turn (no mark, no status); under `all`, a plain
+  channel message is ignored and only a mention or a DM is taken, as under `mention`. Those messages still reach
+  the next turn as the thread's history. The notice that a restart lost a turn is not posted there (the marks still
+  end, and a working message left behind is taken down). Watches, reminders and a background job's report still
+  arrive: the person set them up.
+- **Undoing it**: a mention of the bot, or a reply to its own message (Telegram, Discord), unmutes the conversation and
+  is answered as any turn, with no extra acknowledgement. The mute has no duration; it is kept in the state file, so
+  it survives a restart, and is pruned with the conversation's other bookkeeping (`stateRetentionDays`).
+- **Where it changes nothing lasting**: in a DM, under `mention`, and on Telegram and Discord, every message the bot
+  takes names it, and that undoes the mute; a quiet word there only stops what is running and acknowledges. Under
+  `all`, each message at the top of a channel starts its own thread, so muting one thread leaves the next top-level
+  message heard. In the terminal a quiet word is an ordinary message.
+
+Under `thread` and `all`, a message that opens with someone else's mention (`@minsu 이거 봐줄래?`) is said to them: it
+opens no turn, whatever the mode. One that names the bot after theirs is still a mention.
+
+The silence answer of a turn the bot was not named in, `[no reply]`, has two more spellings models are taught,
+`[SILENT]` and `NO_REPLY`, each only as the whole answer and in any case; in a sentence, or in code, any of them is
+text.
 
 ## The terminal (dsh)
 

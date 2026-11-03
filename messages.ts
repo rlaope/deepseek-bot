@@ -122,14 +122,15 @@ export function messages(language: Language): Messages {
 /**
  * Whole messages that mean one thing, in every language at once: a deployment set to Korean
  * still stops on "stop", and a Chinese speaker in it is understood. The first cancel word is
- * what the terminal sends for esc, so English leads.
+ * what the terminal sends for esc, so English leads. A quiet word stops what runs as a cancel word does, and then keeps
+ * the bot out of the conversation until it is named again: short and exact, never a part of a sentence.
  */
-const WORDS: Record<Language, { cancel: string[]; usage: string[]; approve: string[]; deny: string[] }> = {
-  en: { cancel: ['stop', 'cancel'], usage: ['usage'], approve: ['yes', 'allow', 'ok'], deny: ['no', 'deny'] },
-  ko: { cancel: ['그만', '중단', '취소', '멈춰'], usage: ['사용량', '비용', '토큰', '얼마나 썼어'], approve: ['허용', '승인', '응', 'ㅇㅇ', 'ㅇ'], deny: ['거부', '아니', '안돼', 'ㄴㄴ'] },
-  zh: { cancel: ['停止', '取消', '停下', '别做了'], usage: ['用量', '费用', '花了多少'], approve: ['允许', '批准', '同意', '可以'], deny: ['拒绝', '不行', '不要', '不'] },
+const WORDS: Record<Language, { cancel: string[]; quiet: string[]; usage: string[]; approve: string[]; deny: string[] }> = {
+  en: { cancel: ['stop', 'cancel'], quiet: ['quiet', 'be quiet', 'shut up', 'stay out'], usage: ['usage'], approve: ['yes', 'allow', 'ok'], deny: ['no', 'deny'] },
+  ko: { cancel: ['그만', '중단', '취소', '멈춰'], quiet: ['조용히', '조용히 해', '조용히해', '빠져', '그만 끼어들어'], usage: ['사용량', '비용', '토큰', '얼마나 썼어'], approve: ['허용', '승인', '응', 'ㅇㅇ', 'ㅇ'], deny: ['거부', '아니', '안돼', 'ㄴㄴ'] },
+  zh: { cancel: ['停止', '取消', '停下', '别做了'], quiet: ['安静', '别说话'], usage: ['用量', '费用', '花了多少'], approve: ['允许', '批准', '同意', '可以'], deny: ['拒绝', '不行', '不要', '不'] },
 }
 
-export function defaultWords(kind: 'cancel' | 'usage' | 'approve' | 'deny'): string[] {
+export function defaultWords(kind: 'cancel' | 'quiet' | 'usage' | 'approve' | 'deny'): string[] {
   return LANGUAGES.flatMap((l) => WORDS[l][kind])
 }

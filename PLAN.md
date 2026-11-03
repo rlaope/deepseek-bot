@@ -30,7 +30,7 @@ is built before the thing it stands on. The detailed history of each milestone i
 | M3 Never silently dead | health file, external probe, alerts, log rotation |
 | M4 Autonomy | reminders through the schedule bundle, watches ("tell me when this changes") |
 | M5 Distribution | one-command install, profile template, CI |
-| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written |
+| M6 Transports | one core, Slack / Telegram / Discord, a fake transport for the core's tests, approvals over chat; progress marks from one module (`marks.ts`) on every platform; what the model writes pings nobody (Slack's text escaped, Discord's `allowed_mentions` empty) and Slack sends code as written; a conversation can be told to stay out (quiet words, `[quiet]`) until it names the bot again |
 | M7 Agent gaps | attachments and vision, read confinement, per-tenant policy, fetch policy, usage totals |
 | M8 Terminal | `dsh` (was `deepbot-tui`): a local socket transport served beside Slack or alone, streaming, approval buttons, a turn's questions and plan reviews, the agent panel (subagents, shells), sessions to resume, a deep interview; recall indexed per workspace; first-turn approvals no longer fail closed; tool calls with their title, diff and result, thinking, tables, highlighted code and links; completion of commands and files, history search and history kept between runs |
 | Round 66 | persona restored to the prompt; the platform's own working indicator; one turn at a time per conversation; recall scoped to its channel; documents uploaded; watches and commands confined (credentials, session store, ssh-agent, the launcher and its logs out of the agent's home; no writes through links) |
@@ -126,6 +126,11 @@ Decided against:
   be a knob that does nothing.
 
 ## Unverified
+
+- Muting a conversation (quiet words, `[quiet]`), checked against the fake transport and mocked platform APIs only:
+  not seen that Slack takes `saluting_face` and Discord and Telegram 🫡 on a live message, nor that a real model
+  answers `[quiet]` alone when asked in other words (no scenario yet). The recall indexer still indexes an answer of
+  `[quiet]`, `[SILENT]` or `NO_REPLY`, which posted nothing (its own filter knows `[no reply]` only).
 
 - Inert mentions and Slack's marks, checked against fakes only: that Slack shows `&lt;`, `&gt;` and `&amp;` as the
   characters inside code blocks, inline code and link labels, and still reads `&gt; ` at a line's start as a quote,

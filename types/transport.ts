@@ -45,6 +45,11 @@ export interface InboundMessage {
   user: string
   /** True when the agent was addressed directly rather than observing chatter. */
   addressed: boolean
+  /**
+   * Addressed only because the reply mode takes every message (Slack's `all`), not because it named the bot: a
+   * mention, a reply to it, a DM. A conversation told to be quiet takes only those.
+   */
+  byMode?: boolean
   files: AttachmentRef[]
   /** The platform's own payload, for a transport that needs to look deeper. */
   raw: unknown
@@ -114,6 +119,8 @@ export type ProgressMark =
   | { kind: 'done' }
   | { kind: 'failed' }
   | { kind: 'stopped' }
+  /** Told to stay out of the conversation, and it will: a salute, the only answer it gives. */
+  | { kind: 'quiet' }
 
 /** A question a turn asks the person (the ask_user_question tool, a plan review). */
 export interface QuestionItem {

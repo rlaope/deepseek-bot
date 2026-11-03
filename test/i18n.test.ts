@@ -85,6 +85,10 @@ catalogChecks('adapter', (l) => messages(l))
     && defaultWords('deny').includes('deny') && defaultWords('deny').includes('거부') && defaultWords('deny').includes('拒绝'))
   const overlap = defaultWords('approve').filter((w) => defaultWords('deny').includes(w))
   check('no word both approves and denies', overlap.length === 0, overlap.join(', '))
+  const quiet = defaultWords('quiet')
+  check('quiet words in all three', quiet.includes('be quiet') && quiet.includes('조용히 해') && quiet.includes('安静'))
+  const both = quiet.filter((w) => [...cancel, ...defaultWords('usage'), ...defaultWords('approve'), ...defaultWords('deny')].includes(w))
+  check('no quiet word is also another command', both.length === 0, both.join(', '))
 }
 
 const failed = results.filter((r) => !r.ok)

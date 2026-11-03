@@ -368,6 +368,13 @@ const NOT_ADDRESSED = [
 // The marker alone, or in brackets on the answer's first or last line (an explanation with it is not for the thread
 // either). Any script's letters around it are words, not punctuation: "아직 no reply야" is an answer.
 const NO_REPLY = /^[\s\p{P}\p{S}]*(\[no[\s_-]?reply\]|no[\s_-]?reply[\s\p{P}\p{S}]*$)|(^|\n)[ \t]*\[no[\s_-]?reply\][\s\p{P}\p{S}]*$/iu
+/** The same, in the words other models are taught: the whole answer only. In code, any of them is text. */
+const SILENT = /^(\[silent\]|no_reply)$/i
+const saysNothing = (text: string) => !text.includes('`') && (NO_REPLY.test(text) || SILENT.test(text))
+/** The whole answer of a turn told to stay out of the conversation: nothing is posted, and the conversation is muted. */
+const QUIET_ANSWER = /^\[quiet\]$/i
+/** A whole message, in any language, that tells it to stay out of the conversation until it is named again. */
+const QUIET_WORDS = defaultWords('quiet')
 /** The approval buttons' own words, in every language: the only ones a requester's answer without a mention may be. */
 const BUTTON_ALLOW = LANGUAGES.map((l) => messages(l).allow)
 const BUTTON_DENY = LANGUAGES.map((l) => messages(l).deny)
@@ -529,7 +536,7 @@ export function apply(ctx, config) {
   }
   let saveTimer = null
   function loadState() {
-    if (!existsSync(STATE)) return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, models: {}, routes: {}, usage: emptyUsageStore() }
+    if (!existsSync(STATE)) return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, models: {}, routes: {}, muted: {}, usage: emptyUsageStore() }
     try {
       const raw = JSON.parse(readFileSync(STATE, 'utf8'))
       return {
@@ -549,6 +556,8 @@ export function apply(ctx, config) {
         models: raw.models ?? {},
         // The route each conversation last ran on, so a change of model is told to the model.
         routes: raw.routes ?? {},
+        // Conversations told to stay out (a quiet word, or the model's "[quiet]"), with when: until it is named again.
+        muted: raw.muted ?? {},
         usage: raw.usage ?? emptyUsageStore(),
         // Conversations with a turn accepted and not yet answered, so a restart can say what it lost.
         // This process's own start empty: what the previous one left is set aside below.
@@ -558,7 +567,7 @@ export function apply(ctx, config) {
         // this process's running turns for lost ones; and a new turn never finds an old record in its way.
         restartLost: { ...(raw.restartLost ?? {}), ...(raw.inflight ?? {}) },
       }
-    } catch { return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, models: {}, routes: {}, usage: emptyUsageStore() } }
+    } catch { return { sessions: {}, seen: {}, standing: {}, history: {}, touched: {}, tenantOf: {}, models: {}, routes: {}, muted: {}, usage: emptyUsageStore() } }
   }
   /**
    * Drop what has gone quiet.
@@ -580,8 +589,8 @@ export function apply(ctx, config) {
     const retentionCutoff = now - days * 24 * 3600 * 1000
     const conversations = (state.usage?.conversations ?? {}) as Record<string, { lastAt?: number; lastSessionId?: string }>
     let dropped = 0
-    for (const key of new Set([...Object.keys(state.sessions), ...Object.keys(state.touched ?? {})])) {
-      const touchedAt = Number(state.touched?.[key] ?? conversations[key]?.lastAt ?? NaN)
+    for (const key of new Set([...Object.keys(state.sessions), ...Object.keys(state.touched ?? {}), ...Object.keys(state.muted ?? {})])) {
+      const touchedAt = Number(state.touched?.[key] ?? conversations[key]?.lastAt ?? state.muted?.[key] ?? NaN)
       if (!Number.isFinite(touchedAt) || touchedAt >= retentionCutoff) continue
       delete state.sessions[key]
       delete state.standing[key]
@@ -589,6 +598,7 @@ export function apply(ctx, config) {
       if (state.tenantOf) delete state.tenantOf[key]
       if (state.models) delete state.models[key]
       if (state.routes) delete state.routes[key]
+      if (state.muted) delete state.muted[key]
       if (state.touched) delete state.touched[key]
       delete conversations[key]
       dropped++
@@ -1040,6 +1050,8 @@ export function apply(ctx, config) {
         `channel=${origin.channel} thread=${origin.threadTs}`,
         'Watches are not available in this workspace: say so if asked to watch something on a schedule.',
       ]).join('\n'))
+      // Not in the terminal, which is always talking to it and has no message to salute.
+      if (origin.channel !== LOCAL_CHANNEL) standing.push('[staying out] If someone here asks you to stop joining this conversation, answer with exactly [quiet] and nothing else.')
 
       // The conversation's own link, so a reference to it can be clickable. Slack links its own
       // <#C…> mention, but a description of a thread stays text without this.
@@ -1433,6 +1445,13 @@ export function apply(ctx, config) {
       const target = { channel: record.channel, threadTs: record.threadTs }
       // Their marks end with a cross: a digit left on a message would say it is still being worked on.
       for (const ts of record.marked ?? []) markOf(target, ts, { kind: 'failed' })
+      // Told to stay out of it: nothing is said there, and a working message left behind comes down.
+      if (state.muted?.[key] !== undefined) {
+        if (typeof record.placeholder === 'string') await Promise.resolve(via(target).remove?.(target, record.placeholder)).catch(() => false)
+        log(`inflight ${key}: muted, dropped without a notice`)
+        forget(key)
+        continue
+      }
       // The platform's status may still say "작업 중" from the process that died: raise and lower it.
       try { via(target).startTyping?.(target, () => {})?.() } catch { /* best effort */ }
       await replyInPlaceOf(target, say.restartLost, record.placeholder ?? null)
@@ -3387,6 +3406,9 @@ export function apply(ctx, config) {
       const takesPart = state.sessions?.[at] !== undefined || runningTurns.has(at) || waiting.has(at)
       if (!(cfg.replyMode === 'thread' && target.threadTs !== null && takesPart && Date.now() - Number(state.touched?.[at] ?? 0) < THREAD_LISTEN_MS)) return
     }
+    // Told to stay out (a quiet word, or the model's "[quiet]"): nothing it would join without being named — a message
+    // without a mention, or one only the mode gives it (replyMode 'all'). Each still reaches the next turn as history.
+    if ((quiet || message.byMode === true) && state.muted?.[target.threadTs === null ? channel : `${channel}:${target.threadTs}`] !== undefined) return
     // Nor for anyone outside allowedUsers — and no reply, which would be a way to make it post.
     if (!mayTalk(message.user, channel)) { log(`ignored: ${message.user} is not in allowedUsers (channel=${channel})`); return }
     if (alreadySeen(message.eventId)) { log(`duplicate event ignored event_id=${message.eventId}`); return }
@@ -3475,6 +3497,34 @@ export function apply(ctx, config) {
         await transport.post({ channel, threadTs }, await stopKept(key) ? say.stopped : say.nothingRunning)
       }
       return
+    }
+
+    // A quiet word stops what runs and withdraws what waits, as a stop does, and then keeps it out of the conversation
+    // until it is named again. Its answer is a salute on the message, and nothing else: no report of the stop, and a
+    // working message left up comes down. Not in the terminal, which is always talking to it and has nothing to salute.
+    if (!quiet && channel !== LOCAL_CHANNEL && wordIn(prompt, QUIET_WORDS)) {
+      const withdrawn = withdrawWaiting(key, { channel, threadTs })
+      const turn = runningTurns.get(key)
+      if (turn !== undefined) turn.reported = true
+      const stopped = cancelRunning(key, 'user')
+      state.muted = { ...(state.muted ?? {}), [key]: Date.now() }
+      saveStateNow()
+      log(`quiet requested in ${key} — muted${stopped === 'none' ? '' : `, stopped a ${stopped} turn`}${withdrawn > 0 ? `, withdrew ${withdrawn} waiting message(s)` : ''}`)
+      markOf({ channel, threadTs }, ts, { kind: 'quiet' })
+      // A running turn takes its own working message down when it returns; one that is starting may not return soon.
+      if (stopped !== 'running') {
+        await progress.settle(key)
+        const left = progress.take(key)?.ts ?? null
+        if (left !== null) await Promise.resolve(via({ channel, threadTs }).remove?.({ channel, threadTs }, left)).catch(() => false)
+      }
+      settleInflight(key)
+      return
+    }
+    // Named again — a mention, a reply to it, a DM — it is back in the conversation, and this is an ordinary turn.
+    if (state.muted?.[key] !== undefined) {
+      delete state.muted[key]
+      saveStateNow()
+      log(`unmuted ${key}: named again`)
     }
 
     health.accepted++
@@ -3594,8 +3644,19 @@ export function apply(ctx, config) {
         const ok = r.reason?.kind === 'completed'
         // A message that did not mention it gets an answer or nothing: not "[no reply]", and not a failure, a timeout
         // or an empty answer, in a thread where nobody asked it. A stop said to it with a mention is reported.
-        const answers = ok && r.text !== '' && r.text !== undefined && !(quiet && NO_REPLY.test(r.text.trim()))
-        if (quiet && !answers && !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user')) {
+        const answers = ok && r.text !== '' && r.text !== undefined && !(quiet && saysNothing(r.text.trim()))
+        // Asked to stay out, the model answers "[quiet]" alone: nothing is posted, the conversation is muted, and the
+        // message that asked gets the salute — a message that did not mention it too, as its only mark.
+        if (ok && channel !== LOCAL_CHANNEL && typeof r.text === 'string' && QUIET_ANSWER.test(r.text.trim())) {
+          state.muted = { ...(state.muted ?? {}), [key]: Date.now() }
+          saveStateNow()
+          log(`quiet: the model asked to stay out of ${key} — muted`)
+          // What was streamed of it comes down; so does a working message.
+          if (!quiet && streamsTo(replyTarget)) via(replyTarget).stream(replyTarget, { kind: 'reset' })
+          if (placeholderTs !== null) await Promise.resolve(via(replyTarget).remove?.(replyTarget, placeholderTs)).catch(() => false)
+          markOf(replyTarget, ts, { kind: 'quiet' })
+          unmarkInflight(key, ts)
+        } else if (quiet && !answers && !(r.reason?.kind === 'cancelled' && r.reason.cause === 'user')) {
           log(`kept quiet channel=${channel} ${ok ? 'no reply' : String(r.reason?.kind ?? 'unknown')} ${Date.now() - started}ms`)
           if (placeholderTs !== null) await via(replyTarget).remove?.(replyTarget, placeholderTs).catch(() => false)
         } else if (ok && r.text) {

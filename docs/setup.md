@@ -400,7 +400,9 @@ mode is Slack's; what is typed in the terminal is always for the bot. Told the m
 did not mention it, the model answers only when it is meant for it and otherwise posts nothing, with no
 working status shown; a failure or a timeout says nothing either. Several such messages in a row are one
 turn. Words such as `stop`, `usage` or `yes` are commands only with a mention; an approval may be answered
-without one by the person it asks, in the buttons' words (Allow/Deny, 허용/거부, 允许/拒绝). Each such
+without one by the person it asks, in the buttons' words (Allow/Deny, 허용/거부, 允许/拒绝). A message opening with
+someone else's mention is theirs, and opens no turn. Told `be quiet` (`조용히 해`, `安静`) with a mention, it stays out
+of that thread until it is mentioned again ([how it works](how-it-works.md#telling-it-to-stay-out)). Each such
 message is a model turn, and the thread's chatter enters the session, so the channel's recall can find it.
 It needs the `message.channels` and `message.groups` events (the app `dsh gateway setup` makes has them); a
 thread under the bot's own post (a watch's report) needs a mention to start, like any other.

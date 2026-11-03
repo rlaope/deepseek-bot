@@ -439,6 +439,26 @@ the caveat about version numbers is at the bottom.
 
 ### Added
 
+- **It can be told to stay out of a conversation.** Under `replyMode: thread` or `all` there was no way to make it
+  stop joining a thread short of changing the mode for everyone. Now a quiet word said to it as a whole message
+  (`be quiet`, `shut up`, `stay out`; `조용히 해`, `빠져`, `그만 끼어들어`; `安静`, `别说话`), or the model's whole answer
+  `[quiet]` (its standing block says it may), mutes the conversation until it is mentioned or replied to again. A
+  quiet word stops what runs and withdraws what waits, as a stop word does; the only answer is a salute reaction on
+  the message that asked (`saluting_face` on Slack, 🫡 on Discord and Telegram), with no text. While muted, a thread
+  follow-up opens no turn, under `all` only a mention or a DM is taken (Slack's messages now say when they are
+  addressed only by the mode), and a restart's lost-turn notice is not posted there; watches, reminders and
+  background jobs still report. The mute is kept in the state file, survives a restart and is pruned with the
+  conversation. In a DM, under `mention` and on Telegram and Discord, the next message names it and undoes the mute.
+- **A message opening with someone else's mention is theirs.** Under `thread` and `all`, `@minsu 이거 봐줄래?` opened a
+  turn the bot might answer; now Slack drops it before the core sees it. A mention of the bot after theirs still counts.
+- **`[SILENT]` and `NO_REPLY` are silence answers too**, as `[no reply]` is in a thread the bot was not named in: the
+  whole answer only, any case. In code, any of the three is now text (a bare `NO_REPLY` in backticks used to be
+  silence).
+
+  Checked in the core, failures, Slack, Discord, Telegram and i18n suites against the fake transport and mocked
+  APIs, each new check red before the change or shown red by removing its line. Not seen live: Slack's
+  `saluting_face`, Discord's and Telegram's 🫡 on a real message, and a real model answering `[quiet]`.
+
 - **A background job outlives its turn, and what it found is posted when it finishes.** The adapter released the
   agent after every turn, and the harness's jobs service stops an agent's jobs with it: a command started in the
   background (`run_in_background`, or a foreground one moved there on its timeout) died as the answer went out, so
