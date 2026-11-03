@@ -523,6 +523,73 @@ function groupMessage(overrides = {}) {
   rmSync(home, { recursive: true, force: true })
 }
 
+// 19. An album: Telegram sends one update per item, sharing a media_group_id, and only one carries the caption. It is
+// one message: one turn, its text the caption wherever it is, its files every item's in order. Taken one by one, a
+// caption-less album opened a turn per photo, and a captioned one a turn that saw the first photo only.
+{
+  const item = (n: number, extra: Record<string, unknown> = {}) => ({ update_id: 30 + n, message: { message_id: 30 + n, media_group_id: 'G1', from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, photo: [{ file_id: `small-ALBUM${n}`, file_size: 4 }, { file_id: `large-ALBUM${n}`, file_size: 12 }], ...extra } })
+  for (const [label, updates, caption] of [
+    ['without a caption', [item(1), item(2), item(3)], null],
+    ['with a caption on its second item', [item(1), item(2, { caption: 'what are these?' }), item(3)], 'what are these?'],
+  ] as const) {
+    const home = mkdtempSync(join(tmpdir(), 'tg-album-'))
+    const api = fakeApi({ updates: [...updates] })
+    const t = transportFor(api, home)
+    const core = bootAround(t, home)
+    await sleep(2600)
+    await t.close()
+    const said = core.texts()
+    const asked = (said[0] ?? '').split('[user message]\n').at(-1)
+    check(`album ${label}: one turn`, said.length === 1, `${said.length} turn(s)`)
+    check(`album ${label}: with all three photos, in order, and shown`, /ALBUM1\.jpg[\s\S]*ALBUM2\.jpg[\s\S]*ALBUM3\.jpg/.test(said[0] ?? '') && core.images()[0]?.length === 3, `${core.images()[0]?.length} image(s) ${(said[0] ?? '').slice(0, 400)}`)
+    check(`album ${label}: the person's message is ${caption === null ? 'that three files came without text' : 'the caption'}`, caption === null ? asked === '(sent 3 files without text: photo-ALBUM1.jpg, photo-ALBUM2.jpg, photo-ALBUM3.jpg)' : asked === caption, JSON.stringify(asked))
+    core.done()
+    rmSync(home, { recursive: true, force: true })
+  }
+
+  // Across a restart: an album still being gathered is not confirmed to Telegram, so a process that stops then gets it
+  // again whole; one that was answered is confirmed, and a restart after it does not answer it again. The fake keeps
+  // updates until a getUpdates offset passes them, as Telegram does.
+  // The items arrive 150 ms apart, as an album's often do, each in a poll of its own.
+  const started = Date.now()
+  const store = [item(1), item(2, { caption: 'what are these?' }), item(3)].map((update, i) => ({ ...update, arrives: started + 150 * i }))
+  const offsets: number[] = []
+  const plain = fakeApi()
+  const telegramLike = { ...plain, fetchImpl: async (url, init) => {
+    const method = String(url).split('/').pop()
+    if (method !== 'getUpdates') return plain.fetchImpl(url, init)
+    const { offset = 0 } = JSON.parse(String(init?.body ?? '{}'))
+    offsets.push(offset)
+    store.splice(0, store.length, ...store.filter((u) => u.update_id >= offset))
+    const result = store.filter((u) => u.arrives <= Date.now()).map(({ arrives, ...update }) => update)
+    if (result.length === 0) await sleep(80)
+    return { ok: true, status: 200, json: async () => ({ ok: true, result }) }
+  } }
+  const home = mkdtempSync(join(tmpdir(), 'tg-album-'))
+  const first = transportFor(telegramLike, home)
+  const before = bootAround(first, home)
+  await sleep(500)
+  await first.close()
+  await sleep(1500)
+  check('album across a restart: stopped while it was gathered, nothing was answered', before.texts().length === 0, `${before.texts().length} turn(s)`)
+  check('album across a restart: and nothing of it was confirmed to Telegram', store.length === 3 && offsets.every((o) => o <= 31), `${store.length} kept, offsets ${JSON.stringify(offsets)}`)
+  before.done()
+  const second = transportFor(telegramLike, home)
+  const after = bootAround(second, home)
+  await sleep(2600)
+  await second.close()
+  check('album across a restart: the next process answers it once, whole', after.texts().length === 1 && after.images()[0]?.length === 3 && (after.texts()[0] ?? '').endsWith('[user message]\nwhat are these?'), `${after.texts().length} turn(s), ${after.images()[0]?.length} image(s)`)
+  check('album across a restart: then it is confirmed', store.length === 0 && offsets.at(-1) === 34, `${store.length} kept, last offset ${offsets.at(-1)}`)
+  after.done()
+  const third = transportFor(telegramLike, home)
+  const again = bootAround(third, home)
+  await sleep(1800)
+  await third.close()
+  check('album across a restart: a restart after it does not answer it again', again.texts().length === 0, `${again.texts().length} turn(s)`)
+  again.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

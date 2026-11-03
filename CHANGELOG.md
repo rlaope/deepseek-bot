@@ -218,7 +218,10 @@ the caveat about version numbers is at the bottom.
   left once the mention is taken out). Such a message is a turn now: the model gets the attachment list as for any
   message, and the person's message reads `(sent a file without text: <name>)`. A message with neither text nor
   files still opens nothing, and other Slack subtypes still do not come in. An unaddressed one in a thread the bot
-  takes part in (`replyMode: thread`) is a quiet turn, as a message with words is. Checked in the Discord, Telegram
+  takes part in (`replyMode: thread`) is a quiet turn, as a message with words is. A Telegram album, which comes as one
+  update per item with the caption on one of them, is one message: its text is the caption and its files every item's,
+  gathered until no item has come for 1.2 s; until then its items are not confirmed to Telegram, so a restart
+  meanwhile gets the album again whole. Taken one by one, it opened a turn per photo. Checked in the Discord, Telegram
   and Slack suites through the core, red before; against fake platform APIs only.
 - **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
   puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat

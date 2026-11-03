@@ -51,6 +51,8 @@ interface TelegramMessage {
   video?: TelegramFileRef
   voice?: TelegramFileRef
   reply_to_message?: TelegramMessage
+  /** An album: one message per item, sharing this id; the caption is on one of them. */
+  media_group_id?: string
 }
 interface TelegramCallbackQuery { id: string; from?: TelegramUser; data?: string; message?: TelegramMessage }
 interface TelegramUpdate { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; callback_query?: TelegramCallbackQuery }
@@ -104,7 +106,8 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
   let botUsername: string | null = null
   let stopped = false
   let polling = false
-  let offset = 0
+  /** The first update not yet taken. What getUpdates is sent stops before an album still being gathered. */
+  let next = 0
   let onMessage: ((message: InboundMessage) => void) | null = null
   let onAction: ((action: ActionEvent) => void) | null = null
 
@@ -299,16 +302,17 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     seenMessages.set(chat, ring)
   }
 
-  function parseUpdate(update: TelegramUpdate): InboundMessage | null {
-    const message = update.message
-    if (!message) return null
+  /** One message, or an album's items in order: its text is the caption, wherever it is, and its files every item's. */
+  function parseMessages(items: TelegramMessage[]): InboundMessage | null {
+    const message = items[0]
     if (message.from?.is_bot) return null
-    const text = message.text ?? message.caption ?? ''
-    const files = filesOf(message)
+    const said = items.find((item) => (item.text ?? item.caption ?? '').trim() !== '') ?? message
+    const text = said.text ?? said.caption ?? ''
+    const files = items.flatMap(filesOf)
     if (text.trim() === '' && files.length === 0) return null
-    const addressed = addressedToBot(message)
-    if (addressed && text.trim() !== '') remember(message, stripMention(text))
-    else if (text.trim() !== '') remember(message, text)
+    const addressed = items.some(addressedToBot)
+    if (addressed && text.trim() !== '') remember(said, stripMention(text))
+    else if (text.trim() !== '') remember(said, text)
     return {
       eventId: `tg-${message.chat.id}-${message.message_id}`,
       target: { channel: String(message.chat.id), threadTs: null },
@@ -321,16 +325,43 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     }
   }
 
+  /**
+   * Albums being gathered, by chat and media group. Telegram sends an album as one update per item, the caption on
+   * one of them, and says nothing of how many: the album is the items that came until none has for ALBUM_MS. Until it
+   * is taken, getUpdates is not sent an offset past its first item, so a process that stops meanwhile leaves the whole
+   * album to the next one; what came after it is sent again too, and skipped.
+   */
+  const ALBUM_MS = 1200
+  const albums = new Map<string, { first: number; items: TelegramMessage[]; timer: ReturnType<typeof setTimeout> | null }>()
+  function gather(updateId: number, message: TelegramMessage) {
+    const key = `${message.chat.id}:${message.media_group_id}`
+    const album = albums.get(key) ?? { first: updateId, items: [], timer: null }
+    albums.set(key, album)
+    album.items.push(message)
+    if (album.timer !== null) clearTimeout(album.timer)
+    album.timer = setTimeout(() => {
+      albums.delete(key)
+      const parsed = parseMessages(album.items.sort((a, b) => a.message_id - b.message_id))
+      if (parsed !== null && onMessage !== null) onMessage(parsed)
+    }, ALBUM_MS)
+  }
+
   let backoff = 2000
 
   async function pollOnce(): Promise<number> {
+    // While an album is gathered: its items stay unconfirmed, and the poll does not wait, or the album's end would wait
+    // for the next update to come.
+    const gathering = [...albums.values()].map((album) => album.first)
     const updates = await call<TelegramUpdate[]>('getUpdates', {
-      offset,
-      timeout: 30,
+      offset: Math.min(next, ...gathering),
+      timeout: gathering.length > 0 ? 0 : 30,
       allowed_updates: ['message', 'callback_query'],
     })
+    let taken = 0
     for (const update of updates) {
-      offset = update.update_id + 1
+      if (update.update_id < next) continue
+      next = update.update_id + 1
+      taken++
       // A button press. Answered at once, or the button keeps spinning on the person's screen.
       if (update.callback_query !== undefined) {
         const query = update.callback_query
@@ -341,9 +372,13 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
         }
         continue
       }
-      const message = parseUpdate(update)
+      if (!update.message) continue
+      if (update.message.media_group_id !== undefined) { gather(update.update_id, update.message); continue }
+      const message = parseMessages([update.message])
       if (message !== null && onMessage !== null) onMessage(message)
     }
+    // Only what was sent again: a pause, so the album's wait is not a loop of requests.
+    if (gathering.length > 0 && taken === 0) await new Promise((resolve) => setTimeout(resolve, 250))
     return updates.length
   }
 
@@ -492,6 +527,9 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
       const was = polling
       stopped = true
       polling = false
+      // An album still being gathered is left unconfirmed, for the next process to take whole.
+      for (const album of albums.values()) if (album.timer !== null) clearTimeout(album.timer)
+      albums.clear()
       return was
     },
   }

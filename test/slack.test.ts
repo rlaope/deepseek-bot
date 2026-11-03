@@ -1104,10 +1104,11 @@ function transportFor(api) {
 // A file shared with no words opens a turn: in a DM (a file_share whose text is empty), and with a mention and nothing
 // else (an app_mention whose text is only the mention). The model is told so and given the file. A message with
 // neither, or a mention with nothing after it, opens nothing; other subtypes still do not come in. The transport
-// dropped all of these for their empty text, and the core would have too.
+// dropped all of these for their empty text, and the core would have too. In mode 'all' as well, where the channel's
+// file_share for a mention is let through by the mode and dropped only because it names the bot (its app_mention is
+// the turn): in mode 'mention' the mode alone drops it.
 {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-  const home = mkdtempSync(join(tmpdir(), 'deepbot-slack-files-'))
   const api = stubSlack()
   const slackFetch = globalThis.fetch
   globalThis.fetch = (async (url, init) => {
@@ -1115,43 +1116,46 @@ function transportFor(api) {
     const bytes = Buffer.from('file body')
     return { ok: true, status: 200, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }
   }) as typeof fetch
-  const sockets = []
-  class EventSocket {
-    handlers: Record<string, Array<(data: unknown) => void>>
-    constructor() { this.handlers = {}; sockets.push(this) }
-    addEventListener(type, fn) { (this.handlers[type] ??= []).push(fn) }
-    send() {}
-    close() {}
-    emit(type, data) { for (const fn of this.handlers[type] ?? []) fn(data) }
+  for (const mode of ['mention', 'all']) {
+    const home = mkdtempSync(join(tmpdir(), 'deepbot-slack-files-'))
+    const sockets = []
+    class EventSocket {
+      handlers: Record<string, Array<(data: unknown) => void>>
+      constructor() { this.handlers = {}; sockets.push(this) }
+      addEventListener(type, fn) { (this.handlers[type] ??= []).push(fn) }
+      send() {}
+      close() {}
+      emit(type, data) { for (const fn of this.handlers[type] ?? []) fn(data) }
+    }
+    const t = createSlackTransport({
+      cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, replyMode: mode, downloadAttachments: true, maxAttachmentBytes: 1024 * 1024, attachmentTextChars: 500 },
+      log: () => {}, sessionCwd: async () => home, credential: async () => 'token-for-test', onHealth: () => {},
+      WebSocketImpl: EventSocket,
+    })
+    const core = bootAround(t, home, { replyMode: mode })
+    await sleep(300)
+    const send = (id, event) => sockets[0].emit('message', { data: JSON.stringify({ envelope_id: id, type: 'events_api', payload: { event_id: id, event } }) })
+    const file = (name) => [{ id: `F-${name}`, name, mimetype: 'text/plain', size: 9, url_private_download: `https://files.example/${name}` }]
+    send('Ef1', { type: 'message', subtype: 'file_share', channel: 'D1', channel_type: 'im', user: 'U7', ts: '8.1', text: '', files: file('dm.txt') })
+    // With a mention: Slack sends the app_mention and the channel's file_share, which names the bot; one turn.
+    send('Ef2', { type: 'app_mention', channel: 'C1', user: 'U7', ts: '9.1', text: '<@U1>', files: file('mention.txt') })
+    send('Ef3', { type: 'message', subtype: 'file_share', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '9.1', text: '<@U1>', files: file('mention.txt') })
+    // Neither words nor files; a mention and nothing else; a subtype that is not a person's message, with a file.
+    send('Ef4', { type: 'message', channel: 'D2', channel_type: 'im', user: 'U7', ts: '8.2', text: '' })
+    send('Ef5', { type: 'app_mention', channel: 'C2', user: 'U7', ts: '9.2', text: '<@U1> ' })
+    send('Ef6', { type: 'message', subtype: 'channel_join', channel: 'D3', channel_type: 'im', user: 'U7', ts: '8.3', text: '', files: file('join.txt') })
+    await sleep(900)
+    await t.close()
+    const said = core.texts()
+    check(`files only (${mode}): a Slack DM file_share without text opens a turn, and a mention with only a file one more: two`, said.length === 2, `${said.length} turn(s)`)
+    const dm = said.find((text) => /dm\.txt/.test(text)) ?? ''
+    const mention = said.find((text) => /mention\.txt/.test(text)) ?? ''
+    check(`files only (${mode}): the model is told the person sent a file without text`, /sent a file without text: dm\.txt/.test(dm) && /sent a file without text: mention\.txt/.test(mention), `${dm.slice(-120)} | ${mention.slice(-120)}`)
+    check(`files only (${mode}): and is given the file`, /- dm\.txt[^\n]*→ \S*8-1-dm\.txt/.test(dm) && /file body/.test(dm) && /- mention\.txt[^\n]*→ \S*9-1-mention\.txt/.test(mention), dm.slice(0, 300))
+    core.done()
+    rmSync(home, { recursive: true, force: true })
   }
-  const t = createSlackTransport({
-    cfg: { platform: 'slack', stateDir: '.', targetChannels: ['*'], chunkChars: 4000, replyMode: 'mention', downloadAttachments: true, maxAttachmentBytes: 1024 * 1024, attachmentTextChars: 500 },
-    log: () => {}, sessionCwd: async () => home, credential: async () => 'token-for-test', onHealth: () => {},
-    WebSocketImpl: EventSocket,
-  })
-  const core = bootAround(t, home)
-  await sleep(300)
-  const send = (id, event) => sockets[0].emit('message', { data: JSON.stringify({ envelope_id: id, type: 'events_api', payload: { event_id: id, event } }) })
-  const file = (name) => [{ id: `F-${name}`, name, mimetype: 'text/plain', size: 9, url_private_download: `https://files.example/${name}` }]
-  send('Ef1', { type: 'message', subtype: 'file_share', channel: 'D1', channel_type: 'im', user: 'U7', ts: '8.1', text: '', files: file('dm.txt') })
-  // With a mention: Slack sends the app_mention and the channel's file_share, which names the bot; one turn.
-  send('Ef2', { type: 'app_mention', channel: 'C1', user: 'U7', ts: '9.1', text: '<@U1>', files: file('mention.txt') })
-  send('Ef3', { type: 'message', subtype: 'file_share', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '9.1', text: '<@U1>', files: file('mention.txt') })
-  // Neither words nor files; a mention and nothing else; a subtype that is not a person's message, with a file.
-  send('Ef4', { type: 'message', channel: 'D2', channel_type: 'im', user: 'U7', ts: '8.2', text: '' })
-  send('Ef5', { type: 'app_mention', channel: 'C2', user: 'U7', ts: '9.2', text: '<@U1> ' })
-  send('Ef6', { type: 'message', subtype: 'channel_join', channel: 'D3', channel_type: 'im', user: 'U7', ts: '8.3', text: '', files: file('join.txt') })
-  await sleep(900)
-  await t.close()
   api.restore()
-  const said = core.texts()
-  check('files only: a Slack DM file_share without text opens a turn, and a mention with only a file another: two', said.length === 2, `${said.length} turn(s)`)
-  const dm = said.find((text) => /dm\.txt/.test(text)) ?? ''
-  const mention = said.find((text) => /mention\.txt/.test(text)) ?? ''
-  check('files only: the model is told the person sent a file without text', /sent a file without text: dm\.txt/.test(dm) && /sent a file without text: mention\.txt/.test(mention), `${dm.slice(-120)} | ${mention.slice(-120)}`)
-  check('files only: and is given the file', /- dm\.txt[^\n]*→ \S*8-1-dm\.txt/.test(dm) && /file body/.test(dm) && /- mention\.txt[^\n]*→ \S*9-1-mention\.txt/.test(mention), dm.slice(0, 300))
-  core.done()
-  rmSync(home, { recursive: true, force: true })
 }
 
 const failed = results.filter((r) => !r.ok)

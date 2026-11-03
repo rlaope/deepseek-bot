@@ -38,6 +38,10 @@ is built before the thing it stands on. The detailed history of each milestone i
 
 ## Open
 
+- **A wordless turn opens even when no attachment is usable.** A message of files alone is a turn whether or not
+  anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
+  no download URL, a Telegram voice note or animation, a Discord voice message. It costs a model call that can only say
+  it cannot open the file. Not fixed.
 - **Workspace temp directories are never removed.** Each workspace (a tenant, a scenario's) leaves a
   `deepbot-cmd-<hash>` directory in the user's temp; macOS clears it only after days unused. Pruning old ones could
   join the log rotation job.
@@ -228,7 +232,8 @@ Decided against:
   mention): fake platform APIs only. The event shapes are from the platforms' documentation, not seen: that a Slack
   DM's `file_share` arrives with empty text, an app_mention with only a file carries the file and only the mention,
   and a Telegram photo without a caption has no `text`. Whether a model asks or guesses on a picture with no words
-  is not measured.
+  is not measured. A Telegram album is gathered by its `media_group_id` until no item has come for 1.2 s; how far
+  apart Telegram sends an album's items was not measured, and items further apart than that are two messages.
 - Slack approval buttons in a real workspace: they need Interactivity turned on in the app's
   settings; without it a press does nothing and the person types the answer, which the request offers.
 - Slack's working status in a live workspace: no turn has run on this code there yet. Which method a
