@@ -28,8 +28,9 @@ export interface Target {
   /** Where the message goes: a channel, chat, or guild id. */
   channel: string
   /**
-   * The thread or reply chain. null on a platform without threads (a Telegram
-   * chat), which makes the session per conversation rather than per thread.
+   * The thread: a Slack thread, a Telegram forum topic. null where there is none (a
+   * Telegram chat or its General topic, a Discord channel or thread, which is a channel
+   * of its own), which makes the session per conversation rather than per thread.
    */
   threadTs: string | null
 }
@@ -50,6 +51,11 @@ export interface InboundMessage {
   raw: unknown
   /** The id the sender gave the message (the terminal does), so it can take it back while it waits. */
   clientId?: string
+  /**
+   * The channel `target.channel` is inside, where a platform nests one in another: a Discord thread or forum post,
+   * in its channel. The channel allowlist and the tenant map accept a message by either.
+   */
+  parent?: string
 }
 
 /**
@@ -215,9 +221,10 @@ export interface Transport {
   /**
    * Send, or replace a message already sent (progress turning into the answer).
    * `buttons` is honoured by transports that can render them and ignored by those that
-   * cannot — the caller asks, the transport decides.
+   * cannot — the caller asks, the transport decides. `replyTo`, with an answer, is the
+   * message it answers (its `ts`), for a platform that attaches a reply to its question.
    */
-  post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[]; answer?: boolean }): Promise<PostedMessage | null>
+  post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[]; answer?: boolean; replyTo?: string }): Promise<PostedMessage | null>
 
   /**
    * Messages newer than `sinceTs`, so the adapter can send a delta instead of the

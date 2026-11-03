@@ -101,13 +101,15 @@ app-level token; generate that under Basic Information → App-Level Tokens. By 
 2. **Socket Mode** → on → generate an app-level token with `connections:write` (`xapp-…`). No public
    URL is needed.
 3. **OAuth & Permissions** → bot scopes: `app_mentions:read`, `chat:write`, `channels:read`,
-   `channels:history` (plus `groups:history` for private channels and `im:history` for DMs),
+   `channels:history` (plus `groups:history` for private channels, `im:history` for DMs and `mpim:history`
+   for group DMs),
    `users:read`, `files:read` (attachments), `files:write` (document uploads), and `reactions:write` and
    `reactions:read` (the progress marks on the person's message: 👀 when taken, a digit while it runs, ✅, ❌
    or ⏹️ at the end; without the first the bot goes on without them, asking again only after a restart; the
    second lets a restart take off only the marks it left).
-4. **Event Subscriptions** → subscribe to `app_mention` (and `message.im` for DMs; `message.channels` and
-   `message.groups` for `replyMode: thread`, below).
+4. **Event Subscriptions** → subscribe to `app_mention` (and `message.im` for DMs; `message.mpim` for group
+   DMs, where a mention arrives as the message; `message.channels` and `message.groups` for
+   `replyMode: thread`, below).
    **Interactivity & Shortcuts** → on (no request URL is needed in Socket Mode), for the approval
    buttons; without it a press does nothing and the person types allow / deny (or 허용 / 거부, 允许 / 拒绝) instead.
 5. Install it to the workspace and copy the bot token (`xoxb-…`). Give both tokens to
@@ -389,11 +391,14 @@ unconfined. To change where a deployment's own private data is protected from th
 set `DEEPBOT_DENY_READ` (colon-separated paths) before installing the services.
 
 `targetChannels` in the profile's `cordis.patch.yml` accepts channel ids or `'*'` for every channel
-the bot was invited to; **the plugin refuses to start with an empty list**. `replyMode: mention`
-answers @-mentions in channels (DMs always); `'all'` answers every human message in them. `thread`
+the bot was invited to; **the plugin refuses to start with an empty list**. A channel's id covers
+the threads and forum posts in it (Discord), and a group's its topics (Telegram, each topic its own
+conversation). `replyMode: mention` answers @-mentions in channels and group DMs (DMs always: a group
+DM is several people, so it is a channel here); `'all'` answers every human message in them. `thread`
 takes a mention to start, and then every message in a thread the bot takes part in, mention or not, for
 a day after it was last mentioned or spoke there. **`thread` and `all` are Slack's only.** On Discord and
-Telegram the bot answers a mention, a reply to it, or a direct message, whatever the mode; there the
+Telegram the bot answers a mention, a reply to it, or a direct message, whatever the mode (on Telegram a
+command that names it, `/help@yourbot`, is a mention; a bare `/help` in a group is not); there the
 plugin refuses to start with `thread` or `all`, and `dsh gateway setup discord` or `telegram` refuses to
 switch a profile that has either (set `replyMode: mention` first). With the terminal beside Slack the
 mode is Slack's; what is typed in the terminal is always for the bot. Told the message

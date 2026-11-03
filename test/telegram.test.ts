@@ -317,15 +317,15 @@ function groupMessage(overrides = {}) {
   check('it stops when the turn is over', actions().length === sent, `${sent} → ${actions().length}`)
 }
 
-// 13. Uploads: a document the turn made reaches the chat with sendDocument, as a reply where the
-// conversation is one.
+// 13. Uploads: a document the turn made reaches the chat with sendDocument, in the conversation's forum topic
+// where it is one (a reply to the topic's id had sent it to General as a reply).
 {
   const api = fakeApi()
   const requests = []
   const fetchImpl = async (url, init: RequestInit = {}) => {
     if (init?.body instanceof FormData) {
       const file = init.body.get('document') as File | null
-      requests.push({ method: String(url).split('/').pop(), chat: init.body.get('chat_id'), reply: init.body.get('reply_to_message_id'), name: file?.name, bytes: file ? Buffer.from(await file.arrayBuffer()).toString('utf8') : null })
+      requests.push({ method: String(url).split('/').pop(), chat: init.body.get('chat_id'), reply: init.body.get('reply_to_message_id'), topic: init.body.get('message_thread_id'), name: file?.name, bytes: file ? Buffer.from(await file.arrayBuffer()).toString('utf8') : null })
       return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 500 } }) }
     }
     return api.fetchImpl(url, init)
@@ -334,7 +334,7 @@ function groupMessage(overrides = {}) {
   await t.identity()
   const ok = await t.uploadFile({ channel: '7', threadTs: '10' }, '/somewhere/report.pdf', undefined, Buffer.from('pdf bytes'))
   check('a document is sent with sendDocument', ok === true && requests[0]?.method === 'sendDocument' && requests[0]?.chat === '7', JSON.stringify(requests[0]))
-  check('as a reply in the conversation', requests[0]?.reply === '10')
+  check('in the conversation\'s topic', requests[0]?.topic === '10' && requests[0]?.reply === null, JSON.stringify(requests[0]))
   check('with its own name and the bytes given', requests[0]?.name === 'report.pdf' && requests[0]?.bytes === 'pdf bytes')
 }
 
@@ -661,6 +661,77 @@ function groupMessage(overrides = {}) {
   check('unreadable: and the chat\'s next message is still taken', JSON.stringify(asked) === JSON.stringify(['after it']), JSON.stringify(asked))
   core.done()
   rmSync(home, { recursive: true, force: true })
+}
+
+// 20. Forum topics: a supergroup with topics on gives each topic message its topic's id, and the topic is the
+// conversation's thread — its own session, history, answers and typing. General, and a reply in a group without
+// topics (which carries a thread id of its own), stay the chat.
+{
+  const forum = { id: -1008, type: 'supergroup', is_forum: true }
+  const at = (n: number, extra: Record<string, unknown>) => ({ update_id: 60 + n, message: { message_id: 60 + n, from: { id: 5, username: 'alice' }, chat: forum, ...extra } })
+  const mention = (text: string) => ({ text, entities: [{ type: 'mention', offset: 0, length: 13 }] })
+  const api = fakeApi({ updates: [
+    at(1, { ...mention('@deepbot_test in the topic'), message_thread_id: 77, is_topic_message: true, reply_to_message: { message_id: 77, from: { id: 5 }, chat: forum, forum_topic_created: { name: 'Plans' } } }),
+    at(2, { ...mention('@deepbot_test in General') }),
+    at(3, { text: 'chatter in another topic', message_thread_id: 78, is_topic_message: true }),
+    { update_id: 64, message: { message_id: 64, from: { id: 5, username: 'alice' }, chat: { id: -1009, type: 'supergroup' }, ...mention('@deepbot_test a reply'), message_thread_id: 50, reply_to_message: { message_id: 50, from: { id: 6 }, chat: { id: -1009, type: 'supergroup' } } } },
+    // A topic the bot made: every message in it "replies" to the topic's first message, which is the bot's.
+    at(5, { text: 'not to the bot', message_thread_id: 79, is_topic_message: true, reply_to_message: { message_id: 79, from: { id: 42, is_bot: true }, chat: forum, forum_topic_created: { name: 'Bot topic' } } }),
+    { update_id: 66, callback_query: { id: 'Q2', from: { id: 5 }, data: 'approval:allow:1', message: { message_id: 90, chat: forum, message_thread_id: 77, is_topic_message: true } } },
+  ] })
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'tg-')))
+  const received = []
+  const actions = []
+  await t.connect({ onMessage: (m) => received.push(m), onAction: (a) => actions.push(a) })
+  await sleep(1000)
+  await t.close()
+  const by = (id) => received.find((m) => m.ts === String(id))
+  check('topic: a topic message is the chat, in the topic', by(61)?.target?.channel === '-1008' && by(61)?.target?.threadTs === '77', JSON.stringify(by(61)?.target))
+  check('topic: General is the chat itself', by(62)?.target?.threadTs === null, JSON.stringify(by(62)?.target))
+  check('topic: a reply in a group without topics is the chat itself', by(64)?.target?.threadTs === null && by(64)?.addressed === true, JSON.stringify(by(64)?.target))
+  check('topic: a topic the bot made does not make every message in it addressed', by(65)?.addressed === false)
+  check('topic: a button pressed in a topic is that topic\'s', actions[0]?.target?.channel === '-1008' && actions[0]?.target?.threadTs === '77', JSON.stringify(actions[0]?.target))
+  const history = await t.fetchHistory({ channel: '-1008', threadTs: '78' }, { currentTs: '999', sinceTs: null, limit: 20, maxChars: 4000 })
+  check('topic: history is the topic\'s own', /chatter in another topic/.test(history.text) && !/in the topic|in General/.test(history.text), history.text)
+  // Sent where it belongs: the topic's id on the message and on the typing, none for General.
+  const t2 = transportFor(api, mkdtempSync(join(tmpdir(), 'tg-')), { typingIntervalMs: 1000 })
+  await t2.identity()
+  await t2.post({ channel: '-1008', threadTs: '77' }, 'in the topic')
+  await t2.post({ channel: '-1008', threadTs: null }, 'in General')
+  t2.startTyping({ channel: '-1008', threadTs: '77' })()
+  const out = api.calls.filter((c) => c.method === 'sendMessage')
+  check('topic: a message to a topic names it, one to General does not', out.at(-2)?.body?.message_thread_id === 77 && out.at(-1)?.body?.message_thread_id === undefined, JSON.stringify(out.slice(-2).map((c) => c.body)))
+  check('topic: typing in a topic names it', api.calls.filter((c) => c.method === 'sendChatAction').at(-1)?.body?.message_thread_id === 77)
+  // A reply only where it is asked for and in a group.
+  await t2.post({ channel: '-1008', threadTs: null }, 'the answer', { answer: true, replyTo: '62' })
+  await t2.post({ channel: '7', threadTs: null }, 'the answer', { answer: true, replyTo: '10' })
+  const [inGroup, inPrivate] = api.calls.filter((c) => c.method === 'sendMessage').slice(-2)
+  check('reply: an answer in a group replies to its question', inGroup?.body?.reply_to_message_id === 62 && inGroup?.body?.allow_sending_without_reply === true, JSON.stringify(inGroup?.body))
+  check('reply: an answer in a private chat does not', inPrivate?.body?.reply_to_message_id === undefined, JSON.stringify(inPrivate?.body))
+}
+
+// 21. A command in a group: `/help@thisbot` is for this bot, and its name is stripped; `/help@otherbot` is not, and a
+// bare `/help` in a group is not either (several bots may have one) unless it replies to the bot.
+{
+  const command = (n: number, text: string, extra: Record<string, unknown> = {}) => ({ update_id: 70 + n, message: { message_id: 70 + n, from: { id: 5, username: 'alice' }, chat: { id: -1010, type: 'supergroup' }, text, entities: [{ type: 'bot_command', offset: 0, length: text.split(' ')[0].length }], ...extra } })
+  const api = fakeApi({ updates: [
+    command(1, '/help@deepbot_test'),
+    command(2, '/help@otherbot'),
+    command(3, '/help'),
+    command(4, '/status@DeepBot_Test now'),
+    command(5, '/help', { reply_to_message: { message_id: 3, from: { id: 42, is_bot: true }, chat: { id: -1010, type: 'supergroup' } } }),
+  ] })
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'tg-')))
+  const received = []
+  await t.connect({ onMessage: (m) => received.push(m) })
+  await sleep(900)
+  await t.close()
+  const by = (id) => received.find((m) => m.ts === String(id))
+  check('command: /help@thisbot is addressed, and its name stripped', by(71)?.addressed === true && by(71)?.text === '/help', JSON.stringify(by(71)?.text))
+  check('command: /help@otherbot is not addressed', by(72)?.addressed === false)
+  check('command: a bare /help in a group is not addressed', by(73)?.addressed === false)
+  check('command: the bot\'s name in any case, with words after it', by(74)?.addressed === true && by(74)?.text === '/status now', JSON.stringify(by(74)?.text))
+  check('command: a bare /help replying to the bot is addressed', by(75)?.addressed === true)
 }
 
 const failed = results.filter((r) => !r.ok)

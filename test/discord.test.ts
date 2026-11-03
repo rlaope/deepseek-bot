@@ -25,7 +25,7 @@ function check(name, ok, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** A websocket that behaves like Discord's gateway, and a REST API behind it. */
-function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; historyFails?: boolean; history?: unknown[] } = {}) {
+function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; historyFails?: boolean; history?: unknown[]; dispatches?: Array<{ t: string; d: unknown }>; channels?: Record<string, unknown> } = {}) {
   const sent = []
   const rest = []
   const handlers: Record<string, Array<(event: unknown) => void>> = {}
@@ -49,6 +49,7 @@ function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; histor
         // Identify: answer with READY, then the queued dispatches.
         setTimeout(() => {
           emit({ op: 0, t: 'READY', d: { user: { id: '9', username: 'bot' } } })
+          for (const frame of options.dispatches ?? []) emit({ op: 0, ...frame })
           for (const update of options.updates ?? []) emit({ op: 0, t: 'MESSAGE_CREATE', d: update })
         }, 10)
       }
@@ -61,6 +62,8 @@ function fakeDiscord(options: { updates?: unknown[]; editTarget?: string; histor
     rest.push({ path, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : null })
     const json = (value, ok = true, status = 200) => ({ ok, status, json: async () => value, text: async () => JSON.stringify(value), arrayBuffer: async () => new ArrayBuffer(0) })
     if (path === '/users/@me') return json({ id: '9', username: 'testbot', bot: true })
+    const channel = /^\/channels\/([^/?]+)$/.exec(path)?.[1]
+    if (channel !== undefined && (init.method ?? 'GET') === 'GET' && options.channels?.[channel] !== undefined) return json(options.channels[channel])
     if (path.startsWith('/channels/') && path.includes('/messages') && !path.includes('?')) {
       if ((init.method ?? 'POST') === 'POST') return json({ id: `m${rest.length}`, channel_id: 'C1' })
       return json({ id: options.editTarget ?? 'm1', channel_id: 'C1' })
@@ -516,6 +519,41 @@ function message(overrides = {}) {
   check('files only: a Discord upload without text opens one turn', said.length === 1, `${said.length} turn(s)`)
   check('files only: the model is told the person sent a file without text', /sent a file without text: notes\.txt/.test(said[0] ?? ''), (said[0] ?? '').slice(-200))
   check('files only: and is given the file', /\[attachments[^\n]*\]\n- notes\.txt[^\n]*→ \S*700-notes\.txt/.test(said[0] ?? '') && /file body/.test(said[0] ?? ''), (said[0] ?? '').slice(0, 300))
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
+// 14. A thread is a channel of its own, so an allowlist naming its parent did not cover it: the transport puts the
+// parent on the message, learned from the gateway's thread events or, for a channel it has not heard of, asked once.
+{
+  const home = mkdtempSync(join(tmpdir(), 'dc-home-'))
+  const api = fakeDiscord({
+    dispatches: [{ t: 'GUILD_CREATE', d: { id: 'G1', channels: [{ id: 'P1', type: 0, parent_id: 'CAT1' }, { id: 'P2', type: 0, parent_id: 'CAT1' }], threads: [{ id: 'T1', type: 11, parent_id: 'P1' }] } },
+      // T2 is learned from its own THREAD_CREATE, after the guild came up.
+      { t: 'THREAD_CREATE', d: { id: 'T2', type: 11, parent_id: 'P2', guild_id: 'G1' } }],
+    channels: { F1: { id: 'F1', type: 11, parent_id: 'P1' } },
+    updates: [
+      message({ id: '800', channel_id: 'T1', content: '<@9> in the thread' }),
+      message({ id: '801', channel_id: 'T2', content: '<@9> under the other channel' }),
+      message({ id: '802', channel_id: 'F1', content: '<@9> a forum post' }),
+      message({ id: '803', channel_id: 'P2', content: '<@9> in a channel under a category' }),
+    ],
+  })
+  const t = transportFor(api, home)
+  const received = []
+  const core = bootAround({ ...t, connect: (handlers) => t.connect({ ...handlers, onMessage: (m) => { received.push(m); handlers.onMessage(m) } }) }, home, { targetChannels: ['P1', 'CAT1'] })
+  await sleep(600)
+  await t.close()
+  const by = (id) => received.find((m) => m.ts === id)
+  check('thread: a message in a thread carries its parent channel', by('800')?.parent === 'P1' && by('800')?.target?.channel === 'T1', JSON.stringify(by('800')?.target) + ' ' + by('800')?.parent)
+  check('thread: one the transport has not heard of is asked for once, and carries its parent', by('802')?.parent === 'P1' && api.rest.filter((c) => c.method === 'GET' && c.path === '/channels/F1').length === 1,
+    JSON.stringify(api.rest.filter((c) => c.method === 'GET').map((c) => c.path)))
+  check('thread: a channel is not a thread of its category (no parent)', by('803') !== undefined && by('803').parent === undefined, String(by('803')?.parent))
+  check('thread: the gateway\'s own events spare a lookup', !api.rest.some((c) => c.method === 'GET' && (c.path === '/channels/T1' || c.path === '/channels/T2' || c.path === '/channels/P2')),
+    JSON.stringify(api.rest.filter((c) => c.method === 'GET').map((c) => c.path)))
+  const said = core.texts().join('\n')
+  check('thread: under an allowed channel it opens a turn', /in the thread/.test(said) && /a forum post/.test(said), said.slice(0, 200))
+  check('thread: under a channel not allowed it does not', !/under the other channel/.test(said) && !/under a category/.test(said), said.slice(0, 300))
   core.done()
   rmSync(home, { recursive: true, force: true })
 }

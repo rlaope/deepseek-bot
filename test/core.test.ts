@@ -286,6 +286,20 @@ const textOf = (message) => (message?.content ?? []).map((block) => block?.text 
   t.done()
 }
 
+// 2b. A thread is a channel of its own on Discord: the allowlist takes it by the parent the transport puts on it.
+{
+  const t = boot()
+  await sleep(60)
+  t.transport.deliver(t.transport.message({ target: { channel: 'T_UNDER', threadTs: null }, parent: 'C_ALLOWED' }))
+  await sleep(300)
+  check('a thread under an allowed channel is taken', t.transport.historyCalls.some((c) => c.target?.channel === 'T_UNDER'), JSON.stringify(t.transport.historyCalls.map((c) => c.target)))
+  const before = t.transport.historyCalls.length
+  t.transport.deliver(t.transport.message({ eventId: 'e-other-parent', target: { channel: 'T_ELSE', threadTs: null }, parent: 'C_OTHER' }))
+  await sleep(200)
+  check('a thread under a channel outside the allowlist is ignored', t.transport.historyCalls.length === before)
+  t.done()
+}
+
 // 3. The transport decides what is "addressed"; the core obeys it.
 {
   const t = boot()
@@ -1636,6 +1650,49 @@ for (const remove of [false, true]) {
       JSON.stringify(f.api.calls.map((c) => c.call)))
     f.t.done()
   }
+
+  // Telegram: an answer in a group is a reply to the question, on its first part only, so a busy group can tell what
+  // it answers; and in a forum topic the answer, the typing and the working message stay in the topic (they went to
+  // General). In a private chat the answer is not a reply: there it follows the question anyway.
+  const inChat = (channel: string, threadTs: string | null, text: string) => {
+    const api = fakeTelegramApi(false)
+    let deliver: ((m: unknown) => void) | null = null
+    const t = boot({
+      agent: 'answer', answer: { text, delayMs: 300 }, home: mkdtempSync(join(tmpdir(), 'deepbot-telegram-')),
+      config: {
+        platform: 'telegram', targetChannels: ['*'],
+        transportFactory: (host) => {
+          const made = createTelegramTransport({ ...host, cfg: { ...host.cfg, telegramTokenRef: 'T' }, credential: async () => 'token', fetchImpl: api.fetchImpl })
+          return Object.assign(made, { connect: async (handlers) => { await made.authenticate(); deliver = handlers.onMessage } })
+        },
+      },
+    })
+    const send = () => deliver?.({ eventId: `e-tg-${Math.random()}`, target: { channel, threadTs }, ts: '11', text: 'slow one', user: '5', addressed: true, files: [], raw: {} })
+    return { t, api, send }
+  }
+  const sends = (api) => api.calls.filter((c) => c.call === 'sendMessage')
+  const g = inChat('-1008', '77', 'x'.repeat(9000))
+  await sleep(80)
+  g.send()
+  await sleep(900)
+  const [working, ...answer] = sends(g.api)
+  check('telegram: a group answer replies to the question, on its first part', answer[0]?.body?.reply_to_message_id === 11 && answer[0]?.body?.allow_sending_without_reply === true,
+    JSON.stringify(answer[0]?.body ?? {}).slice(0, 160))
+  check('telegram: and only on its first part, not on the working message', answer.length === 3 && answer.slice(1).every((c) => c.body?.reply_to_message_id === undefined) && working?.body?.reply_to_message_id === undefined,
+    JSON.stringify(sends(g.api).map((c) => c.body?.reply_to_message_id ?? null)))
+  check('telegram: in a topic the answer and the working message stay in it', sends(g.api).length === 4 && sends(g.api).every((c) => c.body?.message_thread_id === 77),
+    JSON.stringify(sends(g.api).map((c) => c.body?.message_thread_id ?? null)))
+  const typed = g.api.calls.filter((c) => c.call === 'sendChatAction')
+  check('telegram: and so does the typing', typed.length >= 1 && typed.every((c) => c.body?.message_thread_id === 77), JSON.stringify(typed.map((c) => c.body)))
+  g.t.done()
+  const d = inChat('7', null, 'the answer')
+  await sleep(80)
+  d.send()
+  await sleep(700)
+  const direct = sends(d.api).filter((c) => c.body?.text === 'the answer')
+  check('telegram: a private answer is not a reply, and names no topic', direct.length === 1 && direct[0].body.reply_to_message_id === undefined && direct[0].body.message_thread_id === undefined,
+    JSON.stringify(direct.map((c) => c.body)))
+  d.t.done()
 }
 
 // 32. A transport with native typing uses it instead, and the typing ends with the turn.
@@ -2304,6 +2361,28 @@ for (const remove of [false, true]) {
   const homeSections = []
   await t.created[1]?.setup?.({ systemPrompt: { section: (s) => { homeSections.push(s); return () => {} } } })
   check('home: its identity still offers watches', /its watches/.test(String(homeSections.find((s) => s.name === 'deepbot:identity')?.text ?? '')))
+  for (const dir of [home, tenants]) rmSync(dir, { recursive: true, force: true })
+  t.done()
+}
+
+// 41b. A thread the tenant map does not name is its channel's tenant, and stays so: the thread's own id was looked up,
+// found nothing, and the conversation fell to the default — the home here, another tenant's in a deployment with one.
+{
+  const home = mkdtempSync(join(tmpdir(), 'home-'))
+  const tenants = mkdtempSync(join(tmpdir(), 'tenants-'))
+  const t = boot({ agent: 'ready', home, config: { targetChannels: ['*'], tenantIsolation: true, tenantChannels: { C_ACME: 'acme' }, tenantRoot: tenants } })
+  await sleep(80)
+  t.transport.deliver(t.transport.message({ text: 'thread 질문', target: { channel: 'T_ACME', threadTs: null }, parent: 'C_ACME' }))
+  await sleep(400)
+  const sent = t.followups.map(textOf).join('\n')
+  check('tenant: a thread under a tenant\'s channel works in that tenant', /Your home is \S*acme\./.test(sent), (sent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
+  check('tenant: and it is recorded, as only its messages carry the parent', t.read().tenantOf?.T_ACME === 'acme', JSON.stringify(t.read().tenantOf))
+  // The control: a thread under a channel the map does not name stays in the home.
+  const before = t.followups.length
+  t.transport.deliver(t.transport.message({ eventId: 'e-home-thread', text: 'home 질문', target: { channel: 'T_HOME', threadTs: null }, parent: 'C_HOME' }))
+  await sleep(400)
+  const homeSent = t.followups.slice(before).map(textOf).join('\n')
+  check('tenant: a thread under an unmapped channel stays in the home', homeSent.includes(`Your home is ${home}.`) && t.read().tenantOf?.T_HOME === undefined, (homeSent.match(/Your home is [^\n]*/) ?? ['(none)'])[0])
   for (const dir of [home, tenants]) rmSync(dir, { recursive: true, force: true })
   t.done()
 }

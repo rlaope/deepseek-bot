@@ -226,6 +226,34 @@ the caveat about version numbers is at the bottom.
 
 ### Fixed
 
+- **Threads, topics and group DMs went to the wrong place, or nowhere.**
+  - Discord: a thread or forum post is a channel of its own, so a `targetChannels` entry naming its channel did not
+    cover it, and the tenant map sent it to the default workspace. The transport now learns each thread's channel from
+    the gateway (a guild's active threads as it comes up, then each thread made, changed or listed; a channel's
+    category does not count) or, for a channel it has not heard of, asks once, and puts it on the message. The
+    allowlist accepts a message by its channel or that parent; the tenant map does too, and records the thread's tenant
+    with its first message, since only its messages say whose it is. A lookup that fails is taken as no parent: the
+    thread is ignored rather than one under another channel let in.
+  - Telegram forum topics: a topic's id is now the conversation's thread, so each topic is its own session and history,
+    as a Slack thread is; the answer, the working message, the typing and uploads carry `message_thread_id` (they went
+    to General). General, private chats and groups without topics are the chat as before. A button pressed in a topic
+    is that topic's. The topic's opening message, which every message in a topic replies to, no longer counts as a
+    reply to the bot. Uploads used to send the conversation's thread as `reply_to_message_id`.
+  - Telegram groups: an answer replies to its question (`reply_to_message_id`, with `allow_sending_without_reply`), on
+    its first part only; a private chat's answer does not, as it follows the question anyway. `/cmd@thisbot` is
+    addressed and its name stripped; `/cmd@otherbot` and a bare `/cmd` in a group are not (several bots may have one),
+    unless it replies to the bot.
+  - Slack group DMs: the manifest `dsh gateway setup` makes did not subscribe to `message.mpim` (nor ask for
+    `mpim:history`), and the code took every group DM message as addressed, so in a group DM of several people each
+    message would have been a turn. A group DM is a channel now: a mention is answered, other messages follow
+    `replyMode` as in a channel. Its mention is taken from the message itself, and from its `app_mention` if Slack sends
+    one too, once: before, both would have been a turn. An existing app needs `message.mpim` and `mpim:history` added
+    and reinstalling.
+
+  Checked in the Discord, Telegram, Slack, gateway and core suites, each red before, against fakes only. Not seen live:
+  Discord's thread events and `GET /channels/{id}` for a forum post, Telegram's `message_thread_id` on each method in a
+  real forum, and whether Slack sends `app_mention` in a group DM.
+
 - **A message of files alone got nothing, on every platform.** A Discord upload without text, a Telegram photo
   without a caption and a file shared in a Slack DM were each dropped: the core returned on the empty text, and
   Slack's transport before it (a DM's `file_share` has empty text, and an app_mention with only a file has nothing

@@ -127,6 +127,15 @@ Decided against:
 
 ## Unverified
 
+- Threads, topics and group DMs, checked against fake APIs only (`test/discord.test.ts` 14, `test/telegram.test.ts`
+  13, 20, 21, `test/slack.test.ts` replyMode, `test/gateway.test.ts` 9, `test/core.test.ts` 2b, 31, 41b). Not seen
+  live: that Discord sends a guild's threads in GUILD_CREATE and a new forum post as THREAD_CREATE before its first
+  message (a missed one costs one `GET /channels/{id}`), that a private thread the bot was not added to is readable
+  that way; that Telegram takes `message_thread_id` on sendMessage, sendChatAction and sendDocument in a forum and
+  `reply_to_message_id` with `allow_sending_without_reply`; whether Slack sends `app_mention` for a group DM mention
+  (either way it is one turn). Recall is still per channel: a Discord thread does not see its parent channel's
+  passages, and a Telegram topic's are the chat's.
+
 - Inert mentions and Slack's marks, checked against fakes only: that Slack shows `&lt;`, `&gt;` and `&amp;` as the
   characters inside code blocks, inline code and link labels, and still reads `&gt; ` at a line's start as a quote,
   is from how Slack itself stores messages, not seen in a workspace; nor that Discord pings nobody on a send or an

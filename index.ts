@@ -1494,10 +1494,11 @@ export function apply(ctx, config) {
    * place had every answer reach a phone as "⏳ 아리 작업 중…". Elsewhere the reply edits it.
    */
   /** Post `text` in the working message's place. True when it went out. */
-  async function replyInPlaceOf(target: Origin, text: string, placeholderTs: string | null, answer = false): Promise<boolean> {
+  async function replyInPlaceOf(target: Origin, text: string, placeholderTs: string | null, answer = false, replyTo?: string): Promise<boolean> {
     const part = via(target)
-    // `answer` marks the turn's own reply, so a platform that streamed it can put this in its place.
-    const marked = answer ? { answer: true } : {}
+    // `answer` marks the turn's own reply, so a platform that streamed it can put this in its place; `replyTo` is the
+    // message it answers, for a platform that attaches the reply to it.
+    const marked = answer ? { answer: true, ...(replyTo !== undefined ? { replyTo } : {}) } : {}
     if (placeholderTs === null || typeof part.remove !== 'function') {
       return (await transport.post(target, text, { replace: placeholderTs, ...marked })) !== null
     }
@@ -3267,8 +3268,16 @@ export function apply(ctx, config) {
    * asked for, else the configured one, else the home. A terminal can ask to move a conversation, so
    * its workspace is fixed from here on; a platform that cannot ask keeps following the configuration.
    */
-  function bindTenant(key: string): void {
+  function bindTenant(key: string, parent?: string): void {
     if (cfg.tenantIsolation !== true || state.tenantOf?.[key] !== undefined) return
+    // A thread the map does not name is its channel's (a Discord thread, a forum post). Only its messages say which
+    // channel that is, so it is recorded with the first; otherwise it fell to the default, another tenant's or the home.
+    const map = (cfg.tenantChannels ?? {}) as Record<string, string>
+    if (parent !== undefined && typeof map[parent] === 'string' && map[key] === undefined && map[targetFromKey(key).channel] === undefined) {
+      state.tenantOf = { ...(state.tenantOf ?? {}), [key]: map[parent] }
+      saveState()
+      return
+    }
     if (typeof via(targetFromKey(key)).tenantFor !== 'function') return
     state.tenantOf = { ...(state.tenantOf ?? {}), [key]: tenantChosenByTransport(key) ?? configuredTenant(key) }
     saveState()
@@ -3376,8 +3385,8 @@ export function apply(ctx, config) {
   async function handleEvent(message: InboundMessage) {
     const { target, ts } = message
     const channel = target.channel
-    // Outside the allowlist, do nothing. '*' means every invited channel.
-    if (!allChannels && !targetChannels.includes(channel)) return
+    // Outside the allowlist, do nothing. '*' means every invited channel; a channel covers the threads in it.
+    if (!allChannels && !targetChannels.includes(channel) && !(message.parent !== undefined && targetChannels.includes(message.parent))) return
     // Not addressed: in mode 'thread', a message in a thread it takes part in — one with its session, or its first turn
     // still running or waiting — within a day of its last mention or reply there, is a turn it may keep quiet in.
     // Anything else unaddressed is not for it.
@@ -3408,7 +3417,7 @@ export function apply(ctx, config) {
       : message.text.slice(0, cfg.maxPromptChars)
     // Chatter does not keep it listening: a mention does, and a reply of its own (below).
     if (!quiet) state.touched[key] = Date.now()
-    bindTenant(key)
+    bindTenant(key, message.parent)
     if (!prompt) return
 
     // A pending approval turns the next message into a decision, so it is consumed
@@ -3606,7 +3615,7 @@ export function apply(ctx, config) {
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
           // The check once the answer is out: a refused post is a cross. Only an answer that went out is a typical
           // turn, timed without the waits for an approval.
-          const out = await replyInPlaceOf(replyTarget, r.text, placeholderTs, true)
+          const out = await replyInPlaceOf(replyTarget, r.text, placeholderTs, true, ts)
           if (out && !quiet) typical.record(ran)
           ended(out ? 'done' : 'failed')
           // After the answer, which may have promised to tell them when the job finishes.

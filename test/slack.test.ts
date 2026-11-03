@@ -597,6 +597,14 @@ function transportFor(api) {
     send('Ev9', { type: 'message', subtype: 'thread_broadcast', channel: 'C1', channel_type: 'channel', user: 'U7', ts: '5.7', thread_ts: '5.0', text: '채널에도 보냄' })
     // In a DM, a file shared with words: a turn in every mode (it was dropped, the subtype read as not a person's).
     send('Ev10', { type: 'message', subtype: 'file_share', channel: 'D1', channel_type: 'im', user: 'U7', ts: '7.1', text: '이 파일 봐줘', files: [] })
+    // A group DM is several people: chatter there is not for the bot, a mention is. Whether Slack also sends the
+    // mention's app_mention is not said, so it is taken from either, once, whichever comes first.
+    send('Ev11', { type: 'message', channel: 'G5', channel_type: 'mpim', user: 'U7', ts: '8.1', text: '점심 뭐 먹지' })
+    send('Ev12', { type: 'message', channel: 'G5', channel_type: 'mpim', user: 'U7', ts: '8.2', text: '<@U1> 정리해줘' })
+    send('Ev13', { type: 'app_mention', channel: 'G5', user: 'U7', ts: '8.2', text: '<@U1> 정리해줘' })
+    send('Ev14', { type: 'message', channel: 'G5', channel_type: 'mpim', user: 'U7', ts: '8.3', text: '<@U1> 이것만' })
+    send('Ev15', { type: 'app_mention', channel: 'G5', user: 'U7', ts: '8.4', text: '<@U1> 먼저 온 멘션' })
+    send('Ev16', { type: 'message', channel: 'G5', channel_type: 'mpim', user: 'U7', ts: '8.4', text: '<@U1> 먼저 온 멘션' })
     await t.close()
     received[mode] = got
   }
@@ -610,6 +618,10 @@ function transportFor(api) {
   check('every mode: a file shared with words in a DM comes in, addressed', ['thread', 'mention', 'all'].every((mode) => (received[mode] ?? []).some((m) => m.ts === '7.1' && m.addressed === true)), JSON.stringify(Object.fromEntries(Object.entries(received).map(([k, v]) => [k, v.map((m) => m.ts)]))))
   const all = received.all ?? []
   check('all: a mention comes once too (the manifest now sends the channel\'s messages as well)', all.filter((m) => m.ts === '5.2').length === 1 && all.some((m) => m.ts === '5.1' && m.addressed === true), JSON.stringify(all.map((m) => [m.ts, m.addressed])))
+  check('group DM: chatter without a mention does not come in (mention mode)', !(received.mention ?? []).some((m) => m.ts === '8.1'), JSON.stringify((received.mention ?? []).map((m) => m.ts)))
+  check('group DM: a mention comes in once, addressed, with or without its app_mention, in either order', ['thread', 'mention', 'all'].every((mode) => ['8.2', '8.3', '8.4'].every((ts) => (received[mode] ?? []).filter((m) => m.ts === ts).length === 1 && (received[mode] ?? []).find((m) => m.ts === ts)?.addressed === true)),
+    JSON.stringify(Object.fromEntries(Object.entries(received).map(([k, v]) => [k, v.filter((m) => m.ts.startsWith('8.')).map((m) => [m.ts, m.addressed])]))))
+  check('group DM: in mode all, chatter is answered as in a channel', (received.all ?? []).some((m) => m.ts === '8.1' && m.addressed === true))
   check('mention: a message in a thread without a mention does not come in', !(received.mention ?? []).some((m) => m.ts === '5.1') && (received.mention ?? []).some((m) => m.ts === '5.2'), JSON.stringify((received.mention ?? []).map((m) => m.ts)))
 }
 

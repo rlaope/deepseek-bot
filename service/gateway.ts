@@ -105,8 +105,8 @@ const PLATFORMS: Record<Platform, PlatformSpec> = {
 }
 const isPlatform = (name: string | undefined): name is Platform => name !== undefined && Object.hasOwn(PLATFORMS, name)
 
-/** The bot scopes docs/setup.md lists, and im:history, which DMs (`message.im`) need. */
-const SLACK_BOT_SCOPES = ['app_mentions:read', 'chat:write', 'channels:read', 'channels:history', 'groups:history', 'im:history', 'users:read', 'files:read', 'files:write', 'reactions:read', 'reactions:write']
+/** The bot scopes docs/setup.md lists: im:history and mpim:history are what DMs (`message.im`) and group DMs (`message.mpim`) need. */
+const SLACK_BOT_SCOPES = ['app_mentions:read', 'chat:write', 'channels:read', 'channels:history', 'groups:history', 'im:history', 'mpim:history', 'users:read', 'files:read', 'files:write', 'reactions:read', 'reactions:write']
 
 /** A Slack app manifest with what docs/setup.md asks for: Socket Mode, the scopes, the events, interactivity. */
 export function slackManifest(): Record<string, unknown> {
@@ -119,7 +119,8 @@ export function slackManifest(): Record<string, unknown> {
     oauth_config: { scopes: { bot: SLACK_BOT_SCOPES } },
     settings: {
       // The channel events let replyMode 'thread' hear a thread's messages without a mention; with 'mention' they are dropped.
-      event_subscriptions: { bot_events: ['app_mention', 'message.im', 'message.channels', 'message.groups'] },
+      // A group DM's messages come only with message.mpim; Slack does not say that its mentions come as app_mention.
+      event_subscriptions: { bot_events: ['app_mention', 'message.im', 'message.mpim', 'message.channels', 'message.groups'] },
       interactivity: { is_enabled: true },
       org_deploy_enabled: false,
       socket_mode_enabled: true,
