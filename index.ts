@@ -630,12 +630,17 @@ export function apply(ctx, config) {
       } catch (e) { log('state write failed', String(e)) }
     }, 500)
   }
-  /** Slack redelivers events. Drop anything already handled. */
+  /**
+   * Slack redelivers events, and Telegram sends again what was not confirmed before a restart. Drop anything already
+   * handled. Written at once: a turn's in-flight record writes the state at once anyway, but a message answered without
+   * a turn (usage, a stop) was marked only by the debounced save, and a restart within it answered it twice. Not pruned
+   * here: a conversation quiet for weeks would lose its rows (its usage, its route) before this message was answered.
+   */
   function alreadySeen(eventId) {
     if (!eventId) return false
     if (state.seen[eventId]) return true
     state.seen[eventId] = Date.now()
-    saveState()
+    try { writeFileSync(STATE, JSON.stringify(state, null, 1)) } catch (e) { log('state write failed', String(e)) }
     return false
   }
 

@@ -590,6 +590,52 @@ function groupMessage(overrides = {}) {
   rmSync(home, { recursive: true, force: true })
 }
 
+// 20. What a chat says after an album waits behind it: an album of three, then "which one is cheaper?", is the album's
+// turn first and then the question's. Taken as it came, the question was answered first, without the photos, and the
+// album 1.2 s later. Another chat does not wait for it.
+{
+  const photo = (n: number) => ({ update_id: 40 + n, message: { message_id: 40 + n, media_group_id: 'G2', from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, photo: [{ file_id: `large-ORDER${n}`, file_size: 12 }] } })
+  const text = (id: number, chat: number, words: string) => ({ update_id: id, message: { message_id: id, from: { id: 5, username: 'alice' }, chat: { id: chat, type: 'private' }, text: words } })
+  const home = mkdtempSync(join(tmpdir(), 'tg-order-'))
+  const api = fakeApi({ updates: [photo(1), photo(2), photo(3), text(44, 7, 'which one is cheaper?'), text(45, 8, 'hello from elsewhere')] })
+  const t = transportFor(api, home)
+  const core = bootAround(t, home)
+  await sleep(800)
+  const early = core.texts().map((said) => said.split('[user message]\n').at(-1))
+  await sleep(1800)
+  await t.close()
+  const asked = core.texts().map((said) => said.split('[user message]\n').at(-1))
+  check('order: another chat\'s message is not held while an album is gathered', JSON.stringify(early) === JSON.stringify(['hello from elsewhere']), JSON.stringify(early))
+  check('order: the album is taken before what its chat said after it', JSON.stringify(asked) === JSON.stringify(['hello from elsewhere', '(sent 3 files without text: photo-ORDER1.jpg, photo-ORDER2.jpg, photo-ORDER3.jpg)', 'which one is cheaper?']), JSON.stringify(asked))
+  check('order: with its three photos', core.images()[1]?.length === 3, `${core.images()[1]?.length} image(s)`)
+  core.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
+// 21. An update Telegram sends again after a restart, already taken by the process before: refused by the next one,
+// which reads the same state. What waits behind an album is not confirmed to Telegram until it is taken, so after a
+// crash it comes again; a request for usage is answered at once and no turn's record is written for it, so the seen
+// mark was kept only by the half-second debounced save.
+{
+  const home = mkdtempSync(join(tmpdir(), 'tg-replay-'))
+  const ask = { update_id: 60, message: { message_id: 60, from: { id: 5, username: 'alice' }, chat: { id: 7, type: 'private' }, text: 'usage' } }
+  const one = fakeApi({ updates: [ask] })
+  const t1 = transportFor(one, home)
+  const before = bootAround(t1, home)
+  await sleep(250)
+  await t1.close()
+  const two = fakeApi({ updates: [ask] })
+  const t2 = transportFor(two, home)
+  const after = bootAround(t2, home, { stateDir: before.stateDir })
+  await sleep(600)
+  await t2.close()
+  const replies = (api) => api.calls.filter((c) => c.method === 'sendMessage').length
+  check('replay: the first process answers it', replies(one) === 1, `${replies(one)} reply(ies)`)
+  check('replay: a new process with the same state refuses it', replies(two) === 0, `${replies(two)} reply(ies)`)
+  after.done()
+  rmSync(home, { recursive: true, force: true })
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

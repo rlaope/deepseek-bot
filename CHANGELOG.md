@@ -221,7 +221,10 @@ the caveat about version numbers is at the bottom.
   takes part in (`replyMode: thread`) is a quiet turn, as a message with words is. A Telegram album, which comes as one
   update per item with the caption on one of them, is one message: its text is the caption and its files every item's,
   gathered until no item has come for 1.2 s; until then its items are not confirmed to Telegram, so a restart
-  meanwhile gets the album again whole. Taken one by one, it opened a turn per photo. Checked in the Discord, Telegram
+  meanwhile gets the album again whole. Taken one by one, it opened a turn per photo. What the chat says after an
+  album waits behind it, so "which one is cheaper?" after three photos is answered after them and with them in the
+  conversation; other chats do not wait. A message already handled is marked so at once, not on the half-second
+  debounced save: a usage request or a stop sent again after a restart within it was answered twice. Checked in the Discord, Telegram
   and Slack suites through the core, red before; against fake platform APIs only.
 - **On Discord and Telegram a slow turn's answer raised no notification.** A turn longer than `progressAfterMs` (8 s)
   puts up the working message, and its answer was an edit of that message: an edit notifies nobody, and the answer sat

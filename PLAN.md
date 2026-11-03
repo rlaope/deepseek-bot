@@ -42,6 +42,9 @@ is built before the thing it stands on. The detailed history of each milestone i
   anything in it can be opened: with `downloadAttachments: false`, a file over `maxAttachmentBytes`, a Slack file with
   no download URL, a Telegram voice note or animation, a Discord voice message. It costs a model call that can only say
   it cannot open the file. Not fixed.
+- **An album can be cut in two by getUpdates' page.** While an album is gathered, getUpdates is sent its first update
+  as the offset and returns at most 100 updates from there; with more than 100 arriving after its first item inside
+  the 1.2 s window, a later item is not seen until the album is taken, and becomes a message of its own. Not fixed.
 - **Workspace temp directories are never removed.** Each workspace (a tenant, a scenario's) leaves a
   `deepbot-cmd-<hash>` directory in the user's temp; macOS clears it only after days unused. Pruning old ones could
   join the log rotation job.

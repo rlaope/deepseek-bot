@@ -45,5 +45,5 @@ export function bootAround(transport: unknown, home: string, config: Record<stri
   const texts = () => followups.map((message: any) => (message?.content ?? []).map((block) => block?.text ?? '').join(''))
   /** The image blocks of each user message. */
   const images = () => followups.map((message: any) => (message?.content ?? []).filter((block) => block?.type === 'image'))
-  return { logs, followups, texts, images, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  return { logs, followups, texts, images, stateDir, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
