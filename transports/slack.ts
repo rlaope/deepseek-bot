@@ -201,7 +201,8 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     const keep = (text: string) => `\u0000${kept.push(text) - 1}\u0000`
     // The placeholders are NUL-delimited, so a NUL in the text itself is dropped first.
     const text = escape(tablesAsLists(String(md ?? '')).replace(/\u0000/g, '')
-      .replace(/^[ \t]*(`{3,}|~{3,})([^\n]*)\n([\s\S]*?\n)?[ \t]*\1[ \t]*$/gm, (code: string, fence: string, info: string, body = '') =>
+      // A backtick fence's info holds no backtick (as in CommonMark): a one-line ```npm install``` is not a fence.
+      .replace(/^[ \t]*(`{3,}(?![^\n]*`)|~{3,})([^\n]*)\n([\s\S]*?\n)?[ \t]*\1[ \t]*$/gm, (code: string, fence: string, info: string, body = '') =>
         keep(escape(fence[0] === '~' && !body.includes('```') ? `\`\`\`${info}\n${body}\`\`\`` : code)))
       .replace(/`[^`\n]+`/g, (code: string) => keep(escape(code)))
       // A bare URL is linked by Slack itself, so it is left alone. A local path cannot be made clickable here —

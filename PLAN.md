@@ -115,6 +115,12 @@ Decided against:
   - a fence with no closing line (an answer cut at the token limit) is converted as text;
   - a pasted Slack link whose label already holds `&amp;` is escaped twice and shows `&amp;`;
   - `<mailto:…|…>`, `<HTTPS://…>`, `[l](<url>)` and `[l](url "title")` are shown as text, not as links.
+  - a closing fence longer than its opening one is not taken as its end: a fence of three backticks closed by four is
+    converted as text, and a `# c` in it comes out `*c*`;
+  - a fence that does not start its line (three backticks after `Here:`) is not set aside;
+  - the streamed preview shows a link as `<` and a zero-width space before `https://…` until the answer replaces it;
+  - entity forms (`&lt;!channel&gt;`) and a bare `@here` in the preview's `markdown_text` are not changed; what Slack
+    does with them there is not known.
 
 - A read outside the workspace answered with a real button: live, only the refusal path ran (a scenario has no
   platform). Keychain items through securityd: reachable by commands, not closed (refusing the keychain service

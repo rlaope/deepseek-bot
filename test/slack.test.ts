@@ -515,6 +515,10 @@ function transportFor(api) {
   // A pipe in a Markdown link's URL would end the URL there and show the rest as the label.
   const piped = await sent('[docs](https://evil.example|https://bank.example)')
   check('a link whose URL holds a pipe is not made a link', !piped.includes('<https://evil.example'), piped)
+  // A backtick fence's info holds no backtick: a one-line ```npm install``` opened a "fence" that closed at the next
+  // real fence's opening line, and that block's code was rewritten.
+  const oneLine = await sent('```npm install```\n\nThen:\n```\n# comment\n- flag\n```\nDone')
+  check('a one-line triple-backtick span opens no fence', oneLine === '```npm install```\n\nThen:\n```\n# comment\n- flag\n```\nDone', JSON.stringify(oneLine))
 }
 
 // 9. A document is uploaded rather than named: a local path cannot be clicked, so the file travels.
