@@ -170,6 +170,8 @@ Decided against:
   Discord and Telegram the conversation *is* the channel or chat, Discord's `<#channel>` mention is
   already a link, and a private Telegram chat has none. A link to where the person already is would
   be a knob that does nothing.
+- **`docs/logo.svg` is no longer shown in the README.** Its logo is `docs/assets/logo-pixel.svg` now, a pixel
+  whale. `tui/render/style.ts` names `docs/logo.svg` as the source of its palette, so the file stays.
 - **`docs/demo.gif` and `docs/banner.svg` are no longer shown in the README.** The CHANGELOG names `demo.gif` and
   `tui/render/banner.ts` says `banner.svg` is for the README, so both stay until one of them is changed on purpose.
   The README's wordmark is `docs/assets/wordmark.png` (and `.svg`), drawn from the same block letters as
