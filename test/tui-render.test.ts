@@ -673,6 +673,8 @@ const randomText = (n) => Array.from({ length: n }, () => ALPHABET[rand(ALPHABET
   split.append(' on\n')
   const text = split.lines(80).map((l) => l.spans.filter((sp) => !sp.decor).map((sp) => sp.text).join(''))
   check('job output: (control) an escape split between reads still goes whole, tabs at stops of 8', JSON.stringify(text) === JSON.stringify(['a       b', 'red: hot and on']), JSON.stringify(text))
+}
+
 // A streamed answer laid out again only from its last block boundary; a resize laid out around the view.
 {
   const st = { text: 'T', bold: 'B', italic: 'I', boldItalic: 'BI', strike: 'S', code: 'C', heading: 'H', quote: 'Q', codeBlock: 'K', dim: 'D', link: 'L', keyword: 'KW', string: 'ST', comment: 'CM', number: 'NU' }
