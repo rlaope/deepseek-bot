@@ -7,7 +7,7 @@
 <br>
 <br>
 
-<img src="docs/assets/logo-pixel.svg" alt="deepseek-bot logo: a blue pixel whale with a spout on a black rounded tile" width="200">
+<img src="docs/assets/logo-pixel.svg" alt="deepseek-bot logo: DeepSeek's whale in square blue pixels with the word bot, on a black rounded tile" width="200">
 
 <br>
 <br>

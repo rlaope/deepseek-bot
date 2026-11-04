@@ -114,9 +114,10 @@ the caveat about version numbers is at the bottom.
 - **The README was long again, and asked readers to paste a block into an AI agent.** It is shorter now: the
   wordmark, a logo, the tagline and badges, then Install, What you get, `dsh`, Others and License. The block to paste
   into an agent is gone. The hero picture, the four `showcase-0*` panels and the three `dsh-*` stills were only used
-  by the README and are removed. The logo is new: a blue (`#4D6BFE`) pixel whale with a spout on a black rounded
-  tile, a hand-drawn 22×13 grid of square pixels in a 24-unit SVG (`docs/assets/logo-pixel.svg`, crisp at any size,
-  and a 512 px PNG). It is not DeepSeek's logo.
+  by the README and are removed. The logo is new: DeepSeek's whale in square `#4D6BFE` pixels with the word
+  "bot" in the same pixels at the lower right, on a black rounded tile (`docs/assets/logo-pixel.svg`, crisp at any
+  size, and a 512 px PNG). The whale is the path in `docs/deepseek-bot.svg`, sampled onto a 32-cell grid (a cell is
+  filled when the path covers at least half of it).
 
 - **The README read as text with a few stills.** It is image-led now, every terminal image drawn from real output:
   a pixel wordmark made from the terminal banner's block letters (`docs/assets/wordmark.png`), a hero picture (a
