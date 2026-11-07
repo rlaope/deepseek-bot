@@ -164,6 +164,26 @@ Web search goes through DeepSeek's API whatever answers the chat (dsh-base's `we
 row), so with another provider the installer also offers `DEEPSEEK_API_KEY`, which you may skip; the
 `web_search` tool then fails when called.
 
+Search can come from a plugin instead. [`@keenable/dsh-keenable`](https://github.com/keenableai/dsh-keenable)
+needs no key and no account. Add it to the profile, add the `web` row below at the end of the profile's
+`cordis.patch.yml`, and run `dsh gateway restart`:
+
+```sh
+dsh plugin --profile agent add @keenable/dsh-keenable
+```
+
+```yaml
+- id: web
+  config:
+    searchProvider: keenable
+    fetchProvider: http      # web_fetch stays the harness's own, as "Opening a link" in how-it-works.md has it
+```
+
+Without the row the plugin takes `web_fetch` as well. Queries go to Keenable's public API, which allows
+10 requests a second and 1,000 an hour per IP address; a `KEENABLE_API_KEY` in `~/.dsh/.env` lifts
+that. Checked with dsh 0.2.2-rc.1 and the plugin's 0.1.2: in the deepbot profile, a `selfTest` turn
+called `web_search` and got results from Keenable, with no DeepSeek search behind it.
+
 A key the harness can already resolve is not asked for. The installer looks, by name only, where the
 harness looks: the launch environment, the DeepSeek Harness app's own store (`~/.dsh/.credentials.yaml`,
 where the app saves keys), then `~/.dsh/.env`. A key in the store is used as it is and the store is
