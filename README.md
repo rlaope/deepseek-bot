@@ -2,6 +2,11 @@
 
 <br>
 
+<img src="docs/assets/wordmark.png" alt="DEEPSEEK-BOT" width="56%">
+
+<br>
+<br>
+
 <img src="docs/assets/poster.jpg" alt="DEEPSEEK-BOT, an agent that remembers: a blue twin-tailed girl with a whale hairclip and a whale laptop, a plush whale on her shoulder, on black with blue pixel blocks" width="600">
 
 <br>
