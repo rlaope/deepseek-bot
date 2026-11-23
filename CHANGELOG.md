@@ -111,6 +111,21 @@ the caveat about version numbers is at the bottom.
 
 ### Changed
 
+- **A slow turn no longer posts a progress message where the platform shows its own indicator.** On Discord and
+  Telegram a turn past 8 s got "⏳ … 작업 중 — 3개 도구 (bash) · 34s" under "is typing…", edited every 2.5 s with the
+  last tool's name; Discord's edits have no rate-limit handling, and one it refused became a further message that
+  nothing took away, so a long turn could leave several. `progressAfterMs` is now `0` by default, which posts none
+  there: the indicator says the turn is running, and so do the marks on the person's message unless `marks` is `off`
+  or reactions are refused. A tool call no longer creates the message under `0` either (under `0` it did, at the
+  first tool). `progressAfterMs: 8000` brings the old behaviour back. A platform that refuses its indicator still
+  gets the working message at once, a message that waited behind another turn included: its working message went
+  with that turn's answer, and it is put up again when its own turn starts (found in review; before, the 8 s timer
+  covered it). Slack still streams. Checked in `test/failures.test.ts` against the fake transport (red before: the
+  default, "1개 도구 (bash)" posted under `0`, and the waiting message left with nothing), with a control that the
+  same tool call does name the tool when a time is set.
+  Not seen on a live Discord server. The duplicates themselves (a refused edit falling back to a new message) are
+  not fixed: they remain for a deployment that sets a time, and are in PLAN.md's Open list.
+
 - **The README was long again, and asked readers to paste a block into an AI agent.** It is shorter now: the
   wordmark, a logo, the tagline and badges, then Install, What you get, `dsh`, Others and License. The block to paste
   into an agent is gone. The hero picture, the four `showcase-0*` panels and the three `dsh-*` stills were only used

@@ -16,7 +16,7 @@ import './scratch-dsh-home.ts'   // the recall index must not land in the real ~
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply } from '../dist/index.js'
+import { apply, defaults } from '../dist/index.js'
 import { createFakeTransport, type FakeTransportOptions } from './fake-transport.ts'
 import { createSlackTransport } from '../dist/transports/slack.js'
 import { createTelegramTransport } from '../dist/transports/telegram.js'
@@ -649,6 +649,56 @@ function boot({ state = {}, config = {}, agent = 'throw' }: {
   await sleep(400)
   check('stream: refused for good, the working message shows progress again', c.transport.posted.some((p) => /작업 중/.test(p.text)), JSON.stringify(c.transport.posted.map((p) => p.text)))
   c.done()
+}
+
+// A slow turn where the platform shows its own indicator posts no working message, unless progressAfterMs asks for
+// one. On Discord it came up after 8 s under "is typing…", was edited with the last tool's name ("3개 도구 (bash)")
+// every few seconds, and an edit the platform refused became one more message.
+{
+  const seeded = () => ({ sessions: { 'C_ALLOWED:t1': 's1' }, touched: { 'C_ALLOWED:t1': Date.now() } })
+  const working = (t) => t.transport.posted.filter((p) => /작업 중/.test(p.text))
+  check('progress: off by default', defaults.progressAfterMs === 0, String(defaults.progressAfterMs))
+  const off = boot({ agent: 'slow', state: seeded(), config: { progressAfterMs: 0, fake: { typing: true } } })
+  await sleep(60)
+  off.transport.deliver(off.transport.message())
+  await sleep(300)
+  off.fire('s1', { type: 'tool/call', data: { name: 'bash' } })
+  await sleep(150)
+  check('progress: off, a slow turn shows the platform\'s indicator', off.transport.typing.length === 1, `${off.transport.typing.length} indicator(s)`)
+  check('progress: off, and no working message, with a tool running', working(off).length === 0, JSON.stringify(off.transport.posted.map((p) => p.text)))
+  off.done()
+  // The control: the same turn and the same tool call with a time set do put it up, with the tool's name.
+  const on = boot({ agent: 'slow', state: seeded(), config: { progressAfterMs: 50, progressUpdateMs: 10, fake: { typing: true } } })
+  await sleep(60)
+  on.transport.deliver(on.transport.message())
+  await sleep(300)
+  on.fire('s1', { type: 'tool/call', data: { name: 'bash' } })
+  await sleep(150)
+  check('progress: with a time set, the working message names the tool', working(on).some((p) => /bash/.test(p.text)), JSON.stringify(on.transport.posted.map((p) => p.text)))
+  on.done()
+  // Off, a refused indicator still falls back to the working message: it is then the only sign the message was taken.
+  const refused = boot({ agent: 'slow', state: seeded(), config: { progressAfterMs: 0, progressUpdateMs: 10, fake: { typing: true, typingRefusedAfterMs: 0 } } })
+  await sleep(60)
+  refused.transport.deliver(refused.transport.message())
+  await sleep(300)
+  check('progress: off, a refused indicator still gets the working message', working(refused).length >= 1, JSON.stringify(refused.transport.posted.map((p) => p.text)))
+  refused.fire('s1', { type: 'tool/call', data: { name: 'bash' } })
+  await sleep(150)
+  check('progress: off, and a tool edits that message with its name', working(refused).some((p) => p.replace !== null && /bash/.test(p.text)), JSON.stringify(refused.transport.posted.map((p) => [p.text, p.replace])))
+  refused.done()
+  // A message that waited, its indicator refused while it did: the turn ahead's answer took the working message, and
+  // nothing else would show for it once it starts. It gets one of its own then.
+  const waited = boot({ agent: 'slow', state: seeded(), config: { progressAfterMs: 0, runTimeoutMs: 400, fake: { typing: true, typingRefusedAfterMs: 0 } } })
+  await sleep(60)
+  waited.transport.deliver(waited.transport.message({ text: '첫 번째' }))
+  await sleep(150)
+  waited.transport.deliver(waited.transport.message({ text: '두 번째' }))
+  await sleep(1500)
+  const firstEnded = waited.transport.posted.findIndex((p) => p.text === '시간이 초과돼서 멈췄어.')
+  check('progress: off, a message that waited with its indicator refused gets the working message when it starts',
+    firstEnded !== -1 && waited.transport.posted.slice(firstEnded + 1).some((p) => /작업 중/.test(p.text) && p.replace === null),
+    JSON.stringify(waited.transport.posted.map((p) => [p.text, p.replace])))
+  waited.done()
 }
 
 const failed = results.filter((r) => !r.ok)
