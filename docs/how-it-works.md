@@ -683,8 +683,11 @@ message — `⏳ 아리 작업 중…`, the name from the persona's first headin
 refusal that will not change (a scope, a feature) is remembered, so later turns fall back at once;
 one that arrives after the turn is over posts nothing.
 
-The progress message **is edited in place** as tools run, with tool names and elapsed time; on a
-platform with typing it appears only once a turn has run for `progressAfterMs` (8 s). When the turn
+Where the platform shows its indicator, a slow turn posts **no progress message by default**
+(`progressAfterMs: 0`): the indicator and the marks on the person's message already say the turn is
+running, and on Discord a message naming each tool ("3개 도구 (bash)") under "is typing…" was noise in
+a channel. Set `progressAfterMs` to a time (8000 was the default) to have it posted once a turn has run
+that long. The progress message **is edited in place** as tools run, with tool names and elapsed time. When the turn
 ends it gives way to the answer, so a turn leaves one message rather than a stale "working on it"
 plus an answer. On Slack, Discord and Telegram the answer is posted as a **new message and the progress
 message is deleted** (`chat.delete`, which `chat:write` covers; Discord's message DELETE, which needs no
@@ -699,15 +702,15 @@ in the thread comes after all that was streamed; the answer is posted new at onc
 then stopped and deleted (the stop tried again when refused, over a minute; one never stopped is left, and said
 in the log; kept if the answer did not go out); a thread's posts go in order; a stream nothing moved for
 `streamIdleMs` (2 min) is stopped, and every open one when the gateway stops, after it stops taking messages. Refused for good
-(`chat.startStream`), the progress message comes back. Edits are throttled
+(`chat.startStream`), the thread status is what shows, and the progress message too with `progressAfterMs` set. Edits are throttled
 (`progressUpdateMs`, 2.5 s) because every edit is a rate-limited API call: the message says roughly
 what is happening, not every step. Renders are serial per conversation and the answer waits for
 them, so a second message in the same thread cannot post a second progress message that nothing
 replaces (`test/core.test.ts`, with a post that takes 150 ms). A turn whose completion fails still
 gives way to the failure, so nothing is left claiming to be working.
 
-`progressAfterMs: 0` no longer silences Slack: to post nothing until the answer, set
-`workingIndicator: false`. Slack's thread history now stops at the message being answered, so the
+`progressAfterMs: 0` does not silence a platform that refuses its indicator: to post nothing until the
+answer, set `workingIndicator: false` as well. Slack's thread history now stops at the message being answered, so the
 progress message, posted before the history is read, is not quoted back to the model.
 
 Not verified on a live Discord or Telegram server: typing is checked against the mocked APIs in

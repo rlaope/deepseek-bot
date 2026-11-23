@@ -81,7 +81,8 @@ is built before the thing it stands on. The detailed history of each milestone i
   bytes are read from the descriptor that was checked.
 - **The live round trip on Discord and Telegram**: typing, uploads, buttons and Telegram's rendering
   are tested against mocked APIs only (see Unverified).
-- **Working messages that can still be left, or a stop said twice** (found in review, not fixed):
+- **Working messages that can still be left, or a stop said twice** (found in review, not fixed; since
+  `progressAfterMs` is `0` by default, only where a time is set or the platform refuses its indicator):
   - A stop already reported, whose working message's delete is refused, edits that message into the stop's report;
     the edit falls back to a new message when it is refused too, and the stop is said a second time (`index.ts`, the
     cancelled branch after a turn).

@@ -257,7 +257,10 @@ const DEFAULTS = {
   approvalRequireSameUser: true,
   approveWords: defaultWords('approve'),
   denyWords: defaultWords('deny'),
-  progressAfterMs: 8000,
+  // How long a turn runs before the progress message is posted where the platform shows its own indicator (typing,
+  // Slack's status). 0, the default, posts none there: the indicator and the marks already say the turn is running,
+  // and a message naming each tool ("3 tools (bash)") was noise in a channel. A refused indicator still gets it.
+  progressAfterMs: 0,
   // Slack's stream of a turn's text: sent in batches this far apart; stopped when nothing moved for streamIdleMs; a
   // refused stop tried again after streamRetryMs ×1, ×5, ×15.
   streamFlushMs: 1500,
@@ -1539,7 +1542,7 @@ export function apply(ctx, config) {
    * the progress message posted now rather than after progressAfterMs. Returns what stops the typing.
    * The reply waits for the progress message with `progress.settle` before it takes its place.
    */
-  function startWorking(key: string, target: Origin): () => void {
+  function startWorking(key: string, target: Origin, onRefused?: () => void): () => void {
     if (cfg.workingIndicator !== true) return () => {}
     if (nativeIndicator(target)) {
       // A refusal can arrive after the turn is over; a working message then would sit under the reply.
@@ -1548,10 +1551,11 @@ export function apply(ctx, config) {
         const stop = via(target).startTyping(target, () => {
           if (over) return
           log(`working indicator refused in ${key} — showing a working message instead`)
+          onRefused?.()
           showWorking(key, target, true)
         })
         return () => { over = true; stop() }
-      } catch (e) { log(`typing failed: ${String((e as Error)?.message ?? e)}`) }
+      } catch (e) { log(`typing failed: ${String((e as Error)?.message ?? e)}`); onRefused?.() }
     }
     showWorking(key, target, true)
     return () => {}
@@ -1570,7 +1574,7 @@ export function apply(ctx, config) {
    * The working message, where the platform shows no indicator of its own — unless the conversation
    * already has one, put up by a turn ahead of this message. Called again when a message that waited
    * starts, because by then that turn's reply has taken the message it was showing under. `instead`
-   * is a caller standing in for a refused indicator.
+   * is a caller standing in for a refused indicator, a waiting message's own included.
    */
   function showWorking(key: string, target: Origin, instead = false): void {
     if (cfg.workingIndicator !== true || (!instead && nativeIndicator(target)) || progress.tracks(key)) return
@@ -1843,7 +1847,8 @@ export function apply(ctx, config) {
 
         // Progress: the turn is slow, and it is doing something. The message is
         // created once the turn has been slow for progressAfterMs, then edited as
-        // tools run, so a quick turn never shows anything.
+        // tools run, so a quick turn never shows anything. With progressAfterMs 0 a
+        // tool creates none: it only edits one a refused indicator put up.
         if (event?.type === 'tool/call' && activeTurns.has(liveSessionId)) {
           // A platform that streams shows the step in place; the progress message is for the rest.
           const live = liveOrigins.get(liveSessionId)
@@ -1853,7 +1858,7 @@ export function apply(ctx, config) {
           // Nothing is shown for a message that did not mention it: the turn may well say nothing.
           if (liveKey !== undefined && live?.quiet !== true) {
             const startedAt = turnStartedAt.get(liveKey)
-            if (startedAt !== undefined && (progress.has(liveKey) || Date.now() - startedAt >= cfg.progressAfterMs)) {
+            if (startedAt !== undefined && (progress.has(liveKey) || (cfg.progressAfterMs > 0 && Date.now() - startedAt >= cfg.progressAfterMs))) {
               const name = event.data?.name ?? event.data?.toolName ?? event.data?.call?.name
               void progress.note(liveKey, targetFromKey(liveKey), typeof name === 'string' ? name : undefined)
                 .catch((e) => log('progress update failed', String((e as Error)?.message ?? e)))
@@ -3625,7 +3630,10 @@ export function apply(ctx, config) {
     if (!quiet) markOf({ channel, threadTs }, ts, { kind: 'seen' })
     // Before the queue, so a message waiting behind other turns also shows it was taken. Not one that did not mention
     // it: the turn may say nothing, and nothing is to show it was heard.
-    const stopWorking = quiet ? () => {} : startWorking(key, { channel, threadTs })
+    // Whether this message's own indicator was refused: the working message that stood in for it may be gone, taken
+    // by the answer of a turn ahead, by the time this one starts.
+    let indicatorRefused = false
+    const stopWorking = quiet ? () => {} : startWorking(key, { channel, threadTs }, () => { indicatorRefused = true })
     const ticket: Ticket = { withdrawn: false, stopWorking, ts, ...(message.clientId !== undefined ? { clientId: message.clientId } : {}), ...(quiet ? { quiet: true } : {}) }
     if (!waiting.has(key)) waiting.set(key, new Set())
     waiting.get(key)?.add(ticket)
@@ -3670,7 +3678,7 @@ export function apply(ctx, config) {
       // (the thread's pointer stops before it). A burst of chatter is one turn, not one each.
       // Not one with files: they would not be fetched for the later turn.
       if (quiet && message.files.length === 0 && [...(waiting.get(key) ?? [])].at(-1) !== ticket) { leaveWaiting(key, ticket); log(`quiet: gave way to a later message in ${key}`); settleInflight(key); return }
-      if (!quiet) showWorking(key, replyTarget)
+      if (!quiet) showWorking(key, replyTarget, indicatorRefused)
       try {
         let historyText = ''
         let historyLastTs: string | null = null
